@@ -1,0 +1,64 @@
+<%= form_with(model: [@agent_config, @override], url: @override.new_record? ? agent_config_agent_room_configs_path(@agent_config) : agent_config_agent_room_config_path(@agent_config, @override), class: "space-y-6") do |f| %>
+
+  <% if @override.errors.any? %>
+    <div class="bg-red-900/20 border border-red-700/30 rounded p-3 text-red-400 text-sm">
+      <% @override.errors.full_messages.each do |msg| %>
+        <div><%= msg %></div>
+      <% end %>
+    </div>
+  <% end %>
+
+  <div class="bg-stone-900 border border-stone-800 rounded-lg p-4 text-sm text-stone-400">
+    Configuring extra services for <span class="text-stone-200 font-medium"><%= @agent_config.identity %></span> when spawned in a specific room.
+  </div>
+
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+    <div>
+      <label class="block text-stone-500 text-xs uppercase tracking-wider mb-1">channel</label>
+      <%= f.text_field :channel,
+        class: "w-full bg-stone-800 border border-stone-700 rounded px-3 py-2 text-stone-200 text-sm focus:border-amber-600 focus:outline-none",
+        disabled: @override.persisted?,
+        placeholder: "e.g. art, security" %>
+    </div>
+
+    <div>
+      <label class="block text-stone-500 text-xs uppercase tracking-wider mb-1">model override</label>
+      <%= f.select :model_override,
+        [["Inherit", ""], ["Opus 4.6", "claude-opus-4-6"], ["Sonnet 4.6", "claude-sonnet-4-6"], ["Haiku 4.5", "claude-haiku-4-5-20251001"]],
+        {},
+        class: "w-full bg-stone-800 border border-stone-700 rounded px-3 py-2 text-stone-200 text-sm focus:border-amber-600 focus:outline-none" %>
+    </div>
+  </div>
+
+  <div>
+    <label class="block text-stone-500 text-xs uppercase tracking-wider mb-2">extra services for <%= @agent_config.identity %> in this room</label>
+    <div class="grid grid-cols-2 md:grid-cols-3 gap-2">
+      <% @services.each do |svc| %>
+        <label class="flex items-center gap-3 p-2 rounded hover:bg-stone-800 transition-colors cursor-pointer">
+          <%= check_box_tag "agent_room_config[extra_services][]", svc.name,
+            @override.has_service?(svc.name),
+            class: "w-4 h-4 rounded border-stone-600 bg-stone-800 text-amber-500 focus:ring-amber-600" %>
+          <div>
+            <div class="text-stone-300 text-sm"><%= svc.name %></div>
+            <div class="text-stone-600 text-xs"><%= svc.provision_type %></div>
+          </div>
+        </label>
+      <% end %>
+    </div>
+    <%= hidden_field_tag "agent_room_config[extra_services][]", "" %>
+  </div>
+
+  <div>
+    <label class="block text-stone-500 text-xs uppercase tracking-wider mb-1">notes</label>
+    <%= f.text_area :notes, rows: 2,
+      class: "w-full bg-stone-800 border border-stone-700 rounded px-3 py-2 text-stone-200 text-sm focus:border-amber-600 focus:outline-none" %>
+  </div>
+
+  <div class="flex gap-3">
+    <%= f.submit @override.new_record? ? "Create" : "Update",
+      class: "px-4 py-2 rounded bg-amber-900/30 border border-amber-700/30 text-amber-500 hover:bg-amber-900/50 transition-colors cursor-pointer text-sm" %>
+    <%= link_to "cancel", agent_config_path(@agent_config),
+      class: "px-4 py-2 rounded text-stone-500 hover:text-stone-300 transition-colors text-sm" %>
+  </div>
+
+<% end %>

@@ -9,7 +9,14 @@ Rails.application.routes.draw do
     member do
       post :toggle_service
     end
+    resources :agent_room_configs, path: "rooms", only: [:new, :create, :edit, :update, :destroy] do
+      member do
+        post :toggle_service
+      end
+    end
   end
+
+  resources :room_configs, path: "rooms"
 
   resources :containers, only: [:index, :show] do
     member do

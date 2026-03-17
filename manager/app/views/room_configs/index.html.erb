@@ -1,0 +1,31 @@
+<div class="flex items-center justify-between mb-6">
+  <h1 class="text-amber-500 text-sm font-bold uppercase tracking-wider">rooms</h1>
+  <%= link_to "new room", new_room_config_path, class: "text-sm px-3 py-1.5 rounded bg-amber-900/30 border border-amber-700/30 text-amber-500 hover:bg-amber-900/50 transition-colors" %>
+</div>
+
+<div class="space-y-3">
+  <% @rooms.each do |room| %>
+    <%= link_to room_config_path(room), class: "block bg-stone-900 border border-stone-800 rounded-lg p-4 hover:border-stone-700 transition-colors" do %>
+      <div class="flex items-center justify-between">
+        <span class="text-stone-200 font-medium">#<%= room.channel %></span>
+        <% if room.model_default.present? %>
+          <span class="text-stone-500 text-sm"><%= room.model_default.split("-").last(2).join(" ") %></span>
+        <% end %>
+      </div>
+      <div class="mt-2 flex gap-2 flex-wrap">
+        <% (room.extra_services || []).each do |svc| %>
+          <span class="text-xs px-2 py-0.5 rounded-full bg-amber-900/30 text-amber-500"><%= svc %></span>
+        <% end %>
+        <% if room.extra_services.blank? %>
+          <span class="text-stone-600 text-xs">no extra services</span>
+        <% end %>
+      </div>
+    <% end %>
+  <% end %>
+
+  <% if @rooms.empty? %>
+    <div class="bg-stone-900 border border-stone-800 rounded-lg p-8 text-center text-stone-600">
+      No rooms configured. Agents will use their base services only.
+    </div>
+  <% end %>
+</div>

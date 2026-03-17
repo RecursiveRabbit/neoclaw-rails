@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_03_17_200004) do
+ActiveRecord::Schema[8.1].define(version: 2026_03_17_300002) do
   create_table "agent_configs", force: :cascade do |t|
     t.json "base_services", default: []
     t.json "channel_overrides", default: {}
@@ -24,6 +24,18 @@ ActiveRecord::Schema[8.1].define(version: 2026_03_17_200004) do
     t.text "system_prompt"
     t.datetime "updated_at", null: false
     t.index ["identity"], name: "index_agent_configs_on_identity", unique: true
+  end
+
+  create_table "agent_room_configs", force: :cascade do |t|
+    t.integer "agent_config_id", null: false
+    t.string "channel", null: false
+    t.datetime "created_at", null: false
+    t.json "extra_services", default: []
+    t.string "model_override"
+    t.text "notes"
+    t.datetime "updated_at", null: false
+    t.index ["agent_config_id", "channel"], name: "index_agent_room_configs_on_agent_config_id_and_channel", unique: true
+    t.index ["agent_config_id"], name: "index_agent_room_configs_on_agent_config_id"
   end
 
   create_table "audit_logs", force: :cascade do |t|
@@ -55,6 +67,16 @@ ActiveRecord::Schema[8.1].define(version: 2026_03_17_200004) do
     t.index ["state"], name: "index_containers_on_state"
   end
 
+  create_table "room_configs", force: :cascade do |t|
+    t.string "channel", null: false
+    t.datetime "created_at", null: false
+    t.json "extra_services", default: []
+    t.string "model_default"
+    t.text "notes"
+    t.datetime "updated_at", null: false
+    t.index ["channel"], name: "index_room_configs_on_channel", unique: true
+  end
+
   create_table "service_types", force: :cascade do |t|
     t.datetime "created_at", null: false
     t.boolean "enabled", default: true
@@ -71,4 +93,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_03_17_200004) do
     t.string "wg_public_key"
     t.index ["name"], name: "index_service_types_on_name", unique: true
   end
+
+  add_foreign_key "agent_room_configs", "agent_configs"
 end

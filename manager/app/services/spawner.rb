@@ -148,7 +148,7 @@ class Spawner
         identity: identity,
         instance: instance_name,
         channel: channel,
-        model: config.model,
+        model: config.model_for(channel),
         git: {
           repo: config.repo,
           ssh_key: ssh_keypair[:private],
