@@ -1,0 +1,5 @@
+source "https://rubygems.org"
+
+gem "webrick"     # HTTP server for receiving messages
+gem "httpx"       # HTTP client for Hub/Manager callbacks
+gem "json"        # spawn.json parsing
