@@ -1,5 +1,7 @@
 class HealthController < ApplicationController
   def show
+    manager_status = Hub::ManagerClient.status
+
     render json: {
       status: "ok",
       hub: {
@@ -8,11 +10,7 @@ class HealthController < ApplicationController
         rooms: Room.count,
         identities: Identity.count
       },
-      manager: {
-        containers: Container.alive.count,
-        configs: AgentConfig.count,
-        services: ServiceType.enabled.count
-      }
+      manager: manager_status || "unreachable"
     }
   end
 end

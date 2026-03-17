@@ -1,0 +1,17 @@
+default: &default
+  adapter: sqlite3
+  pool: 5
+  timeout: 5000
+
+development:
+  <<: *default
+  database: db/manager_development.sqlite3
+
+test:
+  <<: *default
+  database: db/manager_test.sqlite3
+
+production:
+  <<: *default
+  # Host volume mount: /var/lib/neoclaw/manager-db → /app/db
+  database: db/manager_production.sqlite3

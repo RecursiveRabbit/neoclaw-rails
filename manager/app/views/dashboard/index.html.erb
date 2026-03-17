@@ -1,0 +1,113 @@
+<div class="space-y-8">
+
+  <%# --- Capacity bar --- %>
+  <div class="bg-stone-900 border border-stone-800 rounded-lg p-4">
+    <div class="flex items-center justify-between mb-2">
+      <h2 class="text-amber-500 text-sm font-bold uppercase tracking-wider">capacity</h2>
+      <span class="text-stone-500 text-sm">
+        <%= @capacity[:running] %> / <%= @capacity[:soft_cap] %> soft · <%= @capacity[:hard_cap] %> hard
+      </span>
+    </div>
+    <div class="w-full bg-stone-800 rounded-full h-3">
+      <% pct = @capacity[:hard_cap] > 0 ? (@capacity[:running].to_f / @capacity[:hard_cap] * 100).round : 0 %>
+      <% bar_color = pct > 88 ? "bg-red-500" : pct > 66 ? "bg-amber-500" : "bg-emerald-500" %>
+      <div class="<%= bar_color %> h-3 rounded-full transition-all" style="width: <%= pct %>%"></div>
+    </div>
+  </div>
+
+  <%# --- Running containers --- %>
+  <div>
+    <h2 class="text-amber-500 text-sm font-bold uppercase tracking-wider mb-3">running</h2>
+
+    <% if @containers.any? %>
+      <div class="grid gap-3">
+        <% @containers.each do |c| %>
+          <div class="bg-stone-900 border border-stone-800 rounded-lg p-4 flex items-center justify-between hover:border-stone-700 transition-colors">
+            <div class="flex items-center gap-4">
+              <%# State dot %>
+              <% dot_color = c.alive? ? "bg-emerald-500" : "bg-amber-500 animate-pulse" %>
+              <div class="w-2 h-2 rounded-full <%= dot_color %>"></div>
+
+              <div>
+                <div class="text-stone-200 font-medium"><%= c.instance_name %></div>
+                <div class="text-stone-500 text-sm">
+                  <%= c.identity %> in #<%= c.channel %>
+                  · <%= distance_of_time_in_words_to_now(c.created_at) %>
+                </div>
+              </div>
+            </div>
+
+            <div class="flex items-center gap-6">
+              <%# Context meter %>
+              <div class="w-32">
+                <div class="flex justify-between text-xs mb-1">
+                  <span class="text-stone-500">context</span>
+                  <span class="text-<%= c.context_color %>-400"><%= c.context_percent %>%</span>
+                </div>
+                <div class="w-full bg-stone-800 rounded-full h-1.5">
+                  <div class="bg-<%= c.context_color %>-500 h-1.5 rounded-full" style="width: <%= c.context_percent %>%"></div>
+                </div>
+              </div>
+
+              <%# Actions %>
+              <div class="flex gap-2">
+                <%= link_to "stream", stream_container_path(c), class: "text-xs px-2 py-1 rounded bg-stone-800 text-stone-400 hover:text-amber-400 hover:bg-stone-700 transition-colors" %>
+                <%= button_to "freeze", freeze_container_path(c), method: :post, class: "text-xs px-2 py-1 rounded bg-stone-800 text-stone-400 hover:text-blue-400 hover:bg-stone-700 transition-colors", data: { turbo_confirm: "Freeze #{c.instance_name}?" } %>
+                <%= button_to "kill", kill_container_path(c), method: :post, class: "text-xs px-2 py-1 rounded bg-stone-800 text-stone-400 hover:text-red-400 hover:bg-stone-700 transition-colors", data: { turbo_confirm: "Kill #{c.instance_name}?" } %>
+              </div>
+            </div>
+          </div>
+        <% end %>
+      </div>
+    <% else %>
+      <div class="bg-stone-900 border border-stone-800 rounded-lg p-8 text-center text-stone-600">
+        No agents running.
+      </div>
+    <% end %>
+  </div>
+
+  <%# --- Configs summary --- %>
+  <div>
+    <div class="flex items-center justify-between mb-3">
+      <h2 class="text-amber-500 text-sm font-bold uppercase tracking-wider">identities</h2>
+      <%= link_to "manage →", agent_configs_path, class: "text-stone-500 text-sm hover:text-amber-400" %>
+    </div>
+
+    <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
+      <% @configs.each do |cfg| %>
+        <%= link_to agent_config_path(cfg), class: "bg-stone-900 border border-stone-800 rounded-lg p-3 hover:border-stone-700 transition-colors" do %>
+          <div class="text-stone-200 font-medium text-sm"><%= cfg.identity %></div>
+          <div class="text-stone-600 text-xs mt-1">
+            <%= cfg.model&.split("-")&.last(2)&.join(" ") %>
+            · <%= (cfg.base_services || []).size %> services
+            <%= "· singleton" if cfg.singleton? %>
+          </div>
+        <% end %>
+      <% end %>
+    </div>
+  </div>
+
+  <%# --- Recent audit --- %>
+  <div>
+    <div class="flex items-center justify-between mb-3">
+      <h2 class="text-amber-500 text-sm font-bold uppercase tracking-wider">recent activity</h2>
+      <%= link_to "all →", audit_logs_path, class: "text-stone-500 text-sm hover:text-amber-400" %>
+    </div>
+
+    <div class="bg-stone-900 border border-stone-800 rounded-lg divide-y divide-stone-800/50">
+      <% @recent_audit.each do |log| %>
+        <div class="px-4 py-2 flex items-center justify-between text-sm">
+          <div class="flex items-center gap-3">
+            <span class="text-amber-600 font-mono text-xs w-24"><%= log.event %></span>
+            <span class="text-stone-400"><%= log.instance_name || log.identity %></span>
+            <% if log.detail %>
+              <span class="text-stone-600 truncate max-w-md"><%= log.detail %></span>
+            <% end %>
+          </div>
+          <span class="text-stone-600 text-xs"><%= time_ago_in_words(log.created_at) %> ago</span>
+        </div>
+      <% end %>
+    </div>
+  </div>
+
+</div>

@@ -1,0 +1,120 @@
+<%# Live Claude Code output — connects via ActionCable to ContainerStreamChannel %>
+
+<div class="space-y-4">
+  <div class="flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <div class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
+      <h1 class="text-stone-200 font-medium"><%= @container.instance_name %></h1>
+      <span class="text-stone-500 text-sm">live stream</span>
+    </div>
+    <div class="flex items-center gap-4">
+      <span class="text-stone-500 text-sm" data-stream-target="status">connecting...</span>
+      <%= link_to "← back", container_path(@container), class: "text-stone-500 text-sm hover:text-amber-400" %>
+    </div>
+  </div>
+
+  <%# The terminal %>
+  <div id="stream-output"
+       class="bg-stone-950 border border-stone-800 rounded-lg p-4 font-mono text-sm h-[calc(100vh-12rem)] overflow-y-auto"
+       data-controller="stream"
+       data-stream-instance-value="<%= @container.instance_name %>">
+
+    <div class="text-stone-600 mb-2">
+      Waiting for output from <%= @container.instance_name %>...
+    </div>
+
+    <%# Lines are appended here by the Stimulus controller %>
+    <div data-stream-target="lines"></div>
+
+    <%# Auto-scroll anchor %>
+    <div data-stream-target="anchor"></div>
+  </div>
+</div>
+
+<script type="module">
+  import { createConsumer } from "@rails/actioncable"
+
+  const consumer = createConsumer()
+  const instance = "<%= @container.instance_name %>"
+  const linesEl = document.querySelector('[data-stream-target="lines"]')
+  const statusEl = document.querySelector('[data-stream-target="status"]')
+  const anchorEl = document.querySelector('[data-stream-target="anchor"]')
+
+  const subscription = consumer.subscriptions.create(
+    { channel: "ContainerStreamChannel", instance: instance },
+    {
+      connected() {
+        statusEl.textContent = "connected"
+        statusEl.classList.replace("text-stone-500", "text-emerald-500")
+      },
+
+      disconnected() {
+        statusEl.textContent = "disconnected"
+        statusEl.classList.replace("text-emerald-500", "text-stone-500")
+      },
+
+      received(data) {
+        try {
+          const event = typeof data === "string" ? JSON.parse(data) : data
+          appendEvent(event)
+        } catch {
+          // Raw text — just append
+          appendLine(data, "text-stone-400")
+        }
+      }
+    }
+  )
+
+  function appendEvent(event) {
+    switch (event.type) {
+      case "assistant":
+        // Message content blocks
+        if (event.message?.content) {
+          for (const block of event.message.content) {
+            if (block.type === "text") {
+              appendLine(block.text, "text-stone-200")
+            } else if (block.type === "thinking") {
+              appendLine(block.thinking, "text-stone-600 italic")
+            }
+          }
+        }
+        break
+
+      case "tool_use":
+        appendLine(`⚙ ${event.name}`, "text-amber-600")
+        if (event.input) {
+          const preview = JSON.stringify(event.input).slice(0, 200)
+          appendLine(`  ${preview}`, "text-stone-600 text-xs")
+        }
+        break
+
+      case "tool_result":
+        // Truncated tool results
+        const content = typeof event.content === "string"
+          ? event.content.slice(0, 300)
+          : JSON.stringify(event.content).slice(0, 300)
+        appendLine(`  → ${content}`, "text-stone-500 text-xs")
+        break
+
+      case "result":
+        appendLine(`✓ done (${event.duration_ms}ms)`, "text-emerald-600")
+        appendLine("", "")
+        break
+
+      case "error":
+        appendLine(`✗ ${event.error || event.message}`, "text-red-500")
+        break
+
+      default:
+        appendLine(JSON.stringify(event), "text-stone-500 text-xs")
+    }
+  }
+
+  function appendLine(text, classes) {
+    const el = document.createElement("div")
+    el.className = classes + " whitespace-pre-wrap break-words"
+    el.textContent = text
+    linesEl.appendChild(el)
+    anchorEl.scrollIntoView({ behavior: "smooth" })
+  }
+</script>

@@ -1,0 +1,57 @@
+<h1 class="text-amber-500 text-sm font-bold uppercase tracking-wider mb-6">containers</h1>
+
+<div class="space-y-3">
+  <% @containers.each do |c| %>
+    <div class="bg-stone-900 border border-stone-800 rounded-lg p-4">
+      <div class="flex items-center justify-between">
+        <div class="flex items-center gap-4">
+          <% dot = case c.state
+               when "alive" then "bg-emerald-500"
+               when "starting" then "bg-amber-500 animate-pulse"
+               when "freezing" then "bg-blue-500 animate-pulse"
+               else "bg-stone-600"
+             end %>
+          <div class="w-2 h-2 rounded-full <%= dot %>"></div>
+
+          <div>
+            <%= link_to c.instance_name, container_path(c), class: "text-stone-200 font-medium hover:text-amber-400 transition-colors" %>
+            <div class="text-stone-500 text-xs">
+              <%= c.state %> · <%= distance_of_time_in_words_to_now(c.created_at) %>
+              <% if c.container_id %>
+                · <span class="font-mono"><%= c.container_id[0..11] %></span>
+              <% end %>
+            </div>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-4">
+          <div class="text-right">
+            <div class="text-<%= c.context_color %>-400 text-sm font-mono"><%= c.context_percent %>%</div>
+            <div class="text-stone-600 text-xs">context</div>
+          </div>
+
+          <div class="flex gap-2">
+            <%= link_to "stream", stream_container_path(c), class: "text-xs px-2 py-1 rounded bg-stone-800 text-stone-400 hover:text-amber-400 hover:bg-stone-700" %>
+            <% if c.alive? %>
+              <%= button_to "freeze", freeze_container_path(c), method: :post, class: "text-xs px-2 py-1 rounded bg-stone-800 text-stone-400 hover:text-blue-400 hover:bg-stone-700", data: { turbo_confirm: "Freeze #{c.instance_name}?" } %>
+              <%= button_to "kill", kill_container_path(c), method: :post, class: "text-xs px-2 py-1 rounded bg-stone-800 text-stone-400 hover:text-red-400 hover:bg-stone-700", data: { turbo_confirm: "Kill #{c.instance_name}?" } %>
+            <% end %>
+          </div>
+        </div>
+      </div>
+
+      <%# Service pills %>
+      <div class="mt-2 flex gap-1.5 flex-wrap">
+        <% (c.provisioned_services || []).each do |svc| %>
+          <span class="text-xs px-2 py-0.5 rounded-full bg-stone-800 text-stone-500"><%= svc %></span>
+        <% end %>
+      </div>
+    </div>
+  <% end %>
+
+  <% if @containers.empty? %>
+    <div class="bg-stone-900 border border-stone-800 rounded-lg p-8 text-center text-stone-600">
+      No containers.
+    </div>
+  <% end %>
+</div>

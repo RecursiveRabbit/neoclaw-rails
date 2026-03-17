@@ -1,0 +1,101 @@
+<%= form_with(model: @config, url: @config.new_record? ? agent_configs_path : agent_config_path(@config), class: "space-y-6") do |f| %>
+
+  <% if @config.errors.any? %>
+    <div class="bg-red-900/20 border border-red-700/30 rounded p-3 text-red-400 text-sm">
+      <% @config.errors.full_messages.each do |msg| %>
+        <div><%= msg %></div>
+      <% end %>
+    </div>
+  <% end %>
+
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+    <%# Identity name %>
+    <div>
+      <label class="block text-stone-500 text-xs uppercase tracking-wider mb-1">identity</label>
+      <%= f.text_field :identity,
+        class: "w-full bg-stone-800 border border-stone-700 rounded px-3 py-2 text-stone-200 text-sm focus:border-amber-600 focus:outline-none",
+        disabled: @config.persisted?,
+        placeholder: "e.g. margaux" %>
+    </div>
+
+    <%# Repo %>
+    <div>
+      <label class="block text-stone-500 text-xs uppercase tracking-wider mb-1">repo</label>
+      <%= f.text_field :repo,
+        class: "w-full bg-stone-800 border border-stone-700 rounded px-3 py-2 text-stone-200 text-sm focus:border-amber-600 focus:outline-none",
+        placeholder: "e.g. margaux/workspace" %>
+    </div>
+
+    <%# Model %>
+    <div>
+      <label class="block text-stone-500 text-xs uppercase tracking-wider mb-1">model</label>
+      <%= f.select :model,
+        [["Opus 4.6", "claude-opus-4-6"], ["Sonnet 4.6", "claude-sonnet-4-6"], ["Haiku 4.5", "claude-haiku-4-5-20251001"]],
+        {},
+        class: "w-full bg-stone-800 border border-stone-700 rounded px-3 py-2 text-stone-200 text-sm focus:border-amber-600 focus:outline-none" %>
+    </div>
+
+    <%# Idle timeout %>
+    <div>
+      <label class="block text-stone-500 text-xs uppercase tracking-wider mb-1">idle timeout (seconds)</label>
+      <%= f.number_field :idle_timeout,
+        class: "w-full bg-stone-800 border border-stone-700 rounded px-3 py-2 text-stone-200 text-sm focus:border-amber-600 focus:outline-none",
+        min: 60, max: 3600, step: 60 %>
+    </div>
+  </div>
+
+  <%# Singleton %>
+  <div class="flex items-center gap-3">
+    <%= f.check_box :singleton, class: "w-4 h-4 rounded border-stone-600 bg-stone-800 text-amber-500 focus:ring-amber-600" %>
+    <label class="text-stone-400 text-sm">
+      Singleton — all channels route to one session
+    </label>
+  </div>
+
+  <%# Services checkboxes %>
+  <div>
+    <label class="block text-stone-500 text-xs uppercase tracking-wider mb-2">base services</label>
+    <div class="grid grid-cols-2 md:grid-cols-3 gap-2">
+      <% @services.each do |svc| %>
+        <label class="flex items-center gap-3 p-2 rounded hover:bg-stone-800 transition-colors cursor-pointer">
+          <%= check_box_tag "agent_config[base_services][]", svc.name,
+            @config.has_service?(svc.name),
+            class: "w-4 h-4 rounded border-stone-600 bg-stone-800 text-amber-500 focus:ring-amber-600" %>
+          <div>
+            <div class="text-stone-300 text-sm"><%= svc.name %></div>
+            <div class="text-stone-600 text-xs"><%= svc.provision_type %></div>
+          </div>
+        </label>
+      <% end %>
+    </div>
+    <%# Hidden field to ensure empty array is submitted when no boxes checked %>
+    <%= hidden_field_tag "agent_config[base_services][]", "" %>
+  </div>
+
+  <%# System prompt %>
+  <div>
+    <label class="block text-stone-500 text-xs uppercase tracking-wider mb-1">system prompt</label>
+    <%= f.text_area :system_prompt,
+      rows: 4,
+      class: "w-full bg-stone-800 border border-stone-700 rounded px-3 py-2 text-stone-200 text-sm focus:border-amber-600 focus:outline-none font-mono",
+      placeholder: "Additional system prompt for this identity..." %>
+  </div>
+
+  <%# Notes %>
+  <div>
+    <label class="block text-stone-500 text-xs uppercase tracking-wider mb-1">notes</label>
+    <%= f.text_area :notes,
+      rows: 3,
+      class: "w-full bg-stone-800 border border-stone-700 rounded px-3 py-2 text-stone-200 text-sm focus:border-amber-600 focus:outline-none",
+      placeholder: "Internal notes..." %>
+  </div>
+
+  <div class="flex gap-3">
+    <%= f.submit @config.new_record? ? "Create" : "Update",
+      class: "px-4 py-2 rounded bg-amber-900/30 border border-amber-700/30 text-amber-500 hover:bg-amber-900/50 transition-colors cursor-pointer text-sm" %>
+    <%= link_to "cancel", @config.new_record? ? agent_configs_path : agent_config_path(@config),
+      class: "px-4 py-2 rounded text-stone-500 hover:text-stone-300 transition-colors text-sm" %>
+  </div>
+
+<% end %>

@@ -1,0 +1,36 @@
+<h1 class="text-amber-500 text-sm font-bold uppercase tracking-wider mb-6">audit log</h1>
+
+<div class="bg-stone-900 border border-stone-800 rounded-lg divide-y divide-stone-800/50">
+  <% @logs.each do |log| %>
+    <div class="px-4 py-3 flex items-start justify-between text-sm">
+      <div class="flex items-start gap-4">
+        <% event_color = case log.event
+             when /SPAWN/ then "text-emerald-500"
+             when /FREEZE|SUNSET/ then "text-blue-500"
+             when /KILL|CRASH/ then "text-red-500"
+             when /CONFIG/ then "text-amber-500"
+             when /READY/ then "text-stone-400"
+             else "text-stone-500"
+           end %>
+        <span class="<%= event_color %> font-mono text-xs w-28 flex-shrink-0 pt-0.5"><%= log.event %></span>
+        <div>
+          <% if log.instance_name %>
+            <span class="text-stone-300"><%= log.instance_name %></span>
+          <% elsif log.identity %>
+            <span class="text-stone-300"><%= log.identity %></span>
+          <% end %>
+          <% if log.detail %>
+            <div class="text-stone-600 text-xs mt-0.5"><%= log.detail %></div>
+          <% end %>
+        </div>
+      </div>
+      <span class="text-stone-600 text-xs flex-shrink-0 ml-4">
+        <%= log.created_at.strftime("%b %d %H:%M:%S") %>
+      </span>
+    </div>
+  <% end %>
+
+  <% if @logs.empty? %>
+    <div class="p-8 text-center text-stone-600">No audit entries.</div>
+  <% end %>
+</div>

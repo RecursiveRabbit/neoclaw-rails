@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-stone-950">
+<head>
+  <title>NeoClaw Manager</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <%= csrf_meta_tags %>
+  <%= csp_meta_tag %>
+  <%= stylesheet_link_tag "tailwind", "inter-font", "data-turbo-track": "reload" %>
+  <%= stylesheet_link_tag "application", "data-turbo-track": "reload" %>
+  <%= javascript_importmap_tags %>
+</head>
+<body class="h-full text-stone-300 font-mono">
+
+  <nav class="bg-stone-900 border-b border-amber-900/30">
+    <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
+      <div class="flex items-center gap-6">
+        <%= link_to root_path, class: "text-amber-500 font-bold text-lg hover:text-amber-400" do %>
+          [neoclaw]
+        <% end %>
+        <%= link_to "configs", agent_configs_path, class: nav_link_class("agent_configs") %>
+        <%= link_to "containers", containers_path, class: nav_link_class("containers") %>
+        <%= link_to "audit", audit_logs_path, class: nav_link_class("audit_logs") %>
+      </div>
+      <div class="text-stone-500 text-sm">
+        manager
+      </div>
+    </div>
+  </nav>
+
+  <main class="max-w-7xl mx-auto px-4 py-6">
+    <% if notice %>
+      <div class="mb-4 px-4 py-2 bg-amber-900/20 border border-amber-700/30 rounded text-amber-400 text-sm">
+        <%= notice %>
+      </div>
+    <% end %>
+    <% if alert %>
+      <div class="mb-4 px-4 py-2 bg-red-900/20 border border-red-700/30 rounded text-red-400 text-sm">
+        <%= alert %>
+      </div>
+    <% end %>
+
+    <%= yield %>
+  </main>
+
+</body>
+</html>

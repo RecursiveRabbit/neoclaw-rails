@@ -1,0 +1,100 @@
+<div class="space-y-6">
+
+  <div class="flex items-center justify-between">
+    <h1 class="text-stone-200 text-xl font-medium"><%= @config.identity %></h1>
+    <div class="flex gap-2">
+      <%= link_to "edit", edit_agent_config_path(@config), class: "text-sm px-3 py-1.5 rounded bg-stone-800 text-stone-400 hover:text-amber-400 transition-colors" %>
+      <%= button_to "delete", agent_config_path(@config), method: :delete, class: "text-sm px-3 py-1.5 rounded bg-stone-800 text-stone-400 hover:text-red-400 transition-colors", data: { turbo_confirm: "Delete #{@config.identity}?" } %>
+    </div>
+  </div>
+
+  <%# --- Details --- %>
+  <div class="bg-stone-900 border border-stone-800 rounded-lg p-4 grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+    <div>
+      <div class="text-stone-500 text-xs uppercase tracking-wider mb-1">repo</div>
+      <div class="text-stone-300"><%= @config.repo || "—" %></div>
+    </div>
+    <div>
+      <div class="text-stone-500 text-xs uppercase tracking-wider mb-1">model</div>
+      <div class="text-stone-300"><%= @config.model %></div>
+    </div>
+    <div>
+      <div class="text-stone-500 text-xs uppercase tracking-wider mb-1">idle timeout</div>
+      <div class="text-stone-300"><%= @config.idle_timeout %>s</div>
+    </div>
+    <div>
+      <div class="text-stone-500 text-xs uppercase tracking-wider mb-1">singleton</div>
+      <div class="text-stone-300"><%= @config.singleton? ? "yes" : "no" %></div>
+    </div>
+  </div>
+
+  <%# --- Services (checkboxes) --- %>
+  <div class="bg-stone-900 border border-stone-800 rounded-lg p-4">
+    <h2 class="text-amber-500 text-xs font-bold uppercase tracking-wider mb-3">services</h2>
+    <div class="grid grid-cols-2 md:grid-cols-3 gap-2">
+      <% @services.each do |svc| %>
+        <% enabled = @config.has_service?(svc.name) %>
+        <%= button_to toggle_service_agent_config_path(@config, service: svc.name), method: :post, class: "flex items-center gap-3 p-2 rounded hover:bg-stone-800 transition-colors text-left" do %>
+          <div class="w-5 h-5 rounded border-2 flex items-center justify-center <%= enabled ? 'border-amber-500 bg-amber-500/20' : 'border-stone-600' %>">
+            <% if enabled %>
+              <svg class="w-3 h-3 text-amber-400" fill="currentColor" viewBox="0 0 20 20">
+                <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/>
+              </svg>
+            <% end %>
+          </div>
+          <div>
+            <div class="text-stone-300 text-sm font-medium"><%= svc.name %></div>
+            <div class="text-stone-600 text-xs">
+              <%= svc.provision_type %>
+              <% unless svc.has_own_auth? %>
+                · wg-only auth
+              <% end %>
+            </div>
+          </div>
+        <% end %>
+      <% end %>
+    </div>
+  </div>
+
+  <%# --- Channel overrides --- %>
+  <% if @config.channel_overrides.present? && @config.channel_overrides.any? %>
+    <div class="bg-stone-900 border border-stone-800 rounded-lg p-4">
+      <h2 class="text-amber-500 text-xs font-bold uppercase tracking-wider mb-3">channel overrides</h2>
+      <% @config.channel_overrides.each do |channel, services| %>
+        <div class="flex items-center gap-3 text-sm">
+          <span class="text-stone-400">#<%= channel %></span>
+          <span class="text-stone-600">+</span>
+          <% services.each do |svc| %>
+            <span class="text-xs px-2 py-0.5 rounded-full bg-stone-800 text-stone-400"><%= svc %></span>
+          <% end %>
+        </div>
+      <% end %>
+    </div>
+  <% end %>
+
+  <%# --- Running instances --- %>
+  <% if @running.any? %>
+    <div class="bg-stone-900 border border-stone-800 rounded-lg p-4">
+      <h2 class="text-amber-500 text-xs font-bold uppercase tracking-wider mb-3">running instances</h2>
+      <% @running.each do |c| %>
+        <div class="flex items-center justify-between py-2">
+          <div class="flex items-center gap-3">
+            <div class="w-2 h-2 rounded-full <%= c.alive? ? 'bg-emerald-500' : 'bg-amber-500 animate-pulse' %>"></div>
+            <span class="text-stone-300 text-sm"><%= c.instance_name %></span>
+            <span class="text-stone-500 text-xs"><%= c.context_percent %>% ctx</span>
+          </div>
+          <%= link_to "stream →", stream_container_path(c), class: "text-xs text-stone-500 hover:text-amber-400" %>
+        </div>
+      <% end %>
+    </div>
+  <% end %>
+
+  <%# --- Notes --- %>
+  <% if @config.notes.present? %>
+    <div class="bg-stone-900 border border-stone-800 rounded-lg p-4">
+      <h2 class="text-amber-500 text-xs font-bold uppercase tracking-wider mb-2">notes</h2>
+      <div class="text-stone-400 text-sm whitespace-pre-wrap"><%= @config.notes %></div>
+    </div>
+  <% end %>
+
+</div>

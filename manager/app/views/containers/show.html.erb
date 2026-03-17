@@ -1,0 +1,69 @@
+<div class="space-y-6">
+  <div class="flex items-center justify-between">
+    <div>
+      <h1 class="text-stone-200 text-xl font-medium"><%= @container.instance_name %></h1>
+      <div class="text-stone-500 text-sm">
+        <%= @container.identity %> in #<%= @container.channel %>
+      </div>
+    </div>
+    <div class="flex gap-2">
+      <%= link_to "stream →", stream_container_path(@container), class: "text-sm px-3 py-1.5 rounded bg-amber-900/30 border border-amber-700/30 text-amber-500 hover:bg-amber-900/50 transition-colors" %>
+      <% if @container.alive? %>
+        <%= button_to "freeze", freeze_container_path(@container), method: :post, class: "text-sm px-3 py-1.5 rounded bg-stone-800 text-stone-400 hover:text-blue-400", data: { turbo_confirm: "Freeze?" } %>
+        <%= button_to "kill", kill_container_path(@container), method: :post, class: "text-sm px-3 py-1.5 rounded bg-stone-800 text-stone-400 hover:text-red-400", data: { turbo_confirm: "Kill?" } %>
+      <% end %>
+    </div>
+  </div>
+
+  <div class="bg-stone-900 border border-stone-800 rounded-lg p-4 grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+    <div>
+      <div class="text-stone-500 text-xs uppercase tracking-wider mb-1">state</div>
+      <div class="flex items-center gap-2">
+        <% dot = case @container.state
+             when "alive" then "bg-emerald-500"
+             when "starting" then "bg-amber-500 animate-pulse"
+             when "freezing" then "bg-blue-500 animate-pulse"
+             else "bg-stone-600"
+           end %>
+        <div class="w-2 h-2 rounded-full <%= dot %>"></div>
+        <span class="text-stone-300"><%= @container.state %></span>
+      </div>
+    </div>
+    <div>
+      <div class="text-stone-500 text-xs uppercase tracking-wider mb-1">uptime</div>
+      <div class="text-stone-300"><%= distance_of_time_in_words_to_now(@container.created_at) %></div>
+    </div>
+    <div>
+      <div class="text-stone-500 text-xs uppercase tracking-wider mb-1">context</div>
+      <div class="text-<%= @container.context_color %>-400 font-mono"><%= @container.context_percent %>%</div>
+    </div>
+    <div>
+      <div class="text-stone-500 text-xs uppercase tracking-wider mb-1">last message</div>
+      <div class="text-stone-300">
+        <%= @container.last_message_at ? time_ago_in_words(@container.last_message_at) + " ago" : "—" %>
+      </div>
+    </div>
+    <div>
+      <div class="text-stone-500 text-xs uppercase tracking-wider mb-1">container id</div>
+      <div class="text-stone-300 font-mono text-xs"><%= @container.container_id || "—" %></div>
+    </div>
+    <div>
+      <div class="text-stone-500 text-xs uppercase tracking-wider mb-1">wg address</div>
+      <div class="text-stone-300 font-mono text-xs"><%= @container.wg_address || "—" %></div>
+    </div>
+    <div>
+      <div class="text-stone-500 text-xs uppercase tracking-wider mb-1">last health</div>
+      <div class="text-stone-300">
+        <%= @container.last_health_at ? time_ago_in_words(@container.last_health_at) + " ago" : "—" %>
+      </div>
+    </div>
+    <div>
+      <div class="text-stone-500 text-xs uppercase tracking-wider mb-1">services</div>
+      <div class="flex gap-1 flex-wrap">
+        <% (@container.provisioned_services || []).each do |svc| %>
+          <span class="text-xs px-1.5 py-0.5 rounded bg-stone-800 text-stone-400"><%= svc %></span>
+        <% end %>
+      </div>
+    </div>
+  </div>
+</div>
