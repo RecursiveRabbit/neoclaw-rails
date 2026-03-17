@@ -1,4 +1,5 @@
 class ApplicationController < ActionController::Base
-  include Navigation
-  allow_browser versions: :modern
+  # No global browser check — API and Relay controllers receive
+  # HTTP from infrastructure, not browsers. Admin UI controllers
+  # inherit from AdminController which adds the browser check.
 end

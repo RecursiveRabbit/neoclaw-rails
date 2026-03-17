@@ -62,6 +62,9 @@ class RelayController < ApplicationController
       identity: container.identity,
       detail: "Agent ready")
 
+    # Tell the Hub — it can flip the agent from resolving to alive
+    HubClient.callback(event: "ready", instance: container.instance_name)
+
     head :ok
   end
 

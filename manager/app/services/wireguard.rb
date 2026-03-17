@@ -11,7 +11,12 @@ class WireGuard
   class << self
     def generate_keypair
       private_key = `wg genkey`.strip
-      public_key = `echo #{private_key} | wg pubkey`.strip
+      # Pipe via stdin — keeps the private key out of /proc args
+      public_key = IO.popen("wg pubkey", "r+") { |io|
+        io.write(private_key)
+        io.close_write
+        io.read.strip
+      }
       { private: private_key, public: public_key }
     end
 

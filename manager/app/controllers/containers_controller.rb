@@ -1,6 +1,6 @@
 # Container views — live monitoring, freeze/kill actions, stream viewer.
 
-class ContainersController < ApplicationController
+class ContainersController < AdminController
   def index
     @containers = Container.order(state: :asc, created_at: :desc)
   end

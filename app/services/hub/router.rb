@@ -42,6 +42,11 @@ module Hub
           return unless agent  # resolve failed, error already reported
         end
 
+        # Agent is still booting — relay will queue once it's ready.
+        # The first message that triggered the spawn will be delivered
+        # once the Manager callbacks READY and we flip to alive.
+        return if agent.resolving?
+
         agent.deliver(sender: sender, content: content)
       end
 
@@ -69,12 +74,17 @@ module Hub
         )
 
         if result && result[:ip]
+          # Container may still be starting — store the IP but only
+          # mark alive if the Manager says it's ready now.
+          new_state = result[:starting] ? "resolving" : "alive"
           agent.update!(
             wg_address: result[:ip],
-            state: "alive",
+            state: new_state,
             last_message_at: Time.current
           )
-          Matrix.set_typing(identity.name, room.matrix_room_id, false)
+          if new_state == "alive"
+            Matrix.set_typing(identity.name, room.matrix_room_id, false)
+          end
           agent
         else
           agent.destroy!

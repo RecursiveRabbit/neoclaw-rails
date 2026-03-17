@@ -32,6 +32,10 @@ class Agent < ApplicationRecord
     state == "alive"
   end
 
+  def resolving?
+    state == "resolving"
+  end
+
   def relay_url
     "http://#{wg_address}:9300"
   end

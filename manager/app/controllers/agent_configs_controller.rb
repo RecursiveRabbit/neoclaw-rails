@@ -1,7 +1,7 @@
 # Agent configuration CRUD — the admin UI for identity settings.
 # Checkboxes for services, model selection, timeout sliders.
 
-class AgentConfigsController < ApplicationController
+class AgentConfigsController < AdminController
   before_action :set_config, only: [:show, :edit, :update, :destroy, :toggle_service]
 
   def index

@@ -10,6 +10,8 @@ class CallbacksController < ApplicationController
     Rails.logger.info "Manager callback: #{event_type} #{instance}"
 
     case event_type
+    when "ready"
+      handle_ready(instance, params)
     when "released"
       handle_released(instance, params)
     when "sunset_warning"
@@ -22,6 +24,15 @@ class CallbacksController < ApplicationController
   end
 
   private
+
+  def handle_ready(instance, _data)
+    agent = Agent.resolving.find_by(instance_name: instance)
+    return unless agent
+
+    agent.update!(state: "alive", last_message_at: Time.current)
+    Hub::Matrix.set_typing(agent.identity.name, agent.room.matrix_room_id, false)
+    Hub::Matrix.set_presence(agent.identity.name, "online")
+  end
 
   def handle_released(instance, data)
     agent = Agent.find_by(instance_name: instance)

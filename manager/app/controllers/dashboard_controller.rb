@@ -1,6 +1,6 @@
 # The main view — running containers, capacity, recent activity.
 
-class DashboardController < ApplicationController
+class DashboardController < AdminController
   def index
     @containers = Container.active.order(state: :asc, last_message_at: :desc)
     @alive_count = Container.alive.count

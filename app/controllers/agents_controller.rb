@@ -6,8 +6,6 @@
 # POST /diagnostic     — agent error/debug info
 
 class AgentsController < ApplicationController
-  skip_forgery_protection
-
   # POST /agent/message
   # Relay sends: { instance: "margaux-security", content: "Here's what I found..." }
   def message
