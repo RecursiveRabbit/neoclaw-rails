@@ -1,0 +1,63 @@
+<h1 class="text-2xl font-mono text-amber-400 mb-6">Dashboard</h1>
+
+<!-- Stats -->
+<div class="grid grid-cols-3 gap-4 mb-8">
+  <div class="bg-zinc-900 border border-zinc-800 rounded p-4">
+    <div class="text-3xl font-mono text-emerald-400"><%= @alive_count %></div>
+    <div class="text-zinc-500 text-sm">agents alive</div>
+  </div>
+  <div class="bg-zinc-900 border border-zinc-800 rounded p-4">
+    <div class="text-3xl font-mono text-amber-400"><%= @total_context %>%</div>
+    <div class="text-zinc-500 text-sm">avg context</div>
+  </div>
+  <div class="bg-zinc-900 border border-zinc-800 rounded p-4">
+    <div class="text-3xl font-mono text-zinc-400"><%= @agent_configs.count %></div>
+    <div class="text-zinc-500 text-sm">configured identities</div>
+  </div>
+</div>
+
+<!-- Running Containers -->
+<div class="mb-8">
+  <h2 class="text-lg font-mono text-zinc-300 mb-3">Running</h2>
+  <% if @containers.alive.any? %>
+    <div class="bg-zinc-900 border border-zinc-800 rounded divide-y divide-zinc-800">
+      <% @containers.alive.each do |c| %>
+        <div class="px-4 py-3 flex items-center justify-between">
+          <div>
+            <span class="font-mono text-zinc-200"><%= c.instance_name %></span>
+            <span class="text-zinc-600 text-sm ml-2"><%= c.identity %> in #<%= c.channel %></span>
+          </div>
+          <div class="flex items-center gap-4">
+            <!-- Context bar -->
+            <div class="w-32 bg-zinc-800 rounded-full h-2">
+              <% color = c.context_usage > 0.8 ? "bg-red-500" : c.context_usage > 0.5 ? "bg-amber-500" : "bg-emerald-500" %>
+              <div class="<%= color %> h-2 rounded-full" style="width: <%= c.context_percent %>%"></div>
+            </div>
+            <span class="text-zinc-500 text-xs font-mono w-12 text-right"><%= c.context_percent %>%</span>
+            <%= link_to "stream", stream_container_path(c), class: "text-amber-400 hover:text-amber-300 text-xs" %>
+          </div>
+        </div>
+      <% end %>
+    </div>
+  <% else %>
+    <div class="text-zinc-600 text-sm">No agents running.</div>
+  <% end %>
+</div>
+
+<!-- Recent Audit -->
+<div>
+  <h2 class="text-lg font-mono text-zinc-300 mb-3">Audit</h2>
+  <div class="bg-zinc-900 border border-zinc-800 rounded font-mono text-xs">
+    <% @recent_audit.each do |log| %>
+      <div class="px-4 py-1.5 border-b border-zinc-800/50 flex gap-3">
+        <span class="text-zinc-600 shrink-0"><%= log.created_at.strftime("%H:%M:%S") %></span>
+        <span class="text-amber-500 shrink-0 w-24"><%= log.event %></span>
+        <span class="text-zinc-400"><%= log.instance_name %></span>
+        <span class="text-zinc-600 truncate"><%= log.detail %></span>
+      </div>
+    <% end %>
+    <% if @recent_audit.empty? %>
+      <div class="px-4 py-2 text-zinc-600">No audit events.</div>
+    <% end %>
+  </div>
+</div>

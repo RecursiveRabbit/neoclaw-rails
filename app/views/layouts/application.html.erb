@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html class="h-full bg-zinc-950">
+  <head>
+    <title><%= content_for(:title) || "NeoClaw Manager" %></title>
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <%= csrf_meta_tags %>
+    <%= csp_meta_tag %>
+    <%= stylesheet_link_tag :app, "data-turbo-track": "reload" %>
+    <%= javascript_importmap_tags %>
+  </head>
+
+  <body class="h-full text-zinc-200">
+    <nav class="bg-zinc-900 border-b border-zinc-800 px-6 py-3">
+      <div class="flex items-center justify-between max-w-7xl mx-auto">
+        <div class="flex items-center gap-6">
+          <span class="text-amber-400 font-mono font-bold tracking-wide">neoclaw</span>
+          <%= link_to "Dashboard", root_path, class: "text-zinc-400 hover:text-zinc-200 text-sm" %>
+          <%= link_to "Agents", agent_configs_path, class: "text-zinc-400 hover:text-zinc-200 text-sm" %>
+          <%= link_to "Containers", containers_path, class: "text-zinc-400 hover:text-zinc-200 text-sm" %>
+          <%= link_to "Audit", audit_logs_path, class: "text-zinc-400 hover:text-zinc-200 text-sm" %>
+        </div>
+        <div class="text-zinc-600 text-xs font-mono">
+          manager
+        </div>
+      </div>
+    </nav>
+
+    <main class="max-w-7xl mx-auto px-6 py-6">
+      <% if notice %>
+        <div class="bg-emerald-900/50 border border-emerald-700 text-emerald-300 px-4 py-2 rounded mb-4 text-sm">
+          <%= notice %>
+        </div>
+      <% end %>
+
+      <% if alert %>
+        <div class="bg-red-900/50 border border-red-700 text-red-300 px-4 py-2 rounded mb-4 text-sm">
+          <%= alert %>
+        </div>
+      <% end %>
+
+      <%= yield %>
+    </main>
+  </body>
+</html>

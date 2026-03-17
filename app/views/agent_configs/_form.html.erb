@@ -1,0 +1,77 @@
+<%= form_with(model: @config, class: "space-y-6") do |f| %>
+  <% if @config.errors.any? %>
+    <div class="bg-red-900/50 border border-red-700 text-red-300 px-4 py-2 rounded text-sm">
+      <% @config.errors.full_messages.each do |msg| %>
+        <div><%= msg %></div>
+      <% end %>
+    </div>
+  <% end %>
+
+  <!-- Identity name -->
+  <div>
+    <label class="block text-zinc-400 text-sm mb-1">Identity</label>
+    <%= f.text_field :identity, class: "bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-zinc-200 font-mono w-64 focus:border-amber-500 focus:outline-none", placeholder: "silas" %>
+  </div>
+
+  <!-- Repo -->
+  <div>
+    <label class="block text-zinc-400 text-sm mb-1">Forgejo repo</label>
+    <%= f.text_field :repo, class: "bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-zinc-200 font-mono w-96 focus:border-amber-500 focus:outline-none", placeholder: "agents/silas" %>
+  </div>
+
+  <!-- Model -->
+  <div>
+    <label class="block text-zinc-400 text-sm mb-1">Model</label>
+    <%= f.select :model, [
+      ["Claude Opus 4.6", "claude-opus-4-6"],
+      ["Claude Sonnet 4.6", "claude-sonnet-4-6"],
+      ["Claude Haiku 4.5", "claude-haiku-4-5"],
+    ], {}, class: "bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-zinc-200 focus:border-amber-500 focus:outline-none" %>
+  </div>
+
+  <!-- Singleton -->
+  <div class="flex items-center gap-2">
+    <%= f.check_box :singleton, class: "rounded bg-zinc-800 border-zinc-600 text-amber-500 focus:ring-amber-500" %>
+    <label class="text-zinc-400 text-sm">Singleton (all channels route to same session)</label>
+  </div>
+
+  <!-- Services checkboxes -->
+  <div>
+    <label class="block text-zinc-400 text-sm mb-2">Services</label>
+    <div class="grid grid-cols-3 gap-3">
+      <% @services.each do |service| %>
+        <label class="flex items-center gap-2 bg-zinc-800/50 border border-zinc-800 rounded px-3 py-2 cursor-pointer hover:border-zinc-700">
+          <%= check_box_tag "agent_config[base_services][]", service.name,
+              (@config.base_services || []).include?(service.name),
+              class: "rounded bg-zinc-800 border-zinc-600 text-amber-500 focus:ring-amber-500" %>
+          <div>
+            <div class="text-zinc-200 text-sm"><%= service.name %></div>
+            <% if service.wg_interface %>
+              <div class="text-zinc-600 text-xs font-mono"><%= service.wg_interface %></div>
+            <% end %>
+            <% if service.has_own_auth %>
+              <div class="text-emerald-600 text-xs">has own auth</div>
+            <% end %>
+          </div>
+        </label>
+      <% end %>
+    </div>
+  </div>
+
+  <!-- Idle timeout -->
+  <div>
+    <label class="block text-zinc-400 text-sm mb-1">Idle timeout (seconds)</label>
+    <%= f.number_field :idle_timeout, class: "bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-zinc-200 font-mono w-32 focus:border-amber-500 focus:outline-none" %>
+  </div>
+
+  <!-- Notes -->
+  <div>
+    <label class="block text-zinc-400 text-sm mb-1">Notes</label>
+    <%= f.text_area :notes, rows: 3, class: "bg-zinc-800 border border-zinc-700 rounded px-3 py-2 text-zinc-200 w-full focus:border-amber-500 focus:outline-none" %>
+  </div>
+
+  <div class="flex gap-3">
+    <%= f.submit class: "bg-amber-600 hover:bg-amber-500 text-zinc-950 px-4 py-2 rounded font-medium cursor-pointer" %>
+    <%= link_to "Cancel", agent_configs_path, class: "text-zinc-500 hover:text-zinc-400 px-4 py-2" %>
+  </div>
+<% end %>
