@@ -117,12 +117,16 @@ class Spawner
     end
 
     def allocate_ip
-      used = Container.where.not(state: "dead").pluck(:wg_address).compact
-      (1..254).each do |octet|
-        ip = "10.0.1.#{octet}"
-        return ip unless used.include?(ip)
+      # Agent pool: 10.0.1.1 through 10.0.255.254 (~65k addresses)
+      # Scan subnets sequentially, fill each /24 before moving to the next
+      used = Container.where.not(state: "dead").pluck(:wg_address).compact.to_set
+      (1..255).each do |third|
+        (1..254).each do |fourth|
+          ip = "10.0.#{third}.#{fourth}"
+          return ip unless used.include?(ip)
+        end
       end
-      raise "IP pool exhausted"
+      raise "IP pool exhausted (65k addresses in use)"
     end
 
     def generate_ssh_keypair
