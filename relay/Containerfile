@@ -2,7 +2,7 @@
 # Every agent — Silas, Margaux, Kael, everyone — uses this same image.
 # Identity comes from spawn.json, not the image.
 
-FROM ruby:3.3-slim
+FROM docker.io/library/ruby:3.3-slim
 
 RUN apt-get update && apt-get install -y \
     wireguard-tools \
@@ -10,10 +10,14 @@ RUN apt-get update && apt-get install -y \
     git \
     curl \
     build-essential \
+    nodejs \
+    npm \
+    iproute2 \
+    iputils-ping \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Claude Code
-RUN curl -fsSL https://claude.ai/install.sh | sh
+RUN npm install -g @anthropic-ai/claude-code
 
 WORKDIR /app
 
@@ -23,8 +27,9 @@ RUN bundle install
 COPY relay.rb .
 RUN chmod +x relay.rb
 
-# The workspace where the agent clones their repo
-RUN mkdir -p /workspace
+# Create agent user — Claude Code refuses to run as root
+RUN useradd -m -s /bin/bash agent
+RUN mkdir -p /workspace && chown agent:agent /workspace
 
 # spawn.json is mounted at /run/secrets/spawn.json by the Manager
 # WireGuard is configured by the relay on boot

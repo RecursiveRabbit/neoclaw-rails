@@ -1,0 +1,12 @@
+id: neoclaw
+url: "http://172.17.0.1:3100"
+as_token: "f6f2b7713fa76c0d9b8785770276a59181e55c159304bff93fcf0a54bd75f356"
+hs_token: "091c5f175e45ee0b3196cdce5ff869be1d1cf78de0470f80298009a3c5ec9d91"
+sender_localpart: "neoclaw"
+rate_limited: false
+namespaces:
+  users:
+    - exclusive: false
+      regex: "@.*:matrix\\.home"
+  rooms: []
+  aliases: []

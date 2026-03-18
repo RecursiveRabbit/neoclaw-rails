@@ -1,8 +1,12 @@
 #!/usr/bin/env ruby
 # The Relay — lives inside every agent container.
 #
-# Reads spawn.json, configures WireGuard, starts Claude Code,
+# Configures WireGuard, prepares git credentials, runs Claude Code,
 # pipes messages, reports health, handles freeze/sunset.
+#
+# Claude Code is invoked per-message, not as a long-running process.
+# Each message is: claude -p "message" --continue --output-format stream-json
+# The first invocation (boot) has no --continue. Subsequent messages resume.
 #
 # This is the entire agent-side runtime. One file. No framework.
 
@@ -12,6 +16,7 @@ require "json"
 require "open3"
 require "fileutils"
 require "securerandom"
+require "shellwords"
 
 WORKSPACE   = "/workspace"
 SPAWN_FILE  = "/run/secrets/spawn.json"
@@ -19,8 +24,6 @@ RELAY_PORT  = 9300
 HEALTH_INTERVAL = 30
 
 class Relay
-  attr_reader :spawn, :claude_process, :instance_name, :identity
-
   def initialize
     @spawn = JSON.parse(File.read(SPAWN_FILE), symbolize_names: true)
     @instance_name = @spawn[:instance]
@@ -29,16 +32,18 @@ class Relay
     @model = @spawn[:model] || "claude-opus-4-6"
     @hub_ip = detect_hub_ip
     @manager_ip = detect_manager_ip
-    @message_queue = Queue.new
     @running = true
+    @booted = false
+    @processing = false
     @context_usage = 0.0
     @last_message_at = Time.now
+    @mutex = Mutex.new
   end
 
   def run
     configure_wireguard
-    clone_repo
-    start_claude_code
+    prepare_agent
+    boot_claude_code
     signal_ready
     start_health_thread
     start_server  # blocks
@@ -80,49 +85,95 @@ class Relay
     conf
   end
 
-  def clone_repo
-    log "Cloning repo..."
+  def prepare_agent
+    # Set up git, SSH, Claude credentials, and permissions for the agent user.
+    # The relay runs as root for WG, but Claude Code runs as 'agent'.
+    log "Preparing agent environment..."
     git_conf = @spawn[:git]
+    agent_home = "/home/agent"
+    claude_dir = "#{agent_home}/.claude"
+    FileUtils.mkdir_p(claude_dir)
 
-    # Write SSH key
-    ssh_key_path = "/tmp/agent_ssh_key"
-    File.write(ssh_key_path, git_conf[:ssh_key])
-    File.chmod(0600, ssh_key_path)
+    # --- Claude credentials ---
+    # Copied from the host's credentials (mounted as secret or env)
+    if File.exist?("/run/secrets/claude-credentials")
+      FileUtils.cp("/run/secrets/claude-credentials", "#{claude_dir}/.credentials.json")
+    elsif ENV["CLAUDE_CREDENTIALS"]
+      File.write("#{claude_dir}/.credentials.json", ENV["CLAUDE_CREDENTIALS"])
+    end
+    File.chmod(0600, "#{claude_dir}/.credentials.json") if File.exist?("#{claude_dir}/.credentials.json")
 
-    # Configure SSH to use the key
-    ssh_config = "Host *\n  IdentityFile #{ssh_key_path}\n  StrictHostKeyChecking no\n"
-    FileUtils.mkdir_p("#{Dir.home}/.ssh")
-    File.write("#{Dir.home}/.ssh/config", ssh_config)
+    # --- Claude settings: auto-accept all permissions ---
+    File.write("#{claude_dir}/settings.json", JSON.pretty_generate({
+      permissions: {
+        allow: [
+          "Bash(*)", "Read(*)", "Write(*)", "Edit(*)",
+          "Glob(*)", "Grep(*)", "WebFetch(*)", "WebSearch(*)"
+        ],
+        deny: []
+      }
+    }))
 
-    # Clone
-    forge_url = git_conf[:forge_url] || "ssh://git@#{@spawn[:network][:peers]&.first&.dig(:allowed_ips)&.split('/')&.first}"
-    repo_url = "git@#{URI.parse(forge_url).host}:#{git_conf[:repo] || "#{@identity}/workspace"}.git"
+    # --- Git identity ---
+    system("su", "-", "agent", "-c", "git config --global user.name '#{@identity}'")
+    system("su", "-", "agent", "-c", "git config --global user.email '#{@identity}@neoclaw.local'")
 
-    if Dir.exist?(WORKSPACE)
-      system("git", "-C", WORKSPACE, "pull", "--ff-only") or
-        log("Pull failed — starting fresh")
+    # --- SSH key for git push/pull ---
+    if git_conf[:ssh_key] && !git_conf[:ssh_key].empty?
+      ssh_dir = "#{agent_home}/.ssh"
+      FileUtils.mkdir_p(ssh_dir)
+      File.write("#{ssh_dir}/id_ed25519", git_conf[:ssh_key])
+      File.chmod(0600, "#{ssh_dir}/id_ed25519")
+      File.write("#{ssh_dir}/config", "Host *\n  IdentityFile #{ssh_dir}/id_ed25519\n  StrictHostKeyChecking no\n")
+      system("chown", "-R", "agent:agent", ssh_dir)
+      log "SSH key installed"
     end
 
-    unless Dir.exist?("#{WORKSPACE}/.git")
-      FileUtils.rm_rf(WORKSPACE)
-      system("git", "clone", repo_url, WORKSPACE) or raise "Clone failed"
-    end
+    # Own everything
+    system("chown", "-R", "agent:agent", claude_dir)
+    system("chown", "-R", "agent:agent", agent_home)
 
-    log "Repo ready at #{WORKSPACE}"
+    log "Agent environment ready"
   end
 
-  def start_claude_code
-    log "Starting Claude Code..."
+  def boot_claude_code
+    # The boot prompt. The agent wakes up in an empty room.
+    # Cloning is the first act of every life.
+    git_conf = @spawn[:git]
+    repo = git_conf[:repo] || "#{@identity}/workspace"
+    forge_url = git_conf[:forge_url] || "http://10.0.0.3:3000"
+    clone_url = "#{forge_url}/#{repo}.git"
 
-    # Build the system prompt that tells the agent who they are
     boot_prompt = [
       "You have just been instantiated as #{@identity} in channel ##{@channel}.",
-      "Your workspace is #{WORKSPACE}.",
-      "Read #{WORKSPACE}/identity.json to learn who you are.",
+      "Your workspace is empty. Your first act is to clone your repo:",
+      "  git clone #{clone_url} #{WORKSPACE}",
+      "Then read #{WORKSPACE}/identity.json to learn who you are.",
       "Read #{WORKSPACE}/baton.json to pick up where you left off.",
       "Read #{WORKSPACE}/memory/ for your accumulated memories.",
-      "Orient yourself, then signal ready.",
-    ].join(" ")
+      "Orient yourself. Push your work before you go.",
+    ].join("\n")
+
+    log "Booting agent..."
+    invoke_claude(boot_prompt, continue: false)
+    @booted = true
+    log "Agent booted"
+  end
+
+  def signal_ready
+    post_to_manager("/containers/#{@instance_name}/ready", {})
+    log "Signaled READY to Manager"
+  end
+
+  # ==================================================================
+  # Claude Code invocation
+  # ==================================================================
+
+  # Run claude -p with a prompt. Streams output, collects response.
+  # If continue: true, resumes the previous conversation.
+  def invoke_claude(prompt, continue: true)
+    @processing = true
+    @last_message_at = Time.now
 
     cmd = [
       "claude",
@@ -130,109 +181,81 @@ class Relay
       "--output-format", "stream-json",
       "--verbose",
       "--dangerously-skip-permissions",
+      "-p", prompt,
     ]
+    cmd << "--continue" if continue
 
-    @claude_stdin, @claude_stdout, @claude_stderr, @claude_process = Open3.popen3(
-      { "ANTHROPIC_MODEL" => @model },
-      *cmd,
-      chdir: WORKSPACE
-    )
+    log "Invoking: #{continue ? '--continue' : 'fresh'} (#{prompt.length} chars)"
 
-    # Send the boot prompt
-    send_to_claude(boot_prompt)
+    response_text = []
 
-    # Start the output reader thread
-    start_output_reader
-    start_stderr_reader
+    # Run as agent user (uid 1000) — relay is root for WG,
+    # but Claude Code must not run as root.
+    # Auth comes from ~/.claude/.credentials.json (set up in prepare_agent).
+    env = {
+      "HOME" => "/home/agent",
+      "USER" => "agent",
+      "PATH" => ENV["PATH"],
+    }
 
-    log "Claude Code started (PID #{@claude_process.pid})"
-  end
+    Open3.popen3(env, *cmd, chdir: WORKSPACE, uid: 1000, gid: 1000, unsetenv_others: true) do |stdin, stdout, stderr, wait_thread|
+      stdin.close
 
-  def signal_ready
-    # The agent has booted — tell the Manager
-    post_to_manager("/containers/#{@instance_name}/ready", {})
-    log "Signaled READY to Manager"
-  end
+      stderr_thread = Thread.new do
+        stderr.each_line { |line| log "claude: #{line.strip}" }
+      rescue IOError
+        # expected when process exits
+      end
 
-  # ==================================================================
-  # Claude Code I/O
-  # ==================================================================
-
-  def send_to_claude(text)
-    return unless @claude_stdin && !@claude_stdin.closed?
-    @claude_stdin.puts(text)
-    @claude_stdin.flush
-    @last_message_at = Time.now
-  rescue IOError => e
-    log "Claude stdin error: #{e.message}"
-  end
-
-  def start_output_reader
-    Thread.new do
-      @claude_stdout.each_line do |line|
+      stdout.each_line do |line|
         line = line.strip
         next if line.empty?
 
-        # Forward to Manager for streaming UI
+        # Forward raw stream-json to Manager for live UI
         post_to_manager("/containers/#{@instance_name}/output", line)
 
-        # Parse for responses to send back to Hub
         begin
           event = JSON.parse(line, symbolize_names: true)
-          handle_claude_event(event)
+
+          case event[:type]
+          when "assistant"
+            content_blocks = event.dig(:message, :content) || []
+            text_parts = content_blocks
+              .select { |b| b[:type] == "text" }
+              .map { |b| b[:text] }
+            response_text.concat(text_parts)
+
+            # Track context usage
+            if event.dig(:message, :usage)
+              input_t = event.dig(:message, :usage, :input_tokens) || 0
+              output_t = event.dig(:message, :usage, :output_tokens) || 0
+              @context_usage = (input_t + output_t).to_f / 200_000
+            end
+
+          when "result"
+            # Turn complete
+            if event[:usage]
+              input_t = event.dig(:usage, :input_tokens) || 0
+              output_t = event.dig(:usage, :output_tokens) || 0
+              @context_usage = (input_t + output_t).to_f / 200_000
+            end
+          end
+
         rescue JSON::ParserError
-          # Not JSON — ignore
+          # Not JSON — skip
         end
       rescue IOError
         break
       end
-      log "Claude stdout closed"
-      @running = false
+
+      stderr_thread.join(5)
+      wait_thread.join
     end
-  end
 
-  def start_stderr_reader
-    Thread.new do
-      @claude_stderr.each_line do |line|
-        log "Claude stderr: #{line.strip}"
-      rescue IOError
-        break
-      end
-    end
-  end
-
-  def handle_claude_event(event)
-    case event[:type]
-    when "assistant"
-      # Extract text content and send to Hub
-      content_blocks = event.dig(:message, :content) || []
-      text_parts = content_blocks
-        .select { |b| b[:type] == "text" }
-        .map { |b| b[:text] }
-
-      unless text_parts.empty?
-        full_text = text_parts.join("\n")
-        post_to_hub("/agent/message", {
-          instance: @instance_name,
-          content: full_text
-        })
-      end
-
-      # Track context usage from the usage block
-      if event.dig(:message, :usage)
-        input = event.dig(:message, :usage, :input_tokens) || 0
-        output = event.dig(:message, :usage, :output_tokens) || 0
-        # Rough estimate: assume 200k context window
-        @context_usage = (input + output).to_f / 200_000
-      end
-
-    when "result"
-      # Conversation turn complete
-      post_to_hub("/agent/event", {
-        instance: @instance_name,
-        event: "done_typing"
-      })
-    end
+    @processing = false
+    full_response = response_text.join("\n")
+    log "Response: #{full_response.length} chars"
+    full_response
   end
 
   # ==================================================================
@@ -259,9 +282,24 @@ class Relay
           event: "typing"
         })
 
-        # Feed to Claude Code
+        # Invoke Claude Code with --continue (resumes conversation)
         prompt = "@#{sender}: #{content}"
-        send_to_claude(prompt)
+        Thread.new do
+          response = @mutex.synchronize { invoke_claude(prompt) }
+
+          # Send response back to Hub
+          unless response.empty?
+            post_to_hub("/agent/message", {
+              instance: @instance_name,
+              content: response
+            })
+          end
+
+          post_to_hub("/agent/event", {
+            instance: @instance_name,
+            event: "done_typing"
+          })
+        end
 
         res.status = 200
         res.body = '{"ok":true}'
@@ -289,7 +327,8 @@ class Relay
         instance: @instance_name,
         last_message_at: @last_message_at.iso8601,
         context_usage: @context_usage,
-        claude_code_alive: @claude_process&.alive? || false
+        processing: @processing,
+        booted: @booted
       })
     end
 
@@ -316,20 +355,8 @@ class Relay
   def handle_freeze(message)
     log "Handling freeze/sunset..."
 
-    # Tell Claude Code to wrap up
-    send_to_claude(message)
-
-    # Wait for Claude Code to finish (up to 60 seconds)
-    deadline = Time.now + 60
-    while @claude_process&.alive? && Time.now < deadline
-      sleep 2
-    end
-
-    # If Claude Code is still running, send a harder nudge
-    if @claude_process&.alive?
-      send_to_claude("/exit")
-      sleep 5
-    end
+    # Tell Claude Code to wrap up (this is a --continue invocation)
+    @mutex.synchronize { invoke_claude(message) }
 
     # Prune and push the session transcript
     prune_and_push_session
@@ -343,7 +370,6 @@ class Relay
     session_dir = "#{WORKSPACE}/.claude"
     return unless Dir.exist?(session_dir)
 
-    # Find the most recent session file
     sessions = Dir.glob("#{session_dir}/*.json").sort_by { |f| File.mtime(f) }
     return if sessions.empty?
 
@@ -393,13 +419,15 @@ class Relay
   def start_health_thread
     Thread.new do
       while @running
-        sleep HEALTH_INTERVAL
-        post_to_manager("/containers/#{@instance_name}/health", {
-          context_usage: @context_usage,
-          last_message_at: @last_message_at.iso8601
-        })
-      rescue => e
-        log "Health report failed: #{e.message}"
+        begin
+          sleep HEALTH_INTERVAL
+          post_to_manager("/containers/#{@instance_name}/health", {
+            context_usage: @context_usage,
+            last_message_at: @last_message_at.iso8601
+          })
+        rescue => e
+          log "Health report failed: #{e.message}"
+        end
       end
     end
   end
@@ -409,7 +437,7 @@ class Relay
   # ==================================================================
 
   def post_to_hub(path, body)
-    url = "http://#{@hub_ip}:3000#{path}"
+    url = "http://#{@hub_ip}:3100#{path}"
     HTTPX.post(url, json: body)
   rescue => e
     log "Hub POST #{path} failed: #{e.message}"
@@ -427,7 +455,6 @@ class Relay
   end
 
   def detect_hub_ip
-    # Hub is always at 10.0.0.1 per the network spec
     @spawn.dig(:network, :peers)&.find { |p|
       p[:allowed_ips]&.start_with?("10.0.0.1")
     }&.dig(:allowed_ips)&.split("/")&.first || "10.0.0.1"
