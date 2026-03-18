@@ -1,5 +1,4 @@
 source "https://rubygems.org"
 
 gem "webrick"     # HTTP server for receiving messages
-gem "httpx"       # HTTP client for Hub/Manager callbacks
-gem "json"        # spawn.json parsing
+# All other dependencies are Ruby stdlib (net/http, json, open3, fileutils)

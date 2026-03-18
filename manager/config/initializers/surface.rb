@@ -35,6 +35,23 @@ module Surface
       ENV.fetch("SPAWN_DIR", "/spawn")
     end
 
+    # Host-side spawn directory — for podman --remote volume mounts.
+    # The Manager writes to spawn_dir (container path), but podman --remote
+    # runs on the host, so volume mounts need the host path.
+    def host_spawn_dir
+      ENV.fetch("HOST_SPAWN_DIR", "/var/lib/neoclaw/spawn")
+    end
+
+    # Claude credentials file on the host — mounted into every agent container
+    def host_claude_credentials
+      ENV.fetch("HOST_CLAUDE_CREDENTIALS", "/var/lib/neoclaw/secrets/claude-credentials.json")
+    end
+
+    # Podman network for agent containers
+    def agent_network
+      ENV.fetch("AGENT_NETWORK", "podman")
+    end
+
     # Agent container image name
     def agent_image
       ENV.fetch("AGENT_IMAGE", "localhost/neoclaw-agent:latest")

@@ -6,13 +6,18 @@
 class Podman
   class << self
     def run(instance_name:, spawn_path:)
+      # spawn_path is the Manager-internal path (e.g. /spawn/silas-test.json).
+      # podman --remote executes on the HOST, so we translate to the host path.
+      host_spawn_path = spawn_path.sub(Surface.spawn_dir, Surface.host_spawn_dir)
+
       args = [
         "podman", "--remote", "--url", "unix://#{Surface.podman_socket}",
         "run", "-d",
         "--name", instance_name,
         "--hostname", instance_name,
-        "--network", "neoclaw-agents",
-        "-v", "#{spawn_path}:/run/secrets/spawn.json:ro",
+        "--network", Surface.agent_network,
+        "-v", "#{host_spawn_path}:/run/secrets/spawn.json:ro",
+        "-v", "#{Surface.host_claude_credentials}:/run/secrets/claude-credentials:ro",
         "--memory", "2g",
         "--cpus", "2",
         "--cap-add", "NET_ADMIN",

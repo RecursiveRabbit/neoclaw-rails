@@ -1,6 +1,10 @@
 # The stock agent container image.
 # Every agent — Silas, Margaux, Kael, everyone — uses this same image.
 # Identity comes from spawn.json, not the image.
+#
+# Boot sequence:
+#   entrypoint.sh (root) → WireGuard, credentials, SSH keys
+#   exec gosu agent ruby relay.rb → HTTP server + Claude Code
 
 FROM docker.io/library/ruby:3.3-slim
 
@@ -14,10 +18,16 @@ RUN apt-get update && apt-get install -y \
     npm \
     iproute2 \
     iputils-ping \
+    gosu \
+    tini \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Claude Code
 RUN npm install -g @anthropic-ai/claude-code
+
+# Create agent user — Claude Code refuses to run as root
+RUN useradd -m -s /bin/bash agent
+RUN mkdir -p /workspace && chown agent:agent /workspace
 
 WORKDIR /app
 
@@ -25,15 +35,13 @@ COPY Gemfile Gemfile.lock* ./
 RUN bundle install
 
 COPY relay.rb .
-RUN chmod +x relay.rb
-
-# Create agent user — Claude Code refuses to run as root
-RUN useradd -m -s /bin/bash agent
-RUN mkdir -p /workspace && chown agent:agent /workspace
+COPY entrypoint.sh .
+RUN chmod +x relay.rb entrypoint.sh
 
 # spawn.json is mounted at /run/secrets/spawn.json by the Manager
-# WireGuard is configured by the relay on boot
+# claude-credentials is mounted at /run/secrets/claude-credentials
 
 EXPOSE 9300
 
-CMD ["ruby", "relay.rb"]
+# tini reaps zombie processes from Claude Code's tool calls
+ENTRYPOINT ["tini", "--", "/app/entrypoint.sh"]

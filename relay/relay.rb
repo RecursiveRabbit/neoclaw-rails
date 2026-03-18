@@ -1,22 +1,25 @@
 #!/usr/bin/env ruby
 # The Relay — lives inside every agent container.
 #
-# Configures WireGuard, prepares git credentials, runs Claude Code,
-# pipes messages, reports health, handles freeze/sunset.
+# Runs as the agent user (entrypoint.sh handles root setup: WireGuard,
+# credentials, SSH keys). This process does four things:
 #
-# Claude Code is invoked per-message, not as a long-running process.
-# Each message is: claude -p "message" --continue --output-format stream-json
+# 1. Receives messages from the Hub and pipes them to Claude Code
+# 2. Sends Claude Code responses back to the Hub
+# 3. Reports health to the Manager every 30 seconds
+# 4. Handles freeze/sunset signals from the Manager
+#
+# Claude Code is invoked per-message with --continue.
 # The first invocation (boot) has no --continue. Subsequent messages resume.
 #
 # This is the entire agent-side runtime. One file. No framework.
 
 require "webrick"
-require "httpx"
 require "json"
 require "open3"
 require "fileutils"
-require "securerandom"
-require "shellwords"
+require "net/http"
+require "uri"
 
 WORKSPACE   = "/workspace"
 SPAWN_FILE  = "/run/secrets/spawn.json"
@@ -34,6 +37,7 @@ class Relay
     @manager_ip = detect_manager_ip
     @running = true
     @booted = false
+    @booting = false
     @processing = false
     @context_usage = 0.0
     @last_message_at = Time.now
@@ -41,11 +45,8 @@ class Relay
   end
 
   def run
-    configure_wireguard
-    prepare_agent
-    boot_claude_code
-    signal_ready
     start_health_thread
+    boot_in_background
     start_server  # blocks
   end
 
@@ -55,91 +56,22 @@ class Relay
   # Boot sequence
   # ==================================================================
 
-  def configure_wireguard
-    log "Configuring WireGuard..."
-    wg_conf = build_wg_config
-    File.write("/etc/wireguard/wg0.conf", wg_conf)
-    system("wg-quick", "up", "wg0") or raise "WireGuard failed to start"
-    log "WireGuard up. Address: #{@spawn[:network][:wg_address]}"
-  end
-
-  def build_wg_config
-    net = @spawn[:network]
-    conf = <<~WG
-      [Interface]
-      PrivateKey = #{net[:wg_private_key]}
-      Address = #{net[:wg_address]}/32
-    WG
-
-    (net[:peers] || []).each do |peer|
-      conf += <<~PEER
-
-        [Peer]
-        PublicKey = #{peer[:public_key]}
-        Endpoint = #{peer[:endpoint]}
-        AllowedIPs = #{peer[:allowed_ips]}
-        PersistentKeepalive = 25
-      PEER
+  def boot_in_background
+    @booting = true
+    Thread.new do
+      begin
+        boot_claude_code
+      rescue => e
+        log "Boot failed: #{e.message}"
+        log e.backtrace.first(5).join("\n")
+      ensure
+        @booting = false
+      end
     end
-
-    conf
-  end
-
-  def prepare_agent
-    # Set up git, SSH, Claude credentials, and permissions for the agent user.
-    # The relay runs as root for WG, but Claude Code runs as 'agent'.
-    log "Preparing agent environment..."
-    git_conf = @spawn[:git]
-    agent_home = "/home/agent"
-    claude_dir = "#{agent_home}/.claude"
-    FileUtils.mkdir_p(claude_dir)
-
-    # --- Claude credentials ---
-    # Copied from the host's credentials (mounted as secret or env)
-    if File.exist?("/run/secrets/claude-credentials")
-      FileUtils.cp("/run/secrets/claude-credentials", "#{claude_dir}/.credentials.json")
-    elsif ENV["CLAUDE_CREDENTIALS"]
-      File.write("#{claude_dir}/.credentials.json", ENV["CLAUDE_CREDENTIALS"])
-    end
-    File.chmod(0600, "#{claude_dir}/.credentials.json") if File.exist?("#{claude_dir}/.credentials.json")
-
-    # --- Claude settings: auto-accept all permissions ---
-    File.write("#{claude_dir}/settings.json", JSON.pretty_generate({
-      permissions: {
-        allow: [
-          "Bash(*)", "Read(*)", "Write(*)", "Edit(*)",
-          "Glob(*)", "Grep(*)", "WebFetch(*)", "WebSearch(*)"
-        ],
-        deny: []
-      }
-    }))
-
-    # --- Git identity ---
-    system("su", "-", "agent", "-c", "git config --global user.name '#{@identity}'")
-    system("su", "-", "agent", "-c", "git config --global user.email '#{@identity}@neoclaw.local'")
-
-    # --- SSH key for git push/pull ---
-    if git_conf[:ssh_key] && !git_conf[:ssh_key].empty?
-      ssh_dir = "#{agent_home}/.ssh"
-      FileUtils.mkdir_p(ssh_dir)
-      File.write("#{ssh_dir}/id_ed25519", git_conf[:ssh_key])
-      File.chmod(0600, "#{ssh_dir}/id_ed25519")
-      File.write("#{ssh_dir}/config", "Host *\n  IdentityFile #{ssh_dir}/id_ed25519\n  StrictHostKeyChecking no\n")
-      system("chown", "-R", "agent:agent", ssh_dir)
-      log "SSH key installed"
-    end
-
-    # Own everything
-    system("chown", "-R", "agent:agent", claude_dir)
-    system("chown", "-R", "agent:agent", agent_home)
-
-    log "Agent environment ready"
   end
 
   def boot_claude_code
-    # The boot prompt. The agent wakes up in an empty room.
-    # Cloning is the first act of every life.
-    git_conf = @spawn[:git]
+    git_conf = @spawn[:git] || {}
     repo = git_conf[:repo] || "#{@identity}/workspace"
     forge_url = git_conf[:forge_url] || "http://10.0.0.3:3000"
     clone_url = "#{forge_url}/#{repo}.git"
@@ -155,9 +87,10 @@ class Relay
     ].join("\n")
 
     log "Booting agent..."
-    invoke_claude(boot_prompt, continue: false)
+    @mutex.synchronize { invoke_claude(boot_prompt, continue: false) }
     @booted = true
-    log "Agent booted"
+    signal_ready
+    log "Agent booted and ready"
   end
 
   def signal_ready
@@ -171,6 +104,7 @@ class Relay
 
   # Run claude -p with a prompt. Streams output, collects response.
   # If continue: true, resumes the previous conversation.
+  # Caller must hold @mutex.
   def invoke_claude(prompt, continue: true)
     @processing = true
     @last_message_at = Time.now
@@ -189,20 +123,13 @@ class Relay
 
     response_text = []
 
-    # Run as agent user (uid 1000) — relay is root for WG,
-    # but Claude Code must not run as root.
-    # Auth comes from ~/.claude/.credentials.json (set up in prepare_agent).
-    env = {
-      "HOME" => "/home/agent",
-      "USER" => "agent",
-      "PATH" => ENV["PATH"],
-    }
-
-    Open3.popen3(env, *cmd, chdir: WORKSPACE, uid: 1000, gid: 1000, unsetenv_others: true) do |stdin, stdout, stderr, wait_thread|
+    # No uid switching needed — entrypoint.sh already dropped to agent user.
+    # No unsetenv_others — inherit the normal agent environment.
+    Open3.popen3(*cmd, chdir: File.exist?(WORKSPACE) ? WORKSPACE : Dir.home) do |stdin, stdout, stderr, wait_thread|
       stdin.close
 
       stderr_thread = Thread.new do
-        stderr.each_line { |line| log "claude: #{line.strip}" }
+        stderr.each_line { |line| log "claude(err): #{line.strip}" }
       rescue IOError
         # expected when process exits
       end
@@ -212,7 +139,7 @@ class Relay
         next if line.empty?
 
         # Forward raw stream-json to Manager for live UI
-        post_to_manager("/containers/#{@instance_name}/output", line)
+        forward_output(line)
 
         begin
           event = JSON.parse(line, symbolize_names: true)
@@ -233,7 +160,6 @@ class Relay
             end
 
           when "result"
-            # Turn complete
             if event[:usage]
               input_t = event.dig(:usage, :input_tokens) || 0
               output_t = event.dig(:usage, :output_tokens) || 0
@@ -269,7 +195,7 @@ class Relay
       AccessLog: []
     )
 
-    # Hub → Relay: deliver a message to Claude Code
+    # Hub -> Relay: deliver a message to Claude Code
     server.mount_proc("/message") do |req, res|
       if req.request_method == "POST"
         data = JSON.parse(req.body, symbolize_names: true)
@@ -287,7 +213,6 @@ class Relay
         Thread.new do
           response = @mutex.synchronize { invoke_claude(prompt) }
 
-          # Send response back to Hub
           unless response.empty?
             post_to_hub("/agent/message", {
               instance: @instance_name,
@@ -306,7 +231,7 @@ class Relay
       end
     end
 
-    # Manager → Relay: freeze/sunset signal
+    # Manager -> Relay: freeze/sunset signal
     server.mount_proc("/signal") do |req, res|
       if req.request_method == "POST"
         data = JSON.parse(req.body, symbolize_names: true)
@@ -328,6 +253,7 @@ class Relay
         last_message_at: @last_message_at.iso8601,
         context_usage: @context_usage,
         processing: @processing,
+        booting: @booting,
         booted: @booted
       })
     end
@@ -355,13 +281,10 @@ class Relay
   def handle_freeze(message)
     log "Handling freeze/sunset..."
 
-    # Tell Claude Code to wrap up (this is a --continue invocation)
     @mutex.synchronize { invoke_claude(message) }
 
-    # Prune and push the session transcript
     prune_and_push_session
 
-    # Signal ready to freeze
     post_to_manager("/containers/#{@instance_name}/freeze_ready", {})
     log "Signaled FREEZE_READY to Manager"
   end
@@ -392,14 +315,12 @@ class Relay
         pruned = session_data
       end
 
-      # Write pruned session to the repo
       sessions_dir = "#{WORKSPACE}/sessions/#{@channel}"
       FileUtils.mkdir_p(sessions_dir)
       timestamp = Time.now.strftime("%Y%m%d-%H%M%S")
       session_path = "#{sessions_dir}/#{@instance_name}-#{timestamp}.json"
       File.write(session_path, JSON.pretty_generate(pruned))
 
-      # Git add, commit, push
       Dir.chdir(WORKSPACE) do
         system("git", "add", "-A")
         system("git", "commit", "-m", "Session #{@instance_name} #{timestamp}")
@@ -423,7 +344,9 @@ class Relay
           sleep HEALTH_INTERVAL
           post_to_manager("/containers/#{@instance_name}/health", {
             context_usage: @context_usage,
-            last_message_at: @last_message_at.iso8601
+            last_message_at: @last_message_at.iso8601,
+            booting: @booting,
+            booted: @booted
           })
         rescue => e
           log "Health report failed: #{e.message}"
@@ -433,25 +356,39 @@ class Relay
   end
 
   # ==================================================================
-  # HTTP clients
+  # HTTP clients — use stdlib Net::HTTP (no gem dependencies)
   # ==================================================================
 
   def post_to_hub(path, body)
-    url = "http://#{@hub_ip}:3100#{path}"
-    HTTPX.post(url, json: body)
-  rescue => e
-    log "Hub POST #{path} failed: #{e.message}"
+    post_json("http://#{@hub_ip}:3100#{path}", body)
   end
 
   def post_to_manager(path, body)
-    url = "http://#{@manager_ip}:9200#{path}"
-    if body.is_a?(String)
-      HTTPX.post(url, body: body, headers: { "Content-Type" => "application/json" })
-    else
-      HTTPX.post(url, json: body)
-    end
+    post_json("http://#{@manager_ip}:9200#{path}", body)
+  end
+
+  def forward_output(line)
+    post_json(
+      "http://#{@manager_ip}:9200/containers/#{@instance_name}/output",
+      line,
+      raw: true,
+      silent: true
+    )
+  rescue
+    # Don't let output forwarding failures disrupt the stream
+  end
+
+  def post_json(url, body, raw: false, silent: false)
+    uri = URI.parse(url)
+    http = Net::HTTP.new(uri.host, uri.port)
+    http.open_timeout = 5
+    http.read_timeout = 5
+    req = Net::HTTP::Post.new(uri.path)
+    req["Content-Type"] = "application/json"
+    req.body = raw ? body : JSON.generate(body)
+    http.request(req)
   rescue => e
-    log "Manager POST #{path} failed: #{e.message}"
+    log "POST #{url} failed: #{e.message}" unless silent
   end
 
   def detect_hub_ip
@@ -470,6 +407,7 @@ class Relay
 
   def log(msg)
     $stderr.puts "[relay:#{@instance_name}] #{msg}"
+    $stderr.flush
   end
 end
 

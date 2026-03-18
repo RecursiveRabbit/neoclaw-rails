@@ -1,18 +1,79 @@
 # Seeds the Manager database with identity configs and service types.
+#
+# WG public keys and endpoints come from infra/wireguard/keys/ and infra/services.conf.
+# The endpoint uses the podman bridge gateway (10.88.0.1) because agents reach
+# host WG ports through the bridge, not the LAN.
+
+BRIDGE_GATEWAY = "10.88.0.1"
 
 # --- Service Types ---
+# Keys read from infra at deploy time and hardcoded here.
+# If keys rotate, re-seed.
 [
-  { name: "git",     wg_interface: "wg-git",     wg_ip: "10.0.0.3", provision_type: "forgejo",  has_own_auth: true  },
-  { name: "ssh",     wg_interface: "wg-ssh",     wg_ip: "10.0.0.8", provision_type: "ssh_key",  has_own_auth: true  },
-  { name: "valley",  wg_interface: "wg-valley",  wg_ip: "10.0.0.4", provision_type: "token",    has_own_auth: true  },
-  { name: "vikunja", wg_interface: "wg-vikunja", wg_ip: "10.0.0.5", provision_type: "token",    has_own_auth: true  },
-  { name: "comfyui", wg_interface: "wg-comfyui", wg_ip: "10.0.0.6", provision_type: "none",     has_own_auth: false },
-  { name: "matrix",  wg_interface: "wg-matrix",  wg_ip: "10.0.0.7", provision_type: "none",     has_own_auth: true  },
+  { name: "git",
+    wg_interface: "wg-git",     wg_ip: "10.0.0.3", wg_listen_port: 51823,
+    wg_public_key: "Cg9x8B3Go+TY//B+1Ng2yTTVTeqFPTkzhZNApACGP0c=",
+    wg_endpoint: "#{BRIDGE_GATEWAY}:51823",
+    provision_type: "forgejo",  has_own_auth: true,
+    provision_config: { service_port: 3000 } },
+
+  { name: "ssh",
+    wg_interface: "wg-ssh",     wg_ip: "10.0.0.8", wg_listen_port: 51828,
+    wg_public_key: "Rv8NXoULV9e2GUi3cFKkW/P3lPmq+0wpJ1GhSrzk8SM=",
+    wg_endpoint: "#{BRIDGE_GATEWAY}:51828",
+    provision_type: "ssh_key",  has_own_auth: true,
+    provision_config: { service_port: 2222 } },
+
+  { name: "valley",
+    wg_interface: "wg-valley",  wg_ip: "10.0.0.4", wg_listen_port: 51824,
+    wg_public_key: "0YGxaf+hgyssGxciGCKAkhd9DPbsqzYccDR3jAdiVCc=",
+    wg_endpoint: "#{BRIDGE_GATEWAY}:51824",
+    provision_type: "token",    has_own_auth: true,
+    provision_config: { service_port: 4006 } },
+
+  { name: "vikunja",
+    wg_interface: "wg-vikunja", wg_ip: "10.0.0.5", wg_listen_port: 51825,
+    wg_public_key: "Z4uOoKX+8sEfxPbHn7T75D+M3y5YreBkOtBjbgCJiwM=",
+    wg_endpoint: "#{BRIDGE_GATEWAY}:51825",
+    provision_type: "token",    has_own_auth: true,
+    provision_config: { service_port: 3456 } },
+
+  { name: "comfyui",
+    wg_interface: "wg-comfyui", wg_ip: "10.0.0.6", wg_listen_port: 51826,
+    wg_public_key: "2IUic6N35Gsrr6HNChweGdhllYM1sst2w3ylxtBkQUA=",
+    wg_endpoint: "#{BRIDGE_GATEWAY}:51826",
+    provision_type: "none",     has_own_auth: false,
+    provision_config: { service_port: 8188 } },
+
+  { name: "matrix",
+    wg_interface: "wg-matrix",  wg_ip: "10.0.0.7", wg_listen_port: 51827,
+    wg_public_key: "TJZVmEz0xK4b4FaCmVEoVlqpVbhBV9AIi+w4twvzh2s=",
+    wg_endpoint: "#{BRIDGE_GATEWAY}:51827",
+    provision_type: "none",     has_own_auth: true,
+    provision_config: { service_port: 8008 } },
+
+  { name: "ollama",
+    wg_interface: "wg-ollama",  wg_ip: "10.0.0.9", wg_listen_port: 51829,
+    wg_public_key: "DapJXgzjbyCqUznymsSbUl+2B0B4IIcHEfQs3cC7Iys=",
+    wg_endpoint: "#{BRIDGE_GATEWAY}:51829",
+    provision_type: "none",     has_own_auth: false,
+    provision_config: { service_port: 11434 } },
 ].each do |attrs|
   ServiceType.find_or_create_by!(name: attrs[:name]) do |s|
     s.assign_attributes(attrs.merge(enabled: true))
   end
-  puts "  service: #{attrs[:name]}"
+  puts "  service: #{attrs[:name]} (#{attrs[:wg_ip]})"
+end
+
+# --- Room Configs ---
+[
+  { channel: "general",  model_default: "claude-sonnet-4-6" },
+  { channel: "art",      model_default: "claude-opus-4-6", extra_services: [] },
+].each do |attrs|
+  RoomConfig.find_or_create_by!(channel: attrs[:channel]) do |r|
+    r.assign_attributes(attrs)
+  end
+  puts "  room: ##{attrs[:channel]}"
 end
 
 # --- Agent Configs ---
@@ -44,4 +105,17 @@ end
   puts "  config: #{attrs[:identity]}"
 end
 
-puts "\nSeeded: #{ServiceType.count} services, #{AgentConfig.count} configs."
+# --- Agent Room Overrides ---
+# Margaux and Parallax get comfyui in #art
+[
+  { identity: "margaux",  channel: "art", extra_services: %w[comfyui] },
+  { identity: "parallax", channel: "art", extra_services: %w[comfyui] },
+].each do |attrs|
+  config = AgentConfig.find_by!(identity: attrs[:identity])
+  AgentRoomConfig.find_or_create_by!(agent_config: config, channel: attrs[:channel]) do |arc|
+    arc.extra_services = attrs[:extra_services]
+  end
+  puts "  override: #{attrs[:identity]} in ##{attrs[:channel]}"
+end
+
+puts "\nSeeded: #{ServiceType.count} services, #{AgentConfig.count} configs, #{RoomConfig.count} rooms."
