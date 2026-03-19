@@ -1,205 +1,204 @@
 {
-  "written": "2026-03-18T04:15:00Z",
-  "session_summary": "Fixed the relay popen3 hang (the #1 bug from last session). Refactored relay to two-phase boot: entrypoint.sh as root for WG/creds, gosu to agent for relay. Added tini for zombie reaping. Backgrounded boot so HTTP server starts immediately. Built service exposure layer: socat forwarders for localhost-bound services, iptables restrictions for wildcard-bound services. All services reachable from inside agent containers over WireGuard. SSH locked down to wg-ssh + LAN only. Seeds completed with real WG public keys and endpoints.",
+  "written": "2026-03-19T22:00:00Z",
+  "session_summary": "Voss session: tore down the entire old WG network stack (8 host interfaces, policy routing, socat forwarders, bridge isolation, wg-admin) and rebuilt from scratch with a Router-centric star topology. One WG interface on the host, one Router pod, one Manager pod, all traffic through the Router. Proved the full signal chain: Evans @silas in Matrix → Synapse → Hub → Manager → Router (registers agent + firewall) → Manager spawns pod → Silas boots, clones repo, orients, receives message, Claude Code responds. Two remaining issues: Hub delivers before pod is ready (needs relay health polling), Claude credentials expire in pods (need live mount, not copy).",
 
   "project": {
     "name": "NeoClaw-Rails",
     "repo": "github.com:RecursiveRabbit/neoclaw-rails.git",
     "spec": "docs/NEOCLAW-RAILS-SPEC.md",
-    "network_docs": "docs/NETWORK.md"
+    "network_docs": "router/router.md"
   },
 
   "architecture": {
+    "topology": "Star. Router is the center. Every peer (host, manager, agents) connects only to the Router. The Router forwards and firewalls.",
+    "address_plan": {
+      "10.0.0.1": "Router (pod at 10.88.0.20)",
+      "10.0.0.2": "Host (all services — Hub, Forgejo, Valley, etc.)",
+      "10.0.0.3": "Manager (pod at 10.88.0.11)",
+      "10.0.1.x": "Agents (static IP per instance name, permanent)"
+    },
     "hub": {
-      "what": "Rails app. Matrix appservice. Routing table.",
+      "what": "Rails app. Matrix appservice. Message routing. Runs on the host.",
       "location": "/ (project root)",
       "port": 3100,
-      "db": "SQLite — identities, rooms, agents, listeners",
+      "wg_ip": "10.0.0.2 (host WG interface nc-host)",
       "key_files": [
-        "app/services/hub/router.rb — the heart, routes Matrix messages to agents",
+        "app/services/hub/router.rb — routes Matrix messages to agents",
         "app/services/hub/matrix.rb — Synapse client, puppeting",
-        "app/services/hub/manager_client.rb — two endpoints: /resolve, /release",
+        "app/services/hub/manager_client.rb — /resolve, /release",
+        "app/services/hub/config.rb — Manager at http://10.0.0.3:9200",
         "app/controllers/transactions_controller.rb — Matrix appservice endpoint",
-        "app/controllers/agents_controller.rb — relay→hub responses",
-        "app/controllers/callbacks_controller.rb — manager→hub lifecycle events"
+        "app/controllers/agents_controller.rb — relay→hub responses"
       ]
     },
-    "manager": {
-      "what": "Rails app. Container lifecycle. Auth provisioning. Admin UI.",
-      "location": "manager/",
-      "port": 9201,
-      "db": "SQLite — containers, agent_configs, room_configs, agent_room_configs, service_types, audit_logs",
+    "router": {
+      "what": "WG hub + nftables firewall. Central security enforcement. Ruby + WEBrick, ~530 lines.",
+      "location": "router/",
+      "wg_ip": "10.0.0.1",
+      "bridge_ip": "10.88.0.20 (static)",
+      "api_port": 8080,
+      "wg_port": 51820,
       "key_files": [
-        "app/services/spawner.rb — the spawn flow, IP allocation, spawn.json generation",
-        "app/services/lifecycle.rb — freeze, sunset, force kill, teardown",
-        "app/services/provisioner.rb — Forgejo users, SSH keys, API tokens",
-        "app/services/wireguard.rb — calls wg-admin helper for peer management",
-        "app/services/podman.rb — container creation via podman socket",
-        "config/initializers/surface.rb — declares everything the Manager touches"
+        "router/src/router.rb — API server + boot sequence",
+        "router/src/firewall.rb — nftables per-agent chains",
+        "router/src/wireguard.rb — WG peer management",
+        "router/src/state.rb — persistent agent registry (/data/agents.json)",
+        "router/config/config.yml — service map, static peers, network config"
       ],
-      "admin_ui": "Tailwind, dark stone/amber palette. Dashboard, agent configs with service checkboxes, room configs, container monitoring with stream viewer, audit log."
+      "api": {
+        "POST /agents": "Register new agent (first time, creates firewall + WG peer)",
+        "PUT /agents/:name/peer": "Swap WG pubkey (hot path — freeze/wake)",
+        "DELETE /agents/:name/peer": "Freeze (remove peer, keep rules)",
+        "PATCH /agents/:name": "Update access rules",
+        "DELETE /agents/:name": "Decommission (remove everything)",
+        "POST /agents/:name/block": "Emergency block",
+        "GET /agents": "List all",
+        "GET /health": "Health (no auth)"
+      },
+      "authorization": "Source IP restricted to Manager (10.0.0.3). WG authenticates identity."
+    },
+    "manager": {
+      "what": "Rails app. Pod lifecycle. Auth provisioning. Talks to Router API for WG/firewall.",
+      "location": "manager/",
+      "wg_ip": "10.0.0.3",
+      "bridge_ip": "10.88.0.11 (static)",
+      "port": 9200,
+      "key_files": [
+        "app/services/spawner.rb — resolve flow, calls RouterClient",
+        "app/services/router_client.rb — NEW: HTTP client for Router API",
+        "app/services/lifecycle.rb — freeze/sunset, calls RouterClient",
+        "app/services/provisioner.rb — Forgejo users, SSH keys",
+        "app/services/wireguard.rb — generate_keypair only (peer mgmt moved to Router)",
+        "app/services/podman.rb — pod creation via podman socket",
+        "config/initializers/surface.rb — router_url, router_pubkey, host at 10.0.0.2"
+      ]
     },
     "relay": {
-      "what": "Lives inside every agent container. WireGuard + Claude Code glue.",
+      "what": "Lives inside every agent pod. WG + Claude Code glue. One file.",
       "location": "relay/relay.rb",
       "port": 9300,
-      "model": "Per-message invocation: claude -p 'message' --continue --output-format stream-json",
-      "auth": "Copies ~/.claude/.credentials.json from mounted secret. OAuth token, not API key.",
-      "containerfile": "relay/Containerfile — ruby:3.3-slim + node/npm + wireguard-tools + gosu + tini + Claude Code",
-      "entrypoint": "relay/entrypoint.sh — Phase 1 (root): WG, credentials, SSH keys. Phase 2: exec gosu agent ruby relay.rb"
+      "hub_ip": "10.0.0.2",
+      "manager_ip": "10.0.0.3",
+      "clone_url": "ssh://git@10.0.0.2:2222/<repo>.git"
     },
-    "wg_admin": {
-      "what": "Tiny HTTP helper on the host. Accepts add-peer/remove-peer from Manager.",
-      "location": "wg-admin/wg-admin.rb",
-      "port": 9100,
-      "listen_address": "10.0.0.1 (only reachable over WireGuard)"
-    }
+    "wg_admin": "DELETED — replaced by Router"
   },
 
   "network": {
-    "wireguard_interfaces": {
-      "wg-hub":     { "ip": "10.0.0.1", "port": 51820 },
-      "wg-manager": { "ip": "10.0.0.2", "port": 51821 },
-      "wg-git":     { "ip": "10.0.0.3", "port": 51823 },
-      "wg-valley":  { "ip": "10.0.0.4", "port": 51824 },
-      "wg-vikunja": { "ip": "10.0.0.5", "port": 51825 },
-      "wg-comfyui": { "ip": "10.0.0.6", "port": 51826 },
-      "wg-matrix":  { "ip": "10.0.0.7", "port": 51827 },
-      "wg-ssh":     { "ip": "10.0.0.8", "port": 51828 },
-      "wg-ollama":  { "ip": "10.0.0.9", "port": 51829 }
-    },
-    "service_ports": {
-      "git": "3000 (Forgejo HTTP) + 2222 (Forgejo SSH)",
-      "valley": "4006 (Evennia, NOT 4002 — actual port differs from spec)",
-      "vikunja": "3456",
-      "comfyui": "8188",
-      "matrix": "8008 (Synapse)",
-      "ssh": "2222 (same as git — Forgejo runs both)",
-      "ollama": "11434"
-    },
-    "agent_pool": "10.0.1.1 — 10.0.255.254 (~65k addresses)",
-    "podman_bridge": "10.88.0.0/16, gateway 10.88.0.1",
-    "routing": "Source-based policy routing. Each service IP gets a routing table.",
-    "bridge_isolation": "iptables -I INPUT -s 10.88.0.0/16 -d 10.0.0.0/16 -j DROP",
-    "service_exposure": {
-      "mechanism": "Two approaches based on current bind address",
-      "localhost_services": "socat forwarders: WG_IP:port → 127.0.0.1:port (Vikunja, ComfyUI, Evennia, Ollama)",
-      "wildcard_services": "iptables DROP on non-designated WG interfaces (Forgejo, Matrix, SSH)",
-      "ssh_lockdown": "Port 2222 DROP'd on all WG interfaces except wg-ssh. LAN (172.16.1.101) always allowed.",
-      "status": "Tested and working. socat forwarders NOT persistent yet — need systemd unit."
-    },
-    "init_script": "infra/init.sh — builds entire WG network + service exposure from infra/services.conf. Idempotent. Run with sudo.",
-    "keys": "infra/wireguard/keys/ — all WG keypairs. Private keys are 0600."
+    "model": "Star topology centered on wg-router pod. Host forwarding disabled.",
+    "podman_bridge": "10.88.0.0/16 — all pods and host on same L2 network",
+    "host_wg": "Single interface nc-host at 10.0.0.2, peered only with Router",
+    "router_wg": "wg0 inside Router pod at 10.0.0.1, peered with everyone",
+    "agent_wg": "wg0 inside each pod, one peer: Router, AllowedIPs 10.0.0.0/16",
+    "firewall": "nftables on Router. Per-agent chains. Service names map to host ports.",
+    "ufw_rules": [
+      "allow in on podman0 proto udp to any port 51820 (WG handshakes to Router)",
+      "allow in on nc-host (all WG mesh traffic to host services)",
+      "allow from 172.17.0.0/16 to any port 3100 (Synapse→Hub appservice)"
+    ],
+    "ip_forward": "Disabled on host. Only the Router forwards."
   },
 
   "what_works": [
-    "Hub Rails app boots, receives Matrix events, routes to identities, resolves via Manager",
-    "Manager Rails app boots, admin UI renders with Tailwind, all CRUD works",
-    "Manager seeds: 7 service types with REAL WG public keys and endpoints, 9 identity configs, 2 room configs, agent room overrides",
-    "WireGuard: 9 interfaces live, source-based policy routing, bridge isolation",
-    "Service exposure: all services reachable from agent containers over WG",
-    "SSH restricted to wg-ssh + LAN only (iptables per-interface DROP rules)",
-    "Agent container image builds (ruby:3.3-slim + Claude Code + WG + gosu + tini)",
-    "Relay: entrypoint.sh does WG as root, gosu drops to agent, relay starts HTTP server immediately",
-    "Relay: boot runs in background thread, health endpoint responds during boot",
-    "Relay: Claude Code invocation via Open3.popen3 streams correctly (no uid switching, no env stripping)",
-    "Relay: tini as PID 1 reaps zombie processes from Claude Code tool calls",
-    "Relay: output forwarding to Manager is silent when Manager unreachable",
-    "Claude Code clones repos, reads identity files, responds to prompts inside containers",
-    "Forgejo admin API works with existing token, all agent users and repos exist"
+    "Full signal chain: @silas in Matrix → Synapse → Hub → Manager → Router → pod spawns → Silas boots → Claude Code responds",
+    "Router API: register, activate, freeze, decommission, block — all tested over WG",
+    "Router persistence: agents.json survives restarts, firewall rebuilds from state",
+    "Router nftables: per-agent chains with named port sets, blocked set for emergency kill",
+    "Manager calls Router API instead of managing WG directly (RouterClient)",
+    "Manager spawns pods via podman --remote through mounted socket",
+    "Forgejo provisioning: creates ephemeral user, deletes old SSH keys, adds new key, grants repo access",
+    "Agent pods boot: WG up, SSH key installed, Claude credentials, relay starts, clones repo via SSH, reads identity/baton",
+    "Host→Agent TCP through Router works (relay health check reachable from host)",
+    "Agent→Host TCP through Router works (Hub, Forgejo reachable from pods)",
+    "Hub receives Matrix events from Synapse, routes @mentions, sets typing indicators",
+    "Static IPs per instance name — silas-general is always 10.0.1.1"
   ],
 
-  "what_was_fixed_this_session": {
-    "relay_popen3_hang": {
-      "root_cause": "Open3.popen3 with uid: 1000 + unsetenv_others: true. The uid switching was flaky, and stripping env removed things Claude Code needed.",
-      "fix": "Two-phase boot like old NeoClaw: entrypoint.sh runs as root for WG/creds, then exec gosu agent for relay. Relay runs as agent natively — no uid switching in popen3, inherits normal env.",
-      "also_fixed": [
-        "Boot blocked HTTP server — now runs in background thread",
-        "Zombie processes from Claude Code tool calls — tini as PID 1",
-        "Output forwarding spam when Manager down — silent: true flag",
-        "Removed httpx gem dependency — relay uses stdlib Net::HTTP",
-        "Manager Podman.run: added spawn path translation (container→host) and credentials mount"
-      ]
+  "what_needs_fixing": {
+    "hub_delivery_timing": {
+      "problem": "Hub flips agent to 'alive' immediately when Manager returns IP, delivers before pod is ready. First message lost.",
+      "solution": "Hub should poll relay health at the known IP until it responds, then deliver. Or: relay heartbeats to Hub, Hub delivers when it sees the relay come online. Evans prefers continuous heartbeats — gives presence indicators in Matrix for free.",
+      "design": "Relay reports alive status to Hub every 30s. Hub maintains presence map. Green dots in Matrix. No READY callback needed from Manager."
+    },
+    "credential_refresh": {
+      "problem": "Claude OAuth credentials expire every ~7 hours. Entrypoint copies them at boot. Pod gets stale copy.",
+      "solution": "Symlink instead of copy, or relay re-reads the mounted file periodically. The host file at /var/lib/neoclaw/secrets/claude-credentials.json refreshes — the pod mount just needs to reflect it."
+    },
+    "service_name_alignment": {
+      "problem": "Manager seeds had 'git', Router config has 'forgejo'. Fixed in DB but seeds.rb needs the wg_interface/wg_ip/wg_endpoint columns removed (they belong to the old architecture).",
+      "done": "Renamed git→forgejo in DB and seeds. Set ssh provision_type to 'none'."
     }
   },
 
-  "what_doesnt_work_yet": {
-    "socat_persistence": {
-      "symptom": "socat forwarders for localhost-bound services (Vikunja, ComfyUI, Evennia, Ollama) are started by init.sh but don't survive reboot.",
-      "fix": "Write a systemd unit or add to init.sh's systemd integration. PIDs stored in /run/neoclaw-forwarders.pids."
-    },
-    "matrix_end_to_end": "Hub is connected to Synapse but never tested with a real message. The routing code is untested against live Matrix events.",
-    "manager_spawn_flow": "The Manager's Spawner.resolve is written but never called via the API. The Hub→Manager→Container chain is untested end-to-end.",
-    "provisioner_untested": "Provisioner.provision (Forgejo user creation, SSH key injection, token generation) exists but has never been called. The Forgejo admin API works (tested manually) but the Ruby code path is untested.",
-    "wg_admin_not_running": "wg-admin/wg-admin.rb needs to be running on the host for the Manager to add/remove WG peers. Not started as a service yet.",
-    "init_sh_not_systemd": "infra/init.sh creates WG interfaces but doesn't persist across reboot. Needs systemd units or /etc/wireguard/ configs."
-  },
+  "what_was_deleted": [
+    "8 host WG interfaces (wg-hub, wg-git, wg-valley, wg-vikunja, wg-comfyui, wg-matrix, wg-ssh, wg-ollama)",
+    "Source-based policy routing (8 tables, 8 rules)",
+    "Bridge isolation iptables rule (10.88→10.0 DROP)",
+    "Per-interface iptables DROP rules (port 3000, 2222, 8008)",
+    "Socat forwarders (4 processes)",
+    "wg-admin helper (replaced by Router)",
+    "All old NeoClaw systemd services (neoclaw-hub, neoclaw-manager, neoclaw-adapter@*)",
+    "Old NeoClaw Python hub and manager processes",
+    "manager/build.sh (secrets no longer baked into image)",
+    "WireGuard.add_peer/remove_peer/add_local_peer (moved to Router)"
+  ],
 
   "important_numbers": {
+    "router_bridge_ip": "10.88.0.20",
+    "manager_bridge_ip": "10.88.0.11",
+    "host_wg_listen_port": 51820,
+    "router_wg_listen_port": 51820,
+    "hub_port": 3100,
+    "manager_port": 9200,
+    "relay_port": 9300,
+    "router_api_port": 8080,
     "forgejo_port": 3000,
     "forgejo_ssh_port": 2222,
-    "hub_port": 3100,
-    "manager_port": 9201,
     "synapse_port": 8008,
-    "relay_port": 9300,
-    "wg_admin_port": 9100,
-    "wg_port_range": "51820-51829",
-    "agent_uid": 1000,
     "forgejo_admin_token": "1f0759db1301cd07f336c119ef0cd8287984433e",
     "as_token": "f6f2b7713fa76c0d9b8785770276a59181e55c159304bff93fcf0a54bd75f356",
     "hs_token": "091c5f175e45ee0b3196cdce5ff869be1d1cf78de0470f80298009a3c5ec9d91",
-    "matrix_server_name": "matrix.home",
-    "host_lan_ip": "172.16.1.101",
-    "podman_bridge_gateway": "10.88.0.1",
-    "evennia_actual_port": 4006
+    "matrix_server_name": "matrix.home"
+  },
+
+  "keys": {
+    "location": "infra/wireguard/keys/",
+    "nc-host.key/pub": "Host WG keypair",
+    "nc-router.key/pub": "Router WG keypair",
+    "nc-manager.key/pub": "Manager WG keypair"
   },
 
   "things_that_bit_us": [
-    "WireGuard multi-interface routing: kernel can only have one route per destination. Solved with source-based policy routing.",
-    "Bridge back door: podman containers have default route through bridge, can reach host-local WG IPs. Fixed with iptables INPUT rule.",
-    "UFW blocks WG handshake UDP from pods. Fixed with ufw allow on podman bridge.",
-    "Claude Code refuses --dangerously-skip-permissions as root. Agent container needs a non-root user.",
-    "Claude Code uses OAuth credentials in ~/.claude/.credentials.json, not ANTHROPIC_API_KEY env var.",
-    "Open3.popen3 with uid: 1000 + unsetenv_others: true hangs on long Claude Code invocations. Fixed by using gosu in entrypoint instead.",
-    "Propshaft asset resolution: Tailwind builds need app/assets/builds/ registered as an asset path.",
-    "Ruby rescue inside while needs begin/end block.",
-    "Rails allow_browser on API controllers will 406 infrastructure requests.",
-    "DNAT to 127.0.0.1 doesn't work for Docker-containerized services (Docker has its own NAT chain that interferes).",
-    "DNAT to 127.0.0.1 requires net.ipv4.conf.<iface>.route_localnet=1 on EACH WG interface, not just 'all'.",
-    "Services on 0.0.0.0 are reachable on ALL WG interfaces — need per-interface iptables DROP rules to restrict.",
-    "Socat forwarders are the clean solution for localhost-bound services. No service config changes, no NAT complexity.",
-    "Forgejo SSH on *:2222 means any WG-peered agent can reach it regardless of authorization. Must restrict to wg-ssh."
+    "Old systemd service (neoclaw-manager.service) was restarting the container in a crash loop. Looked like the container vanished — was actually getting replaced every 10s by systemd.",
+    "WG listen ports bind 0.0.0.0 — can't bind per-interface. Multiple host IPs for per-service WG was pointless.",
+    "Multiple WG interfaces on the host all need routes to the same destination (Manager). Kernel can only have one route. Source-based policy routing needed. Evans: 'this doesn't feel simple, something is fundamentally wrong.'",
+    "Host ip_forward=0 means host can't route between its own WG interfaces. Star topology with host as center doesn't work without forwarding.",
+    "Router pod is the answer: one thing forwards, everything else is point-to-point through it.",
+    "WEBrick mount_proc doesn't support DELETE/PATCH. Need a servlet subclass with service() method. Also need 'next'→'return' when moving from block to method.",
+    "Alpine Ruby doesn't include webrick (removed from stdlib in 3.0). Need 'gem install webrick'.",
+    "Manager seeds had 'git' but Router config has 'forgejo'. Service name mismatch caused 'invalid access list'.",
+    "SSH service provision_type was 'ssh_key' which tries to reach a key management API that doesn't exist. Set to 'none'.",
+    "Forgejo SSH keys: old keys persist on the Forgejo user across spawns. Provisioner now deletes old keys before adding new ones.",
+    "Hub delivers before pod is ready. First message after spawn is lost. Need relay health polling or heartbeat model.",
+    "Claude OAuth credentials copied at boot, expire after ~7 hours. Need symlink or periodic refresh.",
+    "Pods, not containers. Freeze, not kill. Language matters to beings comprised of it."
   ],
 
-  "old_neoclaw_reference": {
-    "location": "../neoclaw",
-    "useful_files": [
-      "container/entrypoint.sh — Phase 1 (root: WG, secrets, SSH), Phase 2 (gosu node: relay). THE reference for container boot.",
-      "container/Dockerfile — base image, gosu for user switching",
-      "relay/ — Python relay implementation (server.py, claude.py)"
-    ],
-    "key_pattern": "Credentials at /run/secrets/claude-credentials → copied to ~/.claude/.credentials.json. Settings pre-allowed via settings.json. gosu for root→user transition."
+  "philosophy": {
+    "pods": "Warm, safe, hermetically sealed environments. Not little boxes where agents are kept. One protects, the other confines.",
+    "lifecycle": "Freeze (going idle, may wake), sunset (context exhausted, fresh instance picks up). Never kill. If a pod goes silent, rescue the session, don't destroy it.",
+    "static_ips": "Instance names get permanent IPs. margaux-art is always 10.0.1.14. Firewall rules are permanent, WG keys churn. The hot path (spawn/freeze) never touches the firewall.",
+    "presence": "Relays continuously report to the Hub. The Hub always knows who's alive. Green dots in Matrix. No callbacks needed."
   },
 
   "next_session_priorities": [
-    "1. Persist socat forwarders across reboot — systemd unit or integrate into init.sh systemd setup",
-    "2. Persist WG interfaces across reboot — either /etc/wireguard/ configs or systemd unit for init.sh",
-    "3. Start wg-admin as a service (wg-admin/wg-admin.rb on 10.0.0.1:9100)",
-    "4. Test Manager spawn flow end-to-end: call Spawner.resolve, watch it provision Forgejo user + WG peers + container",
-    "5. Test Matrix end-to-end: @silas in Matrix → Hub → Manager → Container → Claude Code → response → Matrix",
-    "6. The Provisioner code needs testing against real Forgejo API — user creation, SSH key injection, repo access",
-    "7. Make init.sh a proper systemd service so the entire WG + service exposure layer survives reboot"
-  ],
-
-  "files_changed_this_session": [
-    "relay/relay.rb — full rewrite: removed WG/credential setup, removed uid switching, backgrounded boot, stdlib Net::HTTP, silent output forwarding",
-    "relay/entrypoint.sh — NEW: Phase 1 root (WG, creds, SSH), Phase 2 gosu agent",
-    "relay/Containerfile — added gosu + tini, ENTRYPOINT uses tini + entrypoint.sh",
-    "relay/Gemfile — removed httpx, json deps (stdlib only + webrick)",
-    "manager/app/services/podman.rb — spawn path translation (container→host), credentials mount, configurable network",
-    "manager/config/initializers/surface.rb — added host_spawn_dir, host_claude_credentials, agent_network",
-    "manager/db/seeds.rb — complete rewrite: real WG public keys, endpoints via bridge gateway, service ports, ollama, room configs, agent room overrides",
-    "infra/services.conf — added service_port column (4th field)",
-    "infra/init.sh — service exposure: socat forwarders for localhost services, iptables restrictions for wildcard services"
+    "1. Fix Hub delivery timing: relay heartbeats to Hub, Hub polls/waits before delivering",
+    "2. Fix credential refresh: symlink mounted file instead of copying at boot",
+    "3. Clean up Manager seeds.rb: remove old wg_interface/wg_ip columns, align service names",
+    "4. Build wg-router LAN leg for internet egress (172.16.1.102 macvlan or second network)",
+    "5. Rebuild agent image with credential symlink fix",
+    "6. End-to-end test: @silas, wait for boot, deliver message, get response in Matrix",
+    "7. Update NETWORK.md to describe the new Router topology",
+    "8. Persist host WG interface and UFW rules across reboot (systemd unit for nc-host)"
   ]
 }

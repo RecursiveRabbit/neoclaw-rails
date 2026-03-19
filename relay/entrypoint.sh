@@ -28,7 +28,8 @@ eval "$(ruby -rjson -e '
   puts "WG_PRIVATE_KEY=#{n[:wg_private_key]}"
   puts "WG_ADDRESS=#{n[:wg_address]}"
   g = s[:git] || {}
-  puts "SSH_KEY=#{(g[:ssh_key] || "").gsub("\n","\\n")}"
+  ssh_key = (g[:ssh_key] || "").gsub("\n","\\n")
+  puts "SSH_KEY=\"#{ssh_key}\""
   puts "FORGE_URL=#{g[:forge_url] || "http://10.0.0.3:3000"}"
   puts "REPO=#{g[:repo] || ""}"
 ' "$SPAWN_FILE")"

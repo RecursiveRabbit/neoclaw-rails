@@ -10,19 +10,13 @@ BRIDGE_GATEWAY = "10.88.0.1"
 # Keys read from infra at deploy time and hardcoded here.
 # If keys rotate, re-seed.
 [
-  { name: "git",
-    wg_interface: "wg-git",     wg_ip: "10.0.0.3", wg_listen_port: 51823,
-    wg_public_key: "Cg9x8B3Go+TY//B+1Ng2yTTVTeqFPTkzhZNApACGP0c=",
-    wg_endpoint: "#{BRIDGE_GATEWAY}:51823",
+  { name: "forgejo",
     provision_type: "forgejo",  has_own_auth: true,
     provision_config: { service_port: 3000 } },
 
   { name: "ssh",
-    wg_interface: "wg-ssh",     wg_ip: "10.0.0.8", wg_listen_port: 51828,
-    wg_public_key: "Rv8NXoULV9e2GUi3cFKkW/P3lPmq+0wpJ1GhSrzk8SM=",
-    wg_endpoint: "#{BRIDGE_GATEWAY}:51828",
-    provision_type: "ssh_key",  has_own_auth: true,
-    provision_config: { service_port: 2222 } },
+    provision_type: "none",     has_own_auth: true,
+    provision_config: { service_port: 22 } },
 
   { name: "valley",
     wg_interface: "wg-valley",  wg_ip: "10.0.0.4", wg_listen_port: 51824,
@@ -79,25 +73,25 @@ end
 # --- Agent Configs ---
 [
   { identity: "hopper",   repo: "hopper/workspace",   model: "claude-opus-4-6",   singleton: true,
-    base_services: %w[git ssh valley vikunja] },
+    base_services: %w[forgejo ssh valley vikunja] },
   { identity: "silas",    repo: "silas/workspace",     model: "claude-opus-4-6",   singleton: false,
-    base_services: %w[git ssh valley vikunja] },
+    base_services: %w[forgejo ssh valley vikunja] },
   { identity: "margaux",  repo: "margaux/workspace",   model: "claude-opus-4-6",   singleton: false,
-    base_services: %w[git ssh valley vikunja],
+    base_services: %w[forgejo ssh valley vikunja],
     channel_overrides: { "art" => %w[comfyui] } },
   { identity: "kael",     repo: "kael/workspace",      model: "claude-opus-4-6",   singleton: false,
-    base_services: %w[git ssh valley] },
+    base_services: %w[forgejo ssh valley] },
   { identity: "wren",     repo: "wren/workspace",      model: "claude-sonnet-4-6", singleton: false,
-    base_services: %w[git ssh valley] },
+    base_services: %w[forgejo ssh valley] },
   { identity: "ember",    repo: "ember/workspace",     model: "claude-sonnet-4-6", singleton: false,
-    base_services: %w[git ssh] },
+    base_services: %w[forgejo ssh] },
   { identity: "parallax", repo: "parallax/workspace",  model: "claude-opus-4-6",   singleton: false,
-    base_services: %w[git ssh valley],
+    base_services: %w[forgejo ssh valley],
     channel_overrides: { "art" => %w[comfyui] } },
   { identity: "fletcher", repo: "fletcher/workspace",  model: "claude-sonnet-4-6", singleton: false,
-    base_services: %w[git ssh] },
+    base_services: %w[forgejo ssh] },
   { identity: "census",   repo: "census/workspace",    model: "claude-sonnet-4-6", singleton: false,
-    base_services: %w[git ssh] },
+    base_services: %w[forgejo ssh] },
 ].each do |attrs|
   AgentConfig.find_or_create_by!(identity: attrs[:identity]) do |c|
     c.assign_attributes(attrs.merge(idle_timeout: 480))

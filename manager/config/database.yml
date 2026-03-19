@@ -13,5 +13,5 @@ test:
 
 production:
   <<: *default
-  # Host volume mount: /var/lib/neoclaw/manager-db → /app/db
-  database: db/manager_production.sqlite3
+  # Database file on persistent volume mount at /data
+  database: /data/manager_production.sqlite3

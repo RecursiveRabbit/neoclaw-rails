@@ -19,7 +19,7 @@ class ApiController < ApplicationController
     result = Spawner.resolve(identity: identity, channel: channel)
     render json: result
   rescue => e
-    Rails.logger.error "resolve failed: #{e.message}"
+    Rails.logger.error "resolve failed: #{e.message}\n#{e.backtrace.first(10).join("\n")}"
     render json: { error: e.message }, status: :service_unavailable
   end
 

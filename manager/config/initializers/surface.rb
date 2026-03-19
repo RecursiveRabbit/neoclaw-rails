@@ -3,9 +3,51 @@
 #
 # This is the contract between the Manager container and the host.
 # If it's not listed here, the Manager can't reach it.
+#
+# The Manager runs INSIDE a container. These paths are container paths.
+# If you're reading this on the host and wondering why Rails won't start,
+# that's the point. Build the image, run the container.
 
 module Surface
     extend self
+
+    # =================================================================
+    # Container assertions — verified at boot
+    # =================================================================
+    #
+    # These are not configurable. They are physical facts about the
+    # container's filesystem. If they don't exist, you're not in the
+    # container, and the Manager has no business running.
+
+    SPAWN_DIR              = "/spawn"
+    PODMAN_SOCKET          = "/run/podman/podman.sock"
+    CLAUDE_CREDENTIALS     = "/run/secrets/claude-credentials"
+
+    HOST_SPAWN_DIR         = ENV.fetch("HOST_SPAWN_DIR", "/var/lib/neoclaw/spawn")
+    HOST_CLAUDE_CREDENTIALS = ENV.fetch("HOST_CLAUDE_CREDENTIALS",
+                                        "/var/lib/neoclaw/secrets/claude-credentials.json")
+
+    def verify_container!
+      errors = []
+      errors << "#{SPAWN_DIR} not mounted"           unless Dir.exist?(SPAWN_DIR)
+      errors << "#{PODMAN_SOCKET} not mounted"        unless File.exist?(PODMAN_SOCKET)
+      errors << "#{CLAUDE_CREDENTIALS} not mounted"   unless File.exist?(CLAUDE_CREDENTIALS)
+
+      unless errors.empty?
+        $stderr.puts ""
+        $stderr.puts "=" * 60
+        $stderr.puts "  FATAL: Manager is not running inside its container."
+        $stderr.puts ""
+        errors.each { |e| $stderr.puts "    - #{e}" }
+        $stderr.puts ""
+        $stderr.puts "  The Manager requires mounted volumes and secrets"
+        $stderr.puts "  that only exist inside the neoclaw-manager pod."
+        $stderr.puts "  Build the image, run the container."
+        $stderr.puts "=" * 60
+        $stderr.puts ""
+        exit 1
+      end
+    end
 
     # =================================================================
     # Capacity
@@ -20,131 +62,89 @@ module Surface
     end
 
     # =================================================================
-    # Mounts — host paths presented to the container
+    # Mounts — container paths, not configurable
     # =================================================================
 
-    # Podman socket — how we create and destroy containers
-    # Mount: -v /run/podman/podman.sock:/run/podman/podman.sock
-    def podman_socket
-      ENV.fetch("PODMAN_SOCKET", "/run/podman/podman.sock")
-    end
+    def podman_socket  = PODMAN_SOCKET
+    def spawn_dir      = SPAWN_DIR
+    def host_spawn_dir = HOST_SPAWN_DIR
 
-    # Spawn secrets directory — we write spawn.json, podman mounts it
-    # Mount: -v /var/lib/neoclaw/spawn:/spawn
-    def spawn_dir
-      ENV.fetch("SPAWN_DIR", "/spawn")
-    end
+    def host_claude_credentials = HOST_CLAUDE_CREDENTIALS
 
-    # Host-side spawn directory — for podman --remote volume mounts.
-    # The Manager writes to spawn_dir (container path), but podman --remote
-    # runs on the host, so volume mounts need the host path.
-    def host_spawn_dir
-      ENV.fetch("HOST_SPAWN_DIR", "/var/lib/neoclaw/spawn")
-    end
-
-    # Claude credentials file on the host — mounted into every agent container
-    def host_claude_credentials
-      ENV.fetch("HOST_CLAUDE_CREDENTIALS", "/var/lib/neoclaw/secrets/claude-credentials.json")
-    end
-
-    # Podman network for agent containers
     def agent_network
       ENV.fetch("AGENT_NETWORK", "podman")
     end
 
-    # Agent container image name
     def agent_image
       ENV.fetch("AGENT_IMAGE", "localhost/neoclaw-agent:latest")
     end
 
     # =================================================================
-    # WireGuard — our connections to the world
-    #
-    # The Manager sits on every WG interface so it can:
-    #   1. Add/remove agent peers (via wg-admin helper on host)
-    #   2. Reach services to provision auth
-    #   3. Callback to the Hub
-    #
-    # Each interface is a separate WG peer in our container config.
+    # WireGuard — the Manager peers with the Router over WG.
+    # All services are reached through the Router at the Host's WG IP.
     # =================================================================
-
-    def wg_private_key_file
-      ENV.fetch("WG_PRIVATE_KEY_FILE", "/run/secrets/wg_private_key")
-    end
 
     def manager_wg_address
-      ENV.fetch("MANAGER_WG_ADDRESS", "10.0.0.2")
-    end
-
-    # WG admin endpoint on the host — a tiny privileged helper that
-    # accepts "add-peer" and "remove-peer" commands. The Manager
-    # can't run `wg set` itself because it doesn't own the host
-    # network namespace. The helper does one thing.
-    def wg_admin_url
-      ENV.fetch("WG_ADMIN_URL", "http://10.0.0.1:9100")
+      ENV.fetch("MANAGER_WG_ADDRESS", "10.0.0.3")
     end
 
     # =================================================================
-    # Service endpoints — reached over WireGuard
+    # Router — owns all WG peering and firewall rules.
+    # The Manager talks to the Router's HTTP API to manage agents.
     # =================================================================
 
-    # Forgejo — user creation, SSH key management, repo access
+    def router_url
+      ENV.fetch("ROUTER_URL", "http://10.0.0.1:8080")
+    end
+
+    def router_pubkey
+      ENV.fetch("ROUTER_PUBKEY")
+    end
+
+    def router_endpoint
+      ENV.fetch("ROUTER_ENDPOINT")
+    end
+
+    # =================================================================
+    # Service endpoints — reached over WireGuard via the Router.
+    # All services are on the Host at 10.0.0.2.
+    # =================================================================
+
+    HOST_WG_IP = "10.0.0.2"
+
+    def host_wg_ip
+      ENV.fetch("HOST_WG_IP", HOST_WG_IP)
+    end
+
     def forgejo_url
-      ENV.fetch("FORGEJO_URL", "http://10.0.0.3:3000")
+      ENV.fetch("FORGEJO_URL", "http://#{host_wg_ip}:3000")
     end
 
     def forgejo_admin_token
       ENV.fetch("FORGEJO_ADMIN_TOKEN")
     end
 
-    # Evennia (Valley) — token generation
     def valley_url
-      ENV.fetch("VALLEY_URL", "http://10.0.0.4:4002")
+      ENV.fetch("VALLEY_URL", "http://#{host_wg_ip}:4006")
     end
 
-    # Vikunja — API token generation
     def vikunja_url
-      ENV.fetch("VIKUNJA_URL", "http://10.0.0.5:3456")
+      ENV.fetch("VIKUNJA_URL", "http://#{host_wg_ip}:3456")
     end
 
     def vikunja_admin_token
       ENV.fetch("VIKUNJA_ADMIN_TOKEN", "")
     end
 
-    # Hub — where we send callbacks
     def hub_url
-      ENV.fetch("HUB_URL", "http://10.0.0.1:3000")
+      ENV.fetch("HUB_URL", "http://#{host_wg_ip}:3100")
     end
+end
 
-    # =================================================================
-    # Credentials — injected as secrets
-    # =================================================================
+# =================================================================
+# Boot — verify we're in the container, or die
+# =================================================================
 
-    # All injected via environment or secret files.
-    # Nothing discovered, nothing inherited.
-    #
-    # Required secrets:
-    #   FORGEJO_ADMIN_TOKEN  — Forgejo admin API token
-    #   WG_PRIVATE_KEY_FILE  — Manager's WireGuard private key
-    #
-    # Optional:
-    #   VIKUNJA_ADMIN_TOKEN  — Vikunja admin token (if using Vikunja)
-
-    # =================================================================
-    # Container spec — what the Manager pod looks like
-    # =================================================================
-    #
-    # podman run \
-    #   --name neoclaw-manager \
-    #   --network neoclaw-services \
-    #   -v /run/podman/podman.sock:/run/podman/podman.sock \
-    #   -v /var/lib/neoclaw/spawn:/spawn \
-    #   -v /var/lib/neoclaw/manager-db:/app/db \
-    #   --secret wg_private_key,target=/run/secrets/wg_private_key \
-    #   --cap-add NET_ADMIN \        # for WireGuard inside the container
-    #   -e FORGEJO_ADMIN_TOKEN=... \
-    #   -e HUB_URL=http://10.0.0.1:3000 \
-    #   -e WG_ADMIN_URL=http://10.0.0.1:9100 \
-    #   -p 9200:9200 \               # Manager API (only reachable over WG)
-    #   localhost/neoclaw-manager:latest
+unless ENV["RAILS_ENV"] == "test"
+  Surface.verify_container!
 end

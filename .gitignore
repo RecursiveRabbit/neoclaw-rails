@@ -8,3 +8,10 @@
 /node_modules
 .byebug_history
 .env
+
+# WireGuard private keys — NEVER commit
+infra/wireguard/keys/*.key
+
+# Manager runtime artifacts
+manager/log/
+manager/tmp/

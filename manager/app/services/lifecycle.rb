@@ -1,4 +1,7 @@
 # Lifecycle management — freeze, sunset, force kill, teardown.
+#
+# The Router handles all WireGuard state. The Manager just tells it
+# what to do (freeze = remove peer, decommission = remove everything).
 
 class Lifecycle
   class << self
@@ -65,12 +68,13 @@ class Lifecycle
         end
       end
 
-      (container.provisioned_services || []).each do |service_name|
-        service = ServiceType.find_by(name: service_name)
-        next unless service&.wg_interface
-        WireGuard.remove_peer(interface: service.wg_interface, public_key: container.wg_pubkey)
+      # Tell the Router to freeze this agent (removes WG peer, keeps firewall rules)
+      begin
+        RouterClient.freeze(name: container.instance_name)
+      rescue => e
+        AuditLog.record("ROUTER_FREEZE_FAILED",
+          instance_name: container.instance_name, detail: e.message)
       end
-      WireGuard.remove_peer(interface: "wg-hub", public_key: container.wg_pubkey)
 
       Podman.rm(container.container_id) if container.container_id
 

@@ -16,11 +16,10 @@ Rails.application.configure do
   # Cache assets for far-future expiry since they are all digest stamped.
   config.public_file_server.headers = { "cache-control" => "public, max-age=#{1.year.to_i}" }
 
-  # Assume all access is happening through a SSL-terminating reverse proxy.
-  config.assume_ssl = true
-
-  # Force all access over SSL, use Strict-Transport-Security, and use secure cookies.
-  config.force_ssl = true
+  # No TLS — the Manager runs on a WireGuard network.
+  # WG provides encryption at the network layer.
+  config.assume_ssl = false
+  config.force_ssl = false
 
   # Log to STDOUT with the current request id as a default log tag.
   config.log_tags = [ :request_id ]

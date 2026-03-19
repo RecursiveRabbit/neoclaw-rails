@@ -13,7 +13,7 @@ module Hub
       end
 
       def manager_url
-        ENV.fetch("NEOCLAW_MANAGER_URL", "http://10.100.0.2:9200")
+        ENV.fetch("NEOCLAW_MANAGER_URL", "http://10.0.0.3:9200")
       end
 
       def as_token

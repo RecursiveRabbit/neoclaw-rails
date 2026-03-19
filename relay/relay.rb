@@ -70,11 +70,17 @@ class Relay
     end
   end
 
-  def boot_claude_code
+  def boot_clone_url
     git_conf = @spawn[:git] || {}
     repo = git_conf[:repo] || "#{@identity}/workspace"
-    forge_url = git_conf[:forge_url] || "http://10.0.0.3:3000"
-    clone_url = "#{forge_url}/#{repo}.git"
+
+    # SSH clone via the host (10.0.0.2:2222). All services are on the
+    # host, reached through the Router. Forgejo SSH is port 2222.
+    "ssh://git@#{detect_hub_ip}:2222/#{repo}.git"
+  end
+
+  def boot_claude_code
+    clone_url = boot_clone_url
 
     boot_prompt = [
       "You have just been instantiated as #{@identity} in channel ##{@channel}.",
@@ -392,13 +398,13 @@ class Relay
   end
 
   def detect_hub_ip
-    @spawn.dig(:network, :peers)&.find { |p|
-      p[:allowed_ips]&.start_with?("10.0.0.1")
-    }&.dig(:allowed_ips)&.split("/")&.first || "10.0.0.1"
+    # Hub runs on the host at 10.0.0.2 in the new topology
+    "10.0.0.2"
   end
 
   def detect_manager_ip
-    "10.0.0.2"
+    # Manager is at 10.0.0.3
+    "10.0.0.3"
   end
 
   # ==================================================================

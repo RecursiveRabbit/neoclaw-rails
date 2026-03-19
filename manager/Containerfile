@@ -1,12 +1,32 @@
+# NeoClaw Manager — runs inside a container, nowhere else.
+#
+# Runtime mounts:
+#   /etc/wireguard/wg0.conf        — WG config (one peer: the Router)
+#   /run/podman/podman.sock        — podman socket (create/destroy agents)
+#   /spawn                         — spawn.json staging
+#   /data                          — persistent SQLite database
+#   /run/secrets/claude-credentials — Claude OAuth creds (refreshes hourly)
+#
+# Environment:
+#   FORGEJO_ADMIN_TOKEN            — Forgejo admin API token
+#   ROUTER_PUBKEY                  — Router's WG public key
+#   ROUTER_ENDPOINT                — Router's bridge IP:port (e.g. 10.88.0.20:51820)
+
 FROM ruby:3.3-slim
 
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     wireguard-tools \
+    iproute2 \
     openssh-client \
     sqlite3 \
     libsqlite3-dev \
+    libyaml-dev \
+    pkg-config \
     build-essential \
-    nodejs \
+    curl \
+    tini \
+    podman-remote \
+    && ln -sf /usr/bin/podman-remote /usr/bin/podman \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -17,7 +37,8 @@ RUN bundle install --without development test
 COPY . .
 
 RUN mkdir -p db tmp log storage
+RUN chmod +x /app/entrypoint.sh
 
 EXPOSE 9200
 
-CMD ["bin/rails", "server", "-b", "0.0.0.0", "-p", "9200"]
+ENTRYPOINT ["tini", "--", "/app/entrypoint.sh"]

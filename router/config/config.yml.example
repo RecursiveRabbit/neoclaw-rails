@@ -1,0 +1,56 @@
+# WG-Router configuration
+#
+# The Router is the hub of the WireGuard star topology.
+# All agents, the host, and the manager peer through it.
+# Firewall rules on the Router control what each agent can reach.
+
+router:
+  wg_interface: wg0
+  wg_address: "10.0.0.1/32"
+  wg_listen_port: 51820
+  wg_private_key: /etc/wireguard/private.key
+  api_port: 8080
+  lan_interface: eth0       # internet-facing interface (for NAT)
+
+network:
+  host_ip: "10.0.0.2"      # Host's WG address
+  manager_ip: "10.0.0.3"   # Manager's WG address (API auth)
+  agent_subnet: "10.0.1.0/24"
+
+# Static peers — always configured at boot.
+# Use `pubkey:` for inline keys or `pubkey_file:` for file paths.
+peers:
+  host:
+    pubkey: "REPLACE_WITH_HOST_WG_PUBKEY"
+    allowed_ips: "10.0.0.2/32"
+    # endpoint: "172.16.1.101:51820"   # optional — host can connect to us instead
+  manager:
+    pubkey: "REPLACE_WITH_MANAGER_WG_PUBKEY"
+    allowed_ips: "10.0.0.3/32"
+
+# Service definitions — maps names to host ports.
+# Agents request access by service name. The Router resolves to ports.
+# The Manager never sends port numbers. It sends names.
+services:
+  default:
+    tcp: [3100]             # Hub (message relay)
+    udp: [53]               # DNS
+  forgejo:
+    tcp: [3000, 2222]       # Web UI + Git SSH
+  vikunja:
+    tcp: [3456]
+  comfyui:
+    tcp: [8188]
+  valley:
+    tcp: [4006]             # Evennia
+  semantic-search:
+    tcp: [8100]
+  matrix:
+    tcp: [8008]
+  ssh:
+    tcp: [22]               # Host SSH (distinct from Forgejo's 2222)
+  ollama:
+    tcp: [11434]
+
+# Internet access tiers — referenced as "internet:full", "internet:web"
+# No entry needed for "internet:none" — default is deny.

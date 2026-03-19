@@ -66,6 +66,16 @@ class Provisioner
         raise ProvisionError, "forgejo create user: #{resp.status} #{resp.body}"
       end
 
+      # Delete any existing SSH keys for this user (stale from prior spawn)
+      existing_keys = http.get("#{base_url}/api/v1/users/#{instance_name}/keys",
+        headers: auth_header(token))
+      if existing_keys.respond_to?(:status) && existing_keys.status == 200
+        JSON.parse(existing_keys.body).each do |key|
+          api_delete("#{base_url}/api/v1/admin/users/#{instance_name}/keys/#{key['id']}",
+            token: token)
+        end
+      end
+
       # Add the agent's SSH public key
       resp = api_post("#{base_url}/api/v1/admin/users/#{instance_name}/keys", {
         title: "neoclaw-#{instance_name}",
