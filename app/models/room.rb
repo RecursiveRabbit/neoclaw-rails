@@ -7,7 +7,7 @@ class Room < ApplicationRecord
 
   validates :matrix_room_id, presence: true, uniqueness: true
 
-  before_validation :derive_slug, if: -> { name.present? && slug.blank? }
+  before_validation :derive_slug, if: -> { slug.blank? && (name.present? || canonical_alias.present?) }
 
   # Find the living agent for an identity in this room.
   def agent_for(identity)
@@ -16,8 +16,11 @@ class Room < ApplicationRecord
 
   private
 
+  # Slug from the room address (#infra), not the display name ("Infrastructure").
+  # Addresses are stable identifiers; display names can be anything.
   def derive_slug
-    self.slug = name.strip.delete_prefix("#").strip
+    source = canonical_alias.presence || name
+    self.slug = source.strip.delete_prefix("#").split(":").first.strip
       .gsub(/[^\w\s-]/, "").downcase
       .gsub(/[\s_]+/, "-").gsub(/\A-|-\z/, "")
     self.slug = "general" if slug.blank?

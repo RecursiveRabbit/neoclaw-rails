@@ -12,11 +12,14 @@ class AgentsController < ApplicationController
     instance = params[:instance]
     content  = params[:content]
 
-    agent = Agent.alive.find_by(instance_name: instance)
+    agent = Agent.find_by(instance_name: instance)
     unless agent
       render json: { error: "unknown agent" }, status: :not_found
       return
     end
+
+    # Relay is alive if it's sending messages
+    agent.update!(state: "alive") if agent.resolving?
 
     Hub::Matrix.puppet(
       agent.identity.name,
@@ -34,11 +37,14 @@ class AgentsController < ApplicationController
     instance   = params[:instance]
     event_type = params[:event]
 
-    agent = Agent.alive.find_by(instance_name: instance)
+    agent = Agent.find_by(instance_name: instance)
     unless agent
       render json: { error: "unknown agent" }, status: :not_found
       return
     end
+
+    # Relay is alive if it's sending events — flip from resolving
+    agent.update!(state: "alive") if agent.resolving?
 
     case event_type
     when "typing"

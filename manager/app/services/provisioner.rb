@@ -112,35 +112,34 @@ class Provisioner
     end
 
     # ----------------------------------------------------------------
-    # SSH — manage authorized_keys via the host's SSH key service
+    # SSH — manage authorized_keys via shared volume
     #
-    # The SSH service type's provision_config should contain:
-    #   { "port": 9022 }
-    #
-    # The key service is a tiny HTTP API on the host (over WireGuard)
-    # that manages authorized_keys files per unix user.
+    # The Manager writes pubkeys to Surface.ssh_keys_dir, which is
+    # mounted from /var/lib/neoclaw/ssh-keys/ on the host.
+    # sshd reads via AuthorizedKeysCommand.
     # ----------------------------------------------------------------
 
     def provision_ssh_key(service, instance_name:, ssh_pubkey:)
-      identity = instance_name.split("-").first
-      port = service.provision_config&.dig("port") || 9022
+      keys_file = File.join(Surface.ssh_keys_dir, "authorized_keys")
 
-      resp = api_post("http://#{service.wg_ip}:#{port}/keys", {
-        user: identity,
-        key: ssh_pubkey,
-        comment: "neoclaw-#{instance_name}"
-      })
-
-      unless resp&.status == 200 || resp&.status == 201
-        Rails.logger.warn "ssh provision #{instance_name}: #{resp&.status}"
+      # Append key with comment for identification and cleanup
+      File.open(keys_file, "a") do |f|
+        f.puts "#{ssh_pubkey} neoclaw-#{instance_name}"
       end
 
-      { ssh_host: service.wg_ip, ssh_user: identity }
+      Rails.logger.info "ssh: authorized #{instance_name}"
+      { host: Surface.host_wg_ip, user: "neoclaw", port: 22 }
     end
 
     def teardown_ssh_key(service, instance_name:)
-      port = service.provision_config&.dig("port") || 9022
-      api_delete("http://#{service.wg_ip}:#{port}/keys/neoclaw-#{instance_name}")
+      keys_file = File.join(Surface.ssh_keys_dir, "authorized_keys")
+      return unless File.exist?(keys_file)
+
+      # Remove lines matching this instance
+      lines = File.readlines(keys_file)
+      filtered = lines.reject { |l| l.include?("neoclaw-#{instance_name}") }
+      File.write(keys_file, filtered.join)
+      Rails.logger.info "ssh: deauthorized #{instance_name}"
     end
 
     # ----------------------------------------------------------------

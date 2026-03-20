@@ -115,14 +115,22 @@ class Relay
     @processing = true
     @last_message_at = Time.now
 
+    # Typing indicator: on when claude is running, off when it's done.
+    post_to_hub("/agent/event", { instance: @instance_name, event: "typing" })
+
     cmd = [
       "claude",
       "--model", @model,
       "--output-format", "stream-json",
       "--verbose",
       "--dangerously-skip-permissions",
-      "-p", prompt,
     ]
+
+    # Load MCP config if present — must be on the initial invocation
+    mcp_config = File.join(Dir.home, ".claude", "mcp.json")
+    cmd.push("--mcp-config", mcp_config) if File.exist?(mcp_config) && !continue
+
+    cmd.push("-p", prompt)
     cmd << "--continue" if continue
 
     log "Invoking: #{continue ? '--continue' : 'fresh'} (#{prompt.length} chars)"
@@ -185,6 +193,8 @@ class Relay
     end
 
     @processing = false
+    post_to_hub("/agent/event", { instance: @instance_name, event: "done_typing" })
+
     full_response = response_text.join("\n")
     log "Response: #{full_response.length} chars"
     full_response
@@ -208,13 +218,8 @@ class Relay
         sender = data[:from] || data[:sender] || "unknown"
         content = data[:content] || ""
 
-        # Tell Hub we're typing
-        post_to_hub("/agent/event", {
-          instance: @instance_name,
-          event: "typing"
-        })
-
-        # Invoke Claude Code with --continue (resumes conversation)
+        # Invoke Claude Code with --continue (resumes conversation).
+        # invoke_claude handles typing indicators.
         prompt = "@#{sender}: #{content}"
         Thread.new do
           response = @mutex.synchronize { invoke_claude(prompt) }
@@ -225,11 +230,6 @@ class Relay
               content: response
             })
           end
-
-          post_to_hub("/agent/event", {
-            instance: @instance_name,
-            event: "done_typing"
-          })
         end
 
         res.status = 200

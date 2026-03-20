@@ -8,14 +8,24 @@ module Hub
   class Matrix
     class << self
       # Send a message as an agent (puppeting).
+      # Auto-joins the puppet to the room if needed.
       def puppet(agent_name, room_id, content)
         user_id = "@#{agent_name}:#{Config.server_name}"
         txn_id = SecureRandom.uuid
 
-        put(
+        response = put(
           "/_matrix/client/v3/rooms/#{room_id}/send/m.room.message/#{txn_id}?user_id=#{user_id}",
           { msgtype: "m.text", body: content }
         )
+
+        # If puppet isn't in the room, join and retry
+        if response&.status == 403
+          join_room(user_id, room_id)
+          put(
+            "/_matrix/client/v3/rooms/#{room_id}/send/m.room.message/#{SecureRandom.uuid}?user_id=#{user_id}",
+            { msgtype: "m.text", body: content }
+          )
+        end
       end
 
       # Send a system message (as the appservice bot).
@@ -34,11 +44,20 @@ module Hub
         return unless room_id
         user_id = "@#{agent_name}:#{Config.server_name}"
 
+        # Ensure puppet is in the room
+        join_room(user_id, room_id)
+
         body = typing ? { typing: true, timeout: 30_000 } : { typing: false }
         put(
           "/_matrix/client/v3/rooms/#{room_id}/typing/#{user_id}?user_id=#{user_id}",
           body
         )
+      end
+
+      # Join a puppet user to a room.
+      def join_room(user_id, room_id)
+        encoded = room_id.gsub("!", "%21").gsub(":", "%3A")
+        post("/_matrix/client/v3/join/#{encoded}?user_id=#{user_id}", {})
       end
 
       # Set presence for an agent.
@@ -85,6 +104,17 @@ module Hub
         )
       rescue => e
         Rails.logger.error "Matrix PUT #{path}: #{e.message}"
+        nil
+      end
+
+      def post(path, body)
+        client.post(
+          "#{Config.synapse_url}#{path}",
+          headers: auth_headers,
+          json: body
+        )
+      rescue => e
+        Rails.logger.error "Matrix POST #{path}: #{e.message}"
         nil
       end
 

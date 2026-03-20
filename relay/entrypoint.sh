@@ -83,7 +83,8 @@ cat > "${CLAUDE_DIR}/settings.json" <<'SETEOF'
       "Glob(*)",
       "Grep(*)",
       "WebFetch(*)",
-      "WebSearch(*)"
+      "WebSearch(*)",
+      "mcp__ssh(*)"
     ],
     "deny": []
   }
@@ -111,6 +112,41 @@ fi
 # --- Git identity ---
 gosu agent git config --global user.name "$IDENTITY"
 gosu agent git config --global user.email "${IDENTITY}@neoclaw.local"
+
+# --- MCP config ---
+# Extract host IP from spawn.json (services are all on the host at 10.0.0.2)
+HOST_IP=$(ruby -rjson -e '
+  s = JSON.parse(File.read(ARGV[0]), symbolize_names: true)
+  puts s.dig(:services, :ssh, :host) || "10.0.0.2"
+' "$SPAWN_FILE")
+SSH_USER=$(ruby -rjson -e '
+  s = JSON.parse(File.read(ARGV[0]), symbolize_names: true)
+  puts s.dig(:services, :ssh, :user) || s[:identity]
+' "$SPAWN_FILE")
+SSH_PORT=$(ruby -rjson -e '
+  s = JSON.parse(File.read(ARGV[0]), symbolize_names: true)
+  puts s.dig(:services, :ssh, :port) || 22
+' "$SPAWN_FILE")
+
+# Build MCP config — SSH MCP auto-connects on first use
+cat > "${CLAUDE_DIR}/mcp.json" <<MCPEOF
+{
+  "mcpServers": {
+    "ssh": {
+      "command": "/opt/mcp-env/bin/python3",
+      "args": ["/opt/mcp/ssh/server.py"],
+      "env": {
+        "SSH_HOST": "${HOST_IP}",
+        "SSH_USER": "${SSH_USER}",
+        "SSH_KEY_PATH": "${AGENT_HOME}/.ssh/id_ed25519",
+        "SSH_PORT": "${SSH_PORT}"
+      }
+    }
+  }
+}
+MCPEOF
+chown agent:agent "${CLAUDE_DIR}/mcp.json"
+log "mcp config: ssh → ${SSH_USER}@${HOST_IP}:${SSH_PORT}"
 
 # --- Own everything ---
 chown -R agent:agent "$CLAUDE_DIR"

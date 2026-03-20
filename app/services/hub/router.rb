@@ -68,9 +68,6 @@ module Hub
           state: "resolving"
         )
 
-        # Set typing immediately — agent is booting
-        Matrix.set_typing(identity.name, room.matrix_room_id, true)
-
         result = ManagerClient.resolve(
           identity: identity.name,
           channel: room.slug
@@ -87,7 +84,6 @@ module Hub
           agent
         else
           agent.destroy!
-          Matrix.set_typing(identity.name, room.matrix_room_id, false)
           Matrix.notify(room.matrix_room_id,
             "Spawn failed for #{identity.name}")
           nil
@@ -124,14 +120,12 @@ module Hub
           if ready
             agent.reload
             agent.update!(state: "alive") unless agent.alive?
-            Matrix.set_typing(identity_name, room_id, false)
             agent.deliver(sender: sender, content: content)
             Rails.logger.info "Delivered to #{agent.instance_name} after relay came up"
           else
             Rails.logger.error "Relay for #{agent.instance_name} never came up (5min timeout)"
             agent.reload
             agent.destroy!
-            Matrix.set_typing(identity_name, room_id, false)
             Matrix.notify(room_id, "#{identity_name} failed to start (relay timeout)")
           end
         rescue => e

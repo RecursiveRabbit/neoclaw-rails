@@ -3,7 +3,7 @@
 # Identity comes from spawn.json, not the image.
 #
 # Boot sequence:
-#   entrypoint.sh (root) → WireGuard, credentials, SSH keys
+#   entrypoint.sh (root) → WireGuard, credentials, SSH keys, MCP config
 #   exec gosu agent ruby relay.rb → HTTP server + Claude Code
 
 FROM docker.io/library/ruby:3.3-slim
@@ -20,10 +20,17 @@ RUN apt-get update && apt-get install -y \
     iputils-ping \
     gosu \
     tini \
+    python3 \
+    python3-pip \
+    python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Claude Code
 RUN npm install -g @anthropic-ai/claude-code
+
+# Install MCP dependencies in a venv (avoids pip externally-managed error)
+RUN python3 -m venv /opt/mcp-env && \
+    /opt/mcp-env/bin/pip install --no-cache-dir mcp paramiko
 
 # Create agent user — Claude Code refuses to run as root
 RUN useradd -m -s /bin/bash agent
@@ -37,6 +44,9 @@ RUN bundle install
 COPY relay.rb .
 COPY entrypoint.sh .
 RUN chmod +x relay.rb entrypoint.sh
+
+# MCP servers — available to all agents
+COPY mcp/ /opt/mcp/
 
 # spawn.json is mounted at /run/secrets/spawn.json by the Manager
 # claude-credentials is mounted at /run/secrets/claude-credentials

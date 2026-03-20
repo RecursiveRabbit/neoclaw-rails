@@ -46,8 +46,7 @@ class TransactionsController < ApplicationController
     if event_type == "m.room.canonical_alias"
       alias_str = event.dig("content", "alias")
       if alias_str && room_id
-        name = alias_str.split(":").first
-        update_room_name(room_id, name)
+        update_room_alias(room_id, alias_str)
       end
       return
     end
@@ -66,8 +65,17 @@ class TransactionsController < ApplicationController
   def update_room_name(room_id, name)
     room = Room.find_or_initialize_by(matrix_room_id: room_id)
     room.name = name
-    room.slug = nil  # force re-derive
+    # Only re-derive slug from name if there's no canonical alias
+    room.slug = nil unless room.canonical_alias.present?
     room.save!
-    Rails.logger.info "learned room #{room_id} -> #{room.slug}"
+    Rails.logger.info "learned room name #{room_id} -> #{room.name} (slug: #{room.slug})"
+  end
+
+  def update_room_alias(room_id, alias_str)
+    room = Room.find_or_initialize_by(matrix_room_id: room_id)
+    room.canonical_alias = alias_str
+    room.slug = nil  # always re-derive from alias
+    room.save!
+    Rails.logger.info "learned room alias #{room_id} -> #{alias_str} (slug: #{room.slug})"
   end
 end
