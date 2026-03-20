@@ -36,18 +36,21 @@ module Hub
       # Resolve an agent and deliver a message. Spawns if needed.
       def deliver_to(identity, room:, sender:, content:)
         agent = room.agent_for(identity)
+        just_spawned = false
 
         unless agent
           agent = resolve(identity, room)
           return unless agent  # resolve failed, error already reported
+          just_spawned = true
         end
 
-        # Agent is still booting — relay will queue once it's ready.
-        # The first message that triggered the spawn will be delivered
-        # once the Manager callbacks READY and we flip to alive.
-        return if agent.resolving?
-
-        agent.deliver(sender: sender, content: content)
+        if just_spawned || agent.resolving?
+          # Relay may not be listening yet. Wait for it in background
+          # so we don't block the Synapse transaction endpoint.
+          wait_for_relay_and_deliver(agent, sender: sender, content: content)
+        else
+          agent.deliver(sender: sender, content: content)
+        end
       end
 
       # Ask the Manager for an agent. Creates the Agent route on success.
@@ -74,17 +77,13 @@ module Hub
         )
 
         if result && result[:ip]
-          # Container may still be starting — store the IP but only
-          # mark alive if the Manager says it's ready now.
-          new_state = result[:starting] ? "resolving" : "alive"
+          # Store the IP but stay "resolving" — we don't know if the
+          # relay is listening yet. deliver_to will poll and flip to alive.
           agent.update!(
             wg_address: result[:ip],
-            state: new_state,
+            state: "resolving",
             last_message_at: Time.current
           )
-          if new_state == "alive"
-            Matrix.set_typing(identity.name, room.matrix_room_id, false)
-          end
           agent
         else
           agent.destroy!
@@ -99,6 +98,45 @@ module Hub
         Matrix.notify(room.matrix_room_id,
           "Spawn failed for #{identity.name}: #{e.message}")
         nil
+      end
+
+      # Wait for a relay to come online, then deliver the message.
+      # Runs in a background thread so we don't block Synapse.
+      # The relay's HTTP server starts before Claude Code boots, and
+      # messages queue behind the boot mutex — so we just need to wait
+      # for the HTTP server, not for boot to complete.
+      def wait_for_relay_and_deliver(agent, sender:, content:)
+        Thread.new do
+          ip = agent.wg_address
+          identity_name = agent.identity.name
+          room_id = agent.room.matrix_room_id
+
+          # Poll relay health every 2s for up to 5 minutes
+          ready = false
+          150.times do
+            sleep 2
+            if Relay.health(ip: ip)
+              ready = true
+              break
+            end
+          end
+
+          if ready
+            agent.reload
+            agent.update!(state: "alive") unless agent.alive?
+            Matrix.set_typing(identity_name, room_id, false)
+            agent.deliver(sender: sender, content: content)
+            Rails.logger.info "Delivered to #{agent.instance_name} after relay came up"
+          else
+            Rails.logger.error "Relay for #{agent.instance_name} never came up (5min timeout)"
+            agent.reload
+            agent.destroy!
+            Matrix.set_typing(identity_name, room_id, false)
+            Matrix.notify(room_id, "#{identity_name} failed to start (relay timeout)")
+          end
+        rescue => e
+          Rails.logger.error "wait_for_relay failed for #{agent&.instance_name}: #{e.message}"
+        end
       end
 
       # Route to all identities listening on this channel.

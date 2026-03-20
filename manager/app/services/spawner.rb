@@ -36,6 +36,9 @@ class Spawner
     private
 
     def spawn(identity:, channel:, instance_name:)
+      # Clean up dead records so we can reuse the instance_name
+      Container.where(instance_name: instance_name, state: "dead").destroy_all
+
       config = AgentConfig.find_by!(identity: identity)
       services = config.services_for(channel)
 

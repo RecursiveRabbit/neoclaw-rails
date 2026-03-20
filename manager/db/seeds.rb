@@ -92,6 +92,8 @@ end
     base_services: %w[forgejo ssh] },
   { identity: "census",   repo: "census/workspace",    model: "claude-sonnet-4-6", singleton: false,
     base_services: %w[forgejo ssh] },
+  { identity: "voss",     repo: "voss/workspace",      model: "claude-opus-4-6",   singleton: false,
+    base_services: %w[forgejo ssh valley] },
 ].each do |attrs|
   AgentConfig.find_or_create_by!(identity: attrs[:identity]) do |c|
     c.assign_attributes(attrs.merge(idle_timeout: 480))

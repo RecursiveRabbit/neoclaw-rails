@@ -24,6 +24,7 @@ module Surface
     CLAUDE_CREDENTIALS     = "/run/secrets/claude-credentials"
 
     HOST_SPAWN_DIR         = ENV.fetch("HOST_SPAWN_DIR", "/var/lib/neoclaw/spawn")
+    HOST_RESCUE_DIR        = ENV.fetch("HOST_RESCUE_DIR", "/var/lib/neoclaw/sessions")
     HOST_CLAUDE_CREDENTIALS = ENV.fetch("HOST_CLAUDE_CREDENTIALS",
                                         "/var/lib/neoclaw/secrets/claude-credentials.json")
 
@@ -65,9 +66,10 @@ module Surface
     # Mounts — container paths, not configurable
     # =================================================================
 
-    def podman_socket  = PODMAN_SOCKET
-    def spawn_dir      = SPAWN_DIR
-    def host_spawn_dir = HOST_SPAWN_DIR
+    def podman_socket   = PODMAN_SOCKET
+    def spawn_dir       = SPAWN_DIR
+    def host_spawn_dir  = HOST_SPAWN_DIR
+    def host_rescue_dir = HOST_RESCUE_DIR
 
     def host_claude_credentials = HOST_CLAUDE_CREDENTIALS
 

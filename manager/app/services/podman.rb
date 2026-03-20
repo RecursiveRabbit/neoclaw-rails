@@ -2,6 +2,10 @@
 #
 # Talks to podman via the mounted socket. Every container is the same
 # stock image with a spawn.json mounted as a secret.
+#
+# When a pod with the same name already exists (normal — agents get
+# frozen and re-spawned), we rescue the workspace before removing it.
+# The agent put effort into that context. We keep it.
 
 class Podman
   class << self
@@ -9,6 +13,10 @@ class Podman
       # spawn_path is the Manager-internal path (e.g. /spawn/silas-test.json).
       # podman --remote executes on the HOST, so we translate to the host path.
       host_spawn_path = spawn_path.sub(Surface.spawn_dir, Surface.host_spawn_dir)
+
+      # A previous pod with this name may still exist (frozen, stopped,
+      # or crashed). Rescue its workspace before removing it.
+      rescue_and_remove(instance_name)
 
       args = [
         "podman", "--remote", "--url", "unix://#{Surface.podman_socket}",
@@ -60,6 +68,70 @@ class Podman
     end
 
     private
+
+    RESCUE_DIR = "/rescued"
+
+    # Rescue the workspace from an existing pod, then remove it.
+    # The agent's work matters. We copy it out before clearing the way.
+    def rescue_and_remove(instance_name)
+      # Check if the pod exists at all (running or stopped)
+      inspect = run_cmd(["podman", "--remote", "--url", "unix://#{Surface.podman_socket}",
+                         "inspect", "--format", "{{.State.Status}}", instance_name]).strip
+      return if inspect.empty? || inspect.include?("no such")
+
+      # Rescue workspace and session data
+      timestamp = Time.now.strftime("%Y%m%d-%H%M%S")
+      rescue_path = File.join(Surface.host_rescue_dir, instance_name, timestamp)
+
+      rescued = rescue_from_pod(instance_name, rescue_path)
+
+      if rescued
+        AuditLog.record("SESSION_RESCUED",
+          instance_name: instance_name,
+          detail: "Rescued to #{rescue_path} before re-spawn")
+
+        HubClient.callback(
+          event: "session_rescued",
+          instance: instance_name,
+          rescue_path: rescue_path
+        )
+      end
+
+      # Now it's safe to remove
+      run_cmd(["podman", "--remote", "--url", "unix://#{Surface.podman_socket}",
+               "rm", "-f", instance_name])
+    rescue => e
+      # If rescue fails, still remove — we can't block spawns forever.
+      # But log what happened so someone can investigate.
+      Rails.logger.error "rescue_and_remove #{instance_name}: #{e.message}"
+      run_cmd(["podman", "--remote", "--url", "unix://#{Surface.podman_socket}",
+               "rm", "-f", instance_name]) rescue nil
+    end
+
+    # Copy workspace and .claude session out of a pod.
+    # Returns true if anything was rescued.
+    def rescue_from_pod(instance_name, rescue_path)
+      rescued_anything = false
+
+      ["/workspace", "/home/agent/.claude"].each do |container_path|
+        subdir = container_path == "/workspace" ? "workspace" : "claude"
+        host_dest = File.join(rescue_path, subdir)
+
+        output = run_cmd(["podman", "--remote", "--url", "unix://#{Surface.podman_socket}",
+                          "cp", "#{instance_name}:#{container_path}/.", host_dest])
+
+        # podman cp returns empty on success, error text on failure
+        if output.strip.empty? || !output.include?("error")
+          rescued_anything = true
+          Rails.logger.info "Rescued #{container_path} from #{instance_name}"
+        end
+      end
+
+      rescued_anything
+    rescue => e
+      Rails.logger.error "rescue_from_pod #{instance_name}: #{e.message}"
+      false
+    end
 
     def run_cmd(args)
       IO.popen(args, err: [:child, :out]) { |io| io.read }

@@ -64,9 +64,11 @@ CLAUDE_DIR="${AGENT_HOME}/.claude"
 mkdir -p "$CLAUDE_DIR"
 
 if [ -f /run/secrets/claude-credentials ]; then
-    install -m 600 -o agent -g agent /dev/null "${CLAUDE_DIR}/.credentials.json"
-    cat /run/secrets/claude-credentials > "${CLAUDE_DIR}/.credentials.json"
-    log "claude credentials installed"
+    # Symlink to the bind mount so credential refreshes on the host
+    # are visible immediately. No stale copies.
+    ln -sf /run/secrets/claude-credentials "${CLAUDE_DIR}/.credentials.json"
+    chown -h agent:agent "${CLAUDE_DIR}/.credentials.json"
+    log "claude credentials linked"
 fi
 
 # --- Claude settings: auto-accept all permissions ---
