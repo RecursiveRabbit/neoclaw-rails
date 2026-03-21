@@ -9,6 +9,7 @@
     <div class="flex gap-2">
       <%= link_to "stream →", stream_container_path(@container), class: "text-sm px-3 py-1.5 rounded bg-amber-900/30 border border-amber-700/30 text-amber-500 hover:bg-amber-900/50 transition-colors" %>
       <% if @container.alive? %>
+        <%= button_to "refresh", refresh_container_path(@container), method: :post, class: "text-sm px-3 py-1.5 rounded bg-stone-800 text-stone-400 hover:text-amber-400", data: { turbo_confirm: "Hot swap to latest image?" } %>
         <%= button_to "freeze", freeze_container_path(@container), method: :post, class: "text-sm px-3 py-1.5 rounded bg-stone-800 text-stone-400 hover:text-blue-400", data: { turbo_confirm: "Freeze?" } %>
         <%= button_to "kill", kill_container_path(@container), method: :post, class: "text-sm px-3 py-1.5 rounded bg-stone-800 text-stone-400 hover:text-red-400", data: { turbo_confirm: "Kill?" } %>
       <% end %>

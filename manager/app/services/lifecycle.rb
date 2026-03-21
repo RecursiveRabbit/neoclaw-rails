@@ -35,6 +35,36 @@ class Lifecycle
       relay_signal(container, :sunset)
     end
 
+    # Hot swap — new image, preserved workspace and session.
+    # The agent resumes with --continue. Seconds, not minutes.
+    def hot_swap!(container)
+      instance = container.instance_name
+      AuditLog.record("SWAP_START", instance_name: instance, identity: container.identity)
+
+      # Rescue workspace and session from running pod
+      rescue_dir = File.join(Surface.host_rescue_dir, "swap-#{instance}")
+      Podman.rescue_workspace(instance, rescue_dir)
+
+      # Get the spawn.json path (host side) before we kill the pod
+      spawn_path = File.join(Surface.host_spawn_dir, "#{instance}.json")
+
+      # Stop and remove old pod
+      Podman.rm(container.container_id) if container.container_id
+
+      # Start new pod with swap hold
+      new_id = Podman.run_swap(
+        instance_name: instance,
+        spawn_path: spawn_path,
+        rescue_dir: rescue_dir
+      )
+
+      container.update!(container_id: new_id, state: "starting")
+
+      AuditLog.record("SWAP_COMPLETE",
+        instance_name: instance, identity: container.identity,
+        detail: "Workspace and session preserved")
+    end
+
     def force_kill!(container)
       AuditLog.record("FORCE_KILL",
         instance_name: container.instance_name,

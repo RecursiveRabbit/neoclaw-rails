@@ -23,6 +23,19 @@ class ContainersController < AdminController
     redirect_to containers_path, notice: "Killed #{container.instance_name}."
   end
 
+  # POST /containers/:id/refresh — hot swap to latest image
+  def refresh
+    container = Container.find(params[:id])
+    Thread.new do
+      Lifecycle.hot_swap!(container)
+    rescue => e
+      Rails.logger.error "hot_swap #{container.instance_name}: #{e.message}"
+      AuditLog.record("SWAP_FAILED",
+        instance_name: container.instance_name, detail: e.message)
+    end
+    redirect_to containers_path, notice: "Refreshing #{container.instance_name}..."
+  end
+
   # GET /containers/:id/stream — live Claude Code output
   def stream
     @container = Container.find(params[:id])
