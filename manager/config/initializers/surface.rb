@@ -150,6 +150,6 @@ end
 # Boot — verify we're in the container, or die
 # =================================================================
 
-unless ENV["RAILS_ENV"] == "test"
+unless ENV["RAILS_ENV"] == "test" || defined?(Rake)
   Surface.verify_container!
 end

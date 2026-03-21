@@ -27,14 +27,17 @@ class RelayController < ApplicationController
 
   # POST /containers/:instance/output
   # Claude Code stream-json lines arrive here from the relay.
-  # Broadcast to any browser watching this container's stream.
+  # Store in the output buffer and broadcast to any live viewers.
   def output
     container = find_container
     return unless container
 
     data = request.body.read
 
-    # Broadcast to ActionCable subscribers
+    # Store in the output buffer — persists whether anyone is watching or not
+    StreamBuffer.append(container.instance_name, data)
+
+    # Broadcast to any live ActionCable subscribers
     ActionCable.server.broadcast(
       "container_stream_#{container.instance_name}",
       data

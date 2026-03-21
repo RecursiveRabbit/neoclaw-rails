@@ -37,6 +37,7 @@ RUN bundle install --without development test
 COPY . .
 
 RUN mkdir -p db tmp log storage
+RUN SECRET_KEY_BASE=placeholder RAILS_ENV=production bundle exec rails assets:precompile
 RUN chmod +x /app/entrypoint.sh
 
 EXPOSE 9200

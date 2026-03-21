@@ -14,6 +14,11 @@ class ContainerStreamChannel < ApplicationCable::Channel
   def subscribed
     instance = params[:instance]
     stream_from "container_stream_#{instance}"
+
+    # Send buffered history so the viewer can scroll back
+    StreamBuffer.history(instance).each do |entry|
+      transmit(entry[:data])
+    end
   end
 
   def unsubscribed
