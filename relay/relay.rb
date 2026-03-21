@@ -217,12 +217,28 @@ class Relay
 
   def start_typing_keepalive
     Thread.new do
-      while @processing
-        post_to_hub("/agent/event", { instance: @instance_name, event: "typing" })
+      loop do
         sleep 20
+        if claude_running?
+          post_to_hub("/agent/event", { instance: @instance_name, event: "typing" })
+        else
+          break
+        end
       end
-    rescue
-      # Thread killed when claude exits — expected
+      # Claude died without invoke_claude returning — clean up
+      unless @processing == false
+        @processing = false
+        post_to_hub("/agent/event", { instance: @instance_name, event: "done_typing" })
+        log "Typing watchdog: claude process gone, cleared typing"
+      end
+    rescue => e
+      log "Typing watchdog error: #{e.message}"
+    end
+  end
+
+  def claude_running?
+    Dir.glob("/proc/*/cmdline").any? do |f|
+      File.read(f).include?("claude") rescue false
     end
   end
 
