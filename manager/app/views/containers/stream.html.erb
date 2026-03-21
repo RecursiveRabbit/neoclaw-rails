@@ -68,13 +68,18 @@
   function appendEvent(event) {
     switch (event.type) {
       case "assistant":
-        // Message content blocks
         if (event.message?.content) {
           for (const block of event.message.content) {
             if (block.type === "text") {
               appendLine(block.text, "text-stone-200")
             } else if (block.type === "thinking") {
               appendLine(block.thinking, "text-stone-600 italic")
+            } else if (block.type === "tool_use") {
+              appendLine(`⚙ ${block.name}`, "text-amber-600")
+              if (block.input) {
+                const preview = JSON.stringify(block.input).slice(0, 300)
+                appendLine(`  ${preview}`, "text-stone-600 text-xs")
+              }
             }
           }
         }
@@ -83,21 +88,29 @@
       case "tool_use":
         appendLine(`⚙ ${event.name}`, "text-amber-600")
         if (event.input) {
-          const preview = JSON.stringify(event.input).slice(0, 200)
+          const preview = JSON.stringify(event.input).slice(0, 300)
           appendLine(`  ${preview}`, "text-stone-600 text-xs")
         }
         break
 
       case "tool_result":
-        // Truncated tool results
         const content = typeof event.content === "string"
           ? event.content.slice(0, 300)
           : JSON.stringify(event.content).slice(0, 300)
         appendLine(`  → ${content}`, "text-stone-500 text-xs")
         break
 
+      case "user":
+        // Tool results coming back — show the output
+        if (event.tool_use_result?.stdout) {
+          const out = event.tool_use_result.stdout.slice(0, 300)
+          appendLine(`  → ${out}`, "text-stone-500 text-xs")
+        }
+        break
+
       case "result":
-        appendLine(`✓ done (${event.duration_ms}ms)`, "text-emerald-600")
+        const costStr = event.total_cost_usd ? ` · $${event.total_cost_usd.toFixed(4)}` : ""
+        appendLine(`✓ done (${event.duration_ms}ms${costStr})`, "text-emerald-600")
         appendLine("", "")
         break
 
@@ -105,8 +118,19 @@
         appendLine(`✗ ${event.error || event.message}`, "text-red-500")
         break
 
+      case "system":
+        if (event.subtype === "init") {
+          appendLine(`session ${event.session_id?.slice(0,8)} · ${event.model}`, "text-stone-600 text-xs")
+        }
+        break
+
+      case "rate_limit_event":
+        // Hide — not useful in the stream view
+        break
+
       default:
-        appendLine(JSON.stringify(event), "text-stone-500 text-xs")
+        // Unknown event type — show compact
+        appendLine(JSON.stringify(event).slice(0, 200), "text-stone-600 text-xs")
     }
   }
 
