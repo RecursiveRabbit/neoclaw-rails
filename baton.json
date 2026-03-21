@@ -120,6 +120,8 @@
     "Boot response from agent orientation is silently discarded. Should be delivered to Matrix.",
     "Crashed pod: Manager DB says 'starting', relay never comes up, Hub waits 5min in silence. Need faster crash detection.",
     "Puma background processes get killed by shell cleanup. Need proper process management.",
+    "swap-image.sh failed because /workspace didn't exist — it was there on previous swaps of the same session. The workspace disappeared between swaps. Bug was destroyed when Voss killed the pod instead of investigating. Swap script should copy /home/agent/ not just /workspace.",
+    "NEVER kill a pod to work around a bug. Investigate first. The agent has a live session. Killing destroys evidence AND the agent's work.",
     "Pods, not containers. Freeze, not kill. Rescue, not discard."
   ],
 
