@@ -84,15 +84,15 @@ module Hub
           agent
         else
           agent.destroy!
-          Matrix.notify(room.matrix_room_id,
-            "Spawn failed for #{identity.name}")
+          Matrix.puppet(identity.name, room.matrix_room_id,
+            "Failed to spawn. Manager returned no IP.")
           nil
         end
       rescue => e
         Rails.logger.error "resolve failed for #{identity.name}: #{e.message}"
         agent&.destroy!
-        Matrix.notify(room.matrix_room_id,
-          "Spawn failed for #{identity.name}: #{e.message}")
+        Matrix.puppet(identity.name, room.matrix_room_id,
+          "Failed to spawn: #{e.message}")
         nil
       end
 
@@ -106,14 +106,37 @@ module Hub
           ip = agent.wg_address
           identity_name = agent.identity.name
           room_id = agent.room.matrix_room_id
+          instance_name = agent.instance_name
 
-          # Poll relay health every 2s for up to 5 minutes
+          # Poll relay health every 2s for up to 5 minutes.
+          # Also check Manager status periodically — if the container
+          # died (entrypoint crash, OOM, etc.), fail immediately instead
+          # of waiting the full 5 minutes in silence.
           ready = false
-          150.times do
+          150.times do |i|
             sleep 2
             if Relay.health(ip: ip)
               ready = true
               break
+            end
+
+            # After 30s with no relay, check if the container is even running.
+            # The Manager DB may say "starting" even if podman says it's dead,
+            # so we also check if it's been starting too long without a relay.
+            if i == 15  # 30 seconds
+              status = ManagerClient.status
+              if status
+                container = status[:containers]&.find { |c| c[:instance] == instance_name }
+                if container.nil? || container[:state] == "dead"
+                  Rails.logger.error "Container #{instance_name} died during boot"
+                  break
+                end
+                # Still "starting" after 30s with no relay = probably crashed
+                if container[:state] == "starting"
+                  Rails.logger.error "Container #{instance_name} still starting after 30s with no relay — likely crashed"
+                  break
+                end
+              end
             end
           end
 
@@ -121,12 +144,12 @@ module Hub
             agent.reload
             agent.update!(state: "alive") unless agent.alive?
             agent.deliver(sender: sender, content: content)
-            Rails.logger.info "Delivered to #{agent.instance_name} after relay came up"
+            Rails.logger.info "Delivered to #{instance_name} after relay came up"
           else
-            Rails.logger.error "Relay for #{agent.instance_name} never came up (5min timeout)"
+            Rails.logger.error "Relay for #{instance_name} never came up"
             agent.reload
             agent.destroy!
-            Matrix.notify(room_id, "#{identity_name} failed to start (relay timeout)")
+            Matrix.puppet(identity_name, room_id, "Failed to start. Check the pod logs.")
           end
         rescue => e
           Rails.logger.error "wait_for_relay failed for #{agent&.instance_name}: #{e.message}"
@@ -134,9 +157,19 @@ module Hub
       end
 
       # Route to all identities listening on this channel.
+      # If no listeners match but the room has exactly one agent,
+      # route to them — DMs and single-agent rooms are implicitly directed.
       def route_to_listeners(room:, sender:, content:)
         listeners = Listener.for_channel(room.slug).includes(:identity)
-        return if listeners.empty?
+
+        if listeners.empty?
+          # No explicit listeners — check for a sole agent in the room
+          sole_agent = room.agents.includes(:identity).first
+          if sole_agent && room.agents.count == 1 && sole_agent.identity.name != sender
+            deliver_to(sole_agent.identity, room: room, sender: sender, content: content)
+          end
+          return
+        end
 
         listeners.each do |listener|
           identity = listener.identity
@@ -155,7 +188,8 @@ module Hub
         end
 
         # Matrix pill: <a href="https://matrix.to/#/@user:server">Name</a>
-        if formatted_body =~ %r{\A\s*<a href="https://matrix\.to/#/@([\w.-]+):[\w.-]+">[^<]*</a>\s*:?\s*(.*)}m
+        # May be wrapped in <p> tags by Element/clients
+        if formatted_body =~ %r{\A\s*(?:<p>)?\s*<a href="https://matrix\.to/#/@([\w.-]+):[\w.-]+">[^<]*</a>\s*:?\s*(.*)}m
           localpart = $1.downcase
           rest = body.sub(/\A\s*\S+\s*:?\s*/, "").strip
           return [localpart, rest]

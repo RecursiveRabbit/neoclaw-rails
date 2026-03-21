@@ -120,25 +120,23 @@ class Provisioner
     # ----------------------------------------------------------------
 
     def provision_ssh_key(service, instance_name:, ssh_pubkey:)
-      keys_file = File.join(Surface.ssh_keys_dir, "authorized_keys")
+      identity = instance_name.split("-").first
 
-      # Append key with comment for identification and cleanup
-      File.open(keys_file, "a") do |f|
-        f.puts "#{ssh_pubkey} neoclaw-#{instance_name}"
-      end
+      # Write to per-instance authorized_keys directory.
+      # sshd's AuthorizedKeysCommand at /etc/neoclaw/ssh-authorized-keys.sh
+      # reads from /var/lib/neoclaw/sftp-keys/<instance>/authorized_keys
+      # and also /var/lib/neoclaw/sftp-keys/<identity>/authorized_keys
+      keys_dir = File.join(Surface.ssh_keys_dir, instance_name)
+      FileUtils.mkdir_p(keys_dir)
+      File.write(File.join(keys_dir, "authorized_keys"), "#{ssh_pubkey}\n")
 
-      Rails.logger.info "ssh: authorized #{instance_name}"
-      { host: Surface.host_wg_ip, user: "neoclaw", port: 22 }
+      Rails.logger.info "ssh: authorized #{instance_name} as #{identity}"
+      { host: Surface.host_wg_ip, user: identity, port: 22 }
     end
 
     def teardown_ssh_key(service, instance_name:)
-      keys_file = File.join(Surface.ssh_keys_dir, "authorized_keys")
-      return unless File.exist?(keys_file)
-
-      # Remove lines matching this instance
-      lines = File.readlines(keys_file)
-      filtered = lines.reject { |l| l.include?("neoclaw-#{instance_name}") }
-      File.write(keys_file, filtered.join)
+      keys_dir = File.join(Surface.ssh_keys_dir, instance_name)
+      FileUtils.rm_rf(keys_dir)
       Rails.logger.info "ssh: deauthorized #{instance_name}"
     end
 

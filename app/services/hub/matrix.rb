@@ -33,10 +33,20 @@ module Hub
         return unless room_id
         txn_id = SecureRandom.uuid
 
-        put(
+        response = put(
           "/_matrix/client/v3/rooms/#{room_id}/send/m.room.message/#{txn_id}",
           { msgtype: "m.text", body: message }
         )
+
+        # Bot not in room — join and retry
+        if response&.status == 403
+          bot_id = "@#{Config.appservice_user}:#{Config.server_name}"
+          join_room(bot_id, room_id)
+          put(
+            "/_matrix/client/v3/rooms/#{room_id}/send/m.room.message/#{SecureRandom.uuid}",
+            { msgtype: "m.text", body: message }
+          )
+        end
       end
 
       # Set typing indicator for an agent.

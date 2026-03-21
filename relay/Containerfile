@@ -20,6 +20,8 @@ RUN apt-get update && apt-get install -y \
     iputils-ping \
     gosu \
     tini \
+    rsync \
+    jq \
     python3 \
     python3-pip \
     python3-venv \
@@ -29,8 +31,15 @@ RUN apt-get update && apt-get install -y \
 RUN npm install -g @anthropic-ai/claude-code
 
 # Install MCP dependencies in a venv (avoids pip externally-managed error)
+# MCP dependencies — all servers share one venv
 RUN python3 -m venv /opt/mcp-env && \
-    /opt/mcp-env/bin/pip install --no-cache-dir mcp paramiko
+    /opt/mcp-env/bin/pip install --no-cache-dir \
+      mcp \
+      paramiko \
+      httpx \
+      matrix-nio \
+      aiofiles \
+      paho-mqtt
 
 # Create agent user — Claude Code refuses to run as root
 RUN useradd -m -s /bin/bash agent

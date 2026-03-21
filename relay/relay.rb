@@ -80,20 +80,33 @@ class Relay
   end
 
   def boot_claude_code
-    clone_url = boot_clone_url
+    if File.exist?(File.join(WORKSPACE, ".git"))
+      # Hot swap — workspace and session preserved from previous pod.
+      # Resume with --continue, no clone needed.
+      log "Hot swap detected — workspace exists, resuming session"
+      swap_prompt = [
+        "You were hot-swapped to a new container image.",
+        "Your workspace and conversation history are intact.",
+        "New capabilities may be available (check MCP tools).",
+        "Continue where you left off.",
+      ].join("\n")
+      @mutex.synchronize { invoke_claude(swap_prompt, continue: true) }
+    else
+      # Cold boot — empty workspace, clone and orient.
+      clone_url = boot_clone_url
+      boot_prompt = [
+        "You have just been instantiated as #{@identity} in channel ##{@channel}.",
+        "Your workspace is empty. Your first act is to clone your repo:",
+        "  git clone #{clone_url} #{WORKSPACE}",
+        "Then read #{WORKSPACE}/identity.json to learn who you are.",
+        "Read #{WORKSPACE}/baton.json to pick up where you left off.",
+        "Read #{WORKSPACE}/memory/ for your accumulated memories.",
+        "Orient yourself. Push your work before you go.",
+      ].join("\n")
+      log "Cold boot — cloning workspace"
+      @mutex.synchronize { invoke_claude(boot_prompt, continue: false) }
+    end
 
-    boot_prompt = [
-      "You have just been instantiated as #{@identity} in channel ##{@channel}.",
-      "Your workspace is empty. Your first act is to clone your repo:",
-      "  git clone #{clone_url} #{WORKSPACE}",
-      "Then read #{WORKSPACE}/identity.json to learn who you are.",
-      "Read #{WORKSPACE}/baton.json to pick up where you left off.",
-      "Read #{WORKSPACE}/memory/ for your accumulated memories.",
-      "Orient yourself. Push your work before you go.",
-    ].join("\n")
-
-    log "Booting agent..."
-    @mutex.synchronize { invoke_claude(boot_prompt, continue: false) }
     @booted = true
     signal_ready
     log "Agent booted and ready"
@@ -115,8 +128,9 @@ class Relay
     @processing = true
     @last_message_at = Time.now
 
-    # Typing indicator: on when claude is running, off when it's done.
-    post_to_hub("/agent/event", { instance: @instance_name, event: "typing" })
+    # Typing indicator: re-send every 20s while claude runs.
+    # Matrix expires typing after 30s, so 20s keeps it alive.
+    typing_thread = start_typing_keepalive
 
     cmd = [
       "claude",
@@ -193,11 +207,23 @@ class Relay
     end
 
     @processing = false
+    typing_thread&.kill
     post_to_hub("/agent/event", { instance: @instance_name, event: "done_typing" })
 
     full_response = response_text.join("\n")
     log "Response: #{full_response.length} chars"
     full_response
+  end
+
+  def start_typing_keepalive
+    Thread.new do
+      while @processing
+        post_to_hub("/agent/event", { instance: @instance_name, event: "typing" })
+        sleep 20
+      end
+    rescue
+      # Thread killed when claude exits — expected
+    end
   end
 
   # ==================================================================

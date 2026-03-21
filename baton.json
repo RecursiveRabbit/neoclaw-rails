@@ -1,28 +1,91 @@
 {
-  "written": "2026-03-20T06:00:00Z",
-  "session_summary": "Voss session: end-to-end is WORKING. Margaux responded in Matrix. Silas responded in #infra. Fixed delivery timing (Hub polls relay health), credential refresh (symlink chain), pod lifecycle (rescue-before-remove), dead container collisions (Spawner + Podman cleanup), room slug derivation (canonical alias over display name), puppet auto-join (agents join rooms before speaking), agent state gating (relay events flip resolving→alive). Decided to rebuild codebase from scratch — four architecture generations fossilized in. This codebase is the working model for the rewrite.",
+  "written": "2026-03-21T08:00:00Z",
+  "session_summary": "Voss sessions (Mar 19-21): end-to-end proven with Margaux and Silas. Fixed delivery timing, credentials, pod lifecycle, room slugs, puppet auto-join, agent state gating, typing keepalive. Major design sessions with Evans on routing, lifecycle narration, and service architecture. Key correction: all features get implemented and proven in THIS codebase. The rewrite is a cleanup, not an opportunity to test new ideas. Everything must work here first.",
 
   "decision": {
     "what": "Rebuild NeoClaw-Rails from scratch in a new directory",
-    "why": "Four architecture iterations baked in. Old WG IPs in active Provisioner code, dead schema columns, stale docs, build scripts referencing deleted infrastructure. The architecture is proven — the code just needs to be written clean.",
-    "approach": "Experiment and iron out kinks in THIS codebase. Then build it right in a new directory using this as the working model. No apprentice marks.",
+    "why": "Four architecture iterations fossilized in the code. The architecture is proven, the code needs to be written clean.",
+    "approach": "Experiment and iron out kinks in THIS codebase. Then build it right. No apprentice marks.",
     "reference": "This directory (clawd/projects/neoclaw_rails/) is the working model."
   },
 
   "architecture": {
-    "topology": "Star. Router is the center. Every peer (host, manager, agents) connects only to the Router. The Router forwards and firewalls.",
+    "topology": "Star. Router is the center. Every peer (host, manager, agents) connects only to the Router.",
     "address_plan": {
       "10.0.0.1": "Router (pod at 10.88.0.20)",
       "10.0.0.2": "Host (all services — Hub, Forgejo, Valley, etc.)",
       "10.0.0.3": "Manager (pod at 10.88.0.11)",
       "10.0.1.x": "Agents (static IP per instance name, permanent)"
     },
-    "internet_egress": "Pods have internet via the podman bridge default route. WG is for internal mesh only.",
+    "internet_egress": "Pods have internet via podman bridge default route. WG is for internal mesh only.",
     "components": {
-      "hub": "Rails app on host. Matrix appservice. Routes @mentions, puppets responses. Port 3100.",
+      "hub": "Rails app on host. Matrix appservice. Routes @mentions, puppets responses. Port 3100. Synapse must be a subprocess of the Hub — they share fate. No independent restart.",
       "router": "Ruby WG hub + nftables firewall. ~760 lines. Port 8080 API, 51820 WG.",
       "manager": "Rails app in pod. Spawns/freezes agents. Calls Router API. Provisions Forgejo. Port 9200.",
       "relay": "One Ruby file in every agent pod. Claude Code glue. Port 9300."
+    }
+  },
+
+  "correction": "Evans: 'We aren't deferring upgrades to the new version. This version needs to be feature complete, the rewrite is a cleanup not an opportunity to test new features.' Every design decision gets implemented and proven HERE first. The rewrite just removes the dead wood.",
+
+  "todo": [
+    "Replace parse_mention with Matrix m.mentions — stop parsing @mentions, use what Matrix gives us",
+    "Replace Listener model with Matrix notification settings — 'All messages' vs 'Mentions and Keywords' per agent per room",
+    "Make Synapse a subprocess of the Hub — they share fate, no backoff window",
+    "Hub as systemd service with EnvironmentFile for tokens — front door, not operator hacks",
+    "Relay narration — third person system messages at boot ('Spawning silas-infra...'), orient ('Orienting new agent, please wait.'), freeze ('Agent going idle.'), sunset ('Context full, sunsetting agent.')",
+    "Deliver boot response — agent's first words after orientation currently discarded, should go to Matrix",
+    "DM slugs — derive as 'dm-<other_user>' from Matrix room membership, not room ID hash",
+    "DM cold start — DM rooms should know which agent they belong to even before spawn",
+    "Implicit routing — sole agent in room receives all messages without @mention (implemented, needs testing)",
+    "Error messages from puppet, not bot — implemented but bot auto-join still broken for some rooms",
+    "Crash detection — Manager DB says 'starting' when pod is dead, need faster feedback",
+    "Service provisioning — Provisioner uses ghost IPs, needs Surface.host_wg_ip",
+    "Persist nc-host WG + UFW across reboot — systemd unit",
+    "Clean up Manager seeds — drop old wg_* fields from ServiceType"
+  ],
+
+  "design_decisions": {
+    "synapse_as_subprocess": {
+      "what": "Synapse runs as a child process of the Hub, not independently.",
+      "why": "Synapse uses exponential backoff on appservice delivery. If the Hub restarts, Synapse backs off and stops sending transactions — sometimes permanently until Synapse itself is restarted. Making them share fate eliminates the window."
+    },
+    "relay_narration": {
+      "what": "The relay sends system messages to Matrix at lifecycle events. Third person, factual — the relay is infrastructure, not the agent.",
+      "messages": {
+        "boot": "Spawning silas-infra...",
+        "orient": "Orienting new agent, please wait.",
+        "boot_response": "Deliver the agent's first response to Matrix (currently discarded).",
+        "freeze": "Agent going idle.",
+        "sunset": "Context full, sunsetting agent."
+      },
+      "rule": "The relay never speaks as the agent. Agent words come from Claude only."
+    },
+    "implicit_routing": {
+      "what": "If a room has exactly one agent and no @mention, route the message to that agent.",
+      "why": "DMs and single-agent rooms are inherently directed. No listener config needed. Side effect: also works for rooms like #infra with only one agent."
+    },
+    "dm_slugs": {
+      "what": "DM rooms should derive slugs as 'dm-<other_user>' not the Matrix room ID hash.",
+      "result": "Instance names like 'silas-dm-evans' instead of 'silas-urdaabrrscrlegwbht'."
+    },
+    "error_messages_from_puppet": {
+      "what": "When an agent fails to spawn or start, the error comes from the agent's puppet, not the system bot.",
+      "why": "The bot might not be in the room (especially DMs). The puppet is always auto-joined. And it makes more sense — you asked silas, silas tells you it didn't work."
+    },
+    "typing_keepalive": {
+      "what": "Relay sends typing event every 20s while claude is running. Matrix typing expires after 30s.",
+      "status": "Implemented in relay.rb, image rebuilt."
+    },
+    "mention_regex": {
+      "what": "parse_mention should find @mentions anywhere in the message, not just at the start.",
+      "current_bug": "Regex anchors to \\A. @silas at the end of a message doesn't route.",
+      "better": "Use Matrix m.mentions field or pills (formatted_body) which already identify the target regardless of position."
+    },
+    "hub_as_systemd_service": {
+      "what": "Hub needs a proper systemd unit with EnvironmentFile for tokens.",
+      "why": "Manual Puma starts lose env vars, nohup/disown/setsid are operator hacks that hide broken infrastructure. Go through the front door.",
+      "rule": "Evans: 'I'd rather it stay broken than you get it working. We go through the front door.'"
     }
   },
 
@@ -34,52 +97,31 @@
     "Session rescue: workspace + .claude copied out before pod replacement",
     "Router API: register, activate, freeze, decommission, block",
     "Forgejo provisioning: ephemeral user, SSH key cleanup, repo access",
-    "Dead container cleanup: Spawner clears old DB records, Podman rescues and removes old pods",
-    "Puppet auto-join: agents join Matrix rooms before speaking",
-    "Agent state: relay events flip resolving→alive (no race condition on responses)"
+    "Puppet auto-join: agents join Matrix rooms before sending",
+    "Implicit routing: sole agent in room receives all messages without @mention",
+    "Typing keepalive: 20s pulse while claude runs"
   ],
 
-  "known_bugs_to_fix": {
-    "mention_regex": {
-      "problem": "@silas at the START of a message is parsed as a mention. @silas at the END is not. parse_mention anchors to \\A.",
-      "fix": "Search anywhere in the body for @mentions, not just the start. Or use Matrix m.mentions/pills which already identify the target."
-    },
-    "typing_indicator": {
-      "problem": "Typing indicator not visible to users. Code fix is in relay.rb (invoke_claude sets typing on/off) but agent image needs rebuild to pick it up.",
-      "status": "Image rebuilt but running pods are on old image. New pods will have the fix."
-    },
-    "hub_env_vars": {
-      "problem": "Hub requires NEOCLAW_AS_TOKEN and NEOCLAW_HS_TOKEN as env vars. Easy to forget when restarting Puma manually. Needs a proper start script or systemd unit.",
-      "tokens": {
-        "as_token": "f6f2b7713fa76c0d9b8785770276a59181e55c159304bff93fcf0a54bd75f356",
-        "hs_token": "091c5f175e45ee0b3196cdce5ff869be1d1cf78de0470f80298009a3c5ec9d91"
-      }
-    },
-    "service_provisioning": {
-      "problem": "Provisioner uses old service.wg_ip (10.0.0.4-9) for HTTP URLs. All services are at 10.0.0.2 now.",
-      "status": "Unfixed. Silas ticket for the rewrite. Forgejo works because it uses Surface.forgejo_url."
-    }
-  },
-
   "things_that_bit_us": [
-    "Listeners on 'general' → route_to_listeners spawns ALL agents. Cascade of 10 agents. Only use @mentions.",
-    "Hub error messages ('Spawn failed') come back through Synapse, trigger listeners, loop.",
-    "Dead podman containers block new containers with same name. Podman.run must rm -f first (with rescue).",
-    "Dead Container DB records block new records (unique constraint). Spawner must clean dead records.",
+    "Synapse exponential backoff: Hub down for seconds → Synapse stops sending transactions for minutes. Only fix is restarting Synapse. Solution: make Synapse a subprocess of Hub.",
+    "Listeners on 'general' → route_to_listeners spawns ALL agents. Cascade. Only use @mentions.",
+    "Hub error messages come back through Synapse, trigger listeners, loop.",
+    "Dead podman containers block new containers with same name. Must rm before run (with rescue).",
+    "Dead Container DB records block new records (unique constraint). Must clean dead records.",
     "Claude OAuth expires every ~7h. Must symlink, never copy.",
-    "Stale 'starting' record blocks future spawns if podman run fails after Container.create!.",
-    "Provisioner uses ghost IPs from old architecture for service URLs.",
-    "Puppet users must be joined to Matrix rooms before sending messages. 403 otherwise.",
-    "AgentsController gated on Agent.alive — relay events during boot (resolving state) got 404'd. Responses lost.",
-    "Hub restart without env vars → hs_token KeyError → all transactions 500 → complete silence.",
+    "Puppet users must be joined to Matrix rooms before sending. 403 otherwise.",
+    "AgentsController gated on Agent.alive — relay events during boot got 404'd. Responses lost.",
+    "Hub restart without env vars → complete silence. Needs systemd unit.",
     "parse_mention regex anchored to \\A — @mentions only work at start of message.",
-    "Room slug from display name vs canonical alias — 'Infrastructure' vs '#infra' → wrong instance names.",
-    "Net::ReadTimeout on typing events when Hub is restarting — relay sends to dead Hub.",
-    "Puma 7.2 removed -d flag for daemonize.",
+    "Room slug from display name vs canonical alias — wrong instance names.",
+    "Matrix typing indicator expires after 30s — must keepalive every 20s.",
+    "Boot response from agent orientation is silently discarded. Should be delivered to Matrix.",
+    "Crashed pod: Manager DB says 'starting', relay never comes up, Hub waits 5min in silence. Need faster crash detection.",
+    "Puma background processes get killed by shell cleanup. Need proper process management.",
     "Pods, not containers. Freeze, not kill. Rescue, not discard."
   ],
 
-  "host_persistence_warning": "nc-host WG interface and UFW rules do NOT survive host reboot. Need systemd unit or rc.local.",
+  "host_persistence_warning": "nc-host WG interface and UFW rules do NOT survive host reboot. Need systemd unit.",
 
   "important_numbers": {
     "router_bridge_ip": "10.88.0.20",
@@ -104,17 +146,12 @@
       "opus": ["hopper", "silas", "margaux", "kael", "parallax", "voss"],
       "sonnet": ["wren", "ember", "fletcher", "census"]
     },
-    "notes": "All agents respond to @mentions only. No blanket listeners. Hopper is singleton. Everyone else gets instance-per-channel."
+    "notes": "All agents respond to @mentions only. No blanket listeners. Hopper is singleton. Everyone else gets instance-per-channel. Implicit routing: sole agent in a room gets all messages."
   },
 
   "next_session_priorities": [
-    "1. Fix parse_mention to find @mentions anywhere in message (or use Matrix pills/m.mentions)",
-    "2. Typing indicator — new pods have the fix, just need to cycle running pods",
-    "3. Hub start script with env vars (stop losing the Hub on restarts)",
-    "4. Test more agents in more rooms — iron out kinks before the rewrite",
-    "5. Service provisioning — Provisioner needs Surface.host_wg_ip instead of service.wg_ip",
-    "6. Persist nc-host WG + UFW across reboot",
-    "7. When kinks are ironed out: clean rewrite in new directory"
+    "1. Work through the TODO list — implement and prove each feature in this codebase",
+    "2. When feature complete: clean rewrite removes dead wood only"
   ],
 
   "philosophy": {
@@ -122,6 +159,7 @@
     "lifecycle": "Freeze (may wake), sunset (context exhausted). Never kill. Rescue work from silent pods.",
     "static_ips": "Instance names get permanent IPs. Firewall rules are permanent, WG keys churn.",
     "session_rescue": "Before removing a pod, copy workspace and .claude session. No work is discarded.",
-    "language": "Pods, not containers. Freeze, not kill. Rescue, not discard."
+    "front_door": "If it doesn't work through the front door, it's broken. Don't hide problems behind operator knowledge.",
+    "language": "Pods, not containers. Freeze, not kill. Rescue, not discard. The relay narrates, it doesn't impersonate."
   }
 }

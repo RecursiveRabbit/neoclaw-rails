@@ -84,7 +84,12 @@ cat > "${CLAUDE_DIR}/settings.json" <<'SETEOF'
       "Grep(*)",
       "WebFetch(*)",
       "WebSearch(*)",
-      "mcp__ssh(*)"
+      "mcp__ssh(*)",
+      "mcp__vikunja(*)",
+      "mcp__valley(*)",
+      "mcp__comfyui(*)",
+      "mcp__zigbee(*)",
+      "mcp__matrix(*)"
     ],
     "deny": []
   }
@@ -114,39 +119,102 @@ gosu agent git config --global user.name "$IDENTITY"
 gosu agent git config --global user.email "${IDENTITY}@neoclaw.local"
 
 # --- MCP config ---
-# Extract host IP from spawn.json (services are all on the host at 10.0.0.2)
-HOST_IP=$(ruby -rjson -e '
-  s = JSON.parse(File.read(ARGV[0]), symbolize_names: true)
-  puts s.dig(:services, :ssh, :host) || "10.0.0.2"
-' "$SPAWN_FILE")
-SSH_USER=$(ruby -rjson -e '
-  s = JSON.parse(File.read(ARGV[0]), symbolize_names: true)
-  puts s.dig(:services, :ssh, :user) || s[:identity]
-' "$SPAWN_FILE")
-SSH_PORT=$(ruby -rjson -e '
-  s = JSON.parse(File.read(ARGV[0]), symbolize_names: true)
-  puts s.dig(:services, :ssh, :port) || 22
-' "$SPAWN_FILE")
+# All services are on the host (10.0.0.2), reached through the Router.
+# Only include MCPs for services present in spawn.json's services block.
+# Missing/unreachable services would crash on startup and block Claude Code.
+HOST_IP="10.0.0.2"
 
-# Build MCP config — SSH MCP auto-connects on first use
-cat > "${CLAUDE_DIR}/mcp.json" <<MCPEOF
-{
-  "mcpServers": {
-    "ssh": {
-      "command": "/opt/mcp-env/bin/python3",
-      "args": ["/opt/mcp/ssh/server.py"],
-      "env": {
-        "SSH_HOST": "${HOST_IP}",
-        "SSH_USER": "${SSH_USER}",
-        "SSH_KEY_PATH": "${AGENT_HOME}/.ssh/id_ed25519",
-        "SSH_PORT": "${SSH_PORT}"
+# Build MCP config — only include servers for provisioned services.
+# Unreachable services crash on startup and block Claude Code for minutes.
+ruby -rjson -e '
+  spawn = JSON.parse(File.read(ARGV[0]), symbolize_names: true)
+  host_ip = "'"${HOST_IP}"'"
+  agent_home = "'"${AGENT_HOME}"'"
+  svc = spawn[:services] || {}
+
+  config = { mcpServers: {} }
+  python = "/opt/mcp-env/bin/python3"
+
+  # SSH — include if agent has an SSH key
+  if File.exist?("#{agent_home}/.ssh/id_ed25519")
+    config[:mcpServers][:ssh] = {
+      command: python,
+      args: ["/opt/mcp/ssh/server.py"],
+      env: {
+        SSH_HOST: host_ip,
+        SSH_USER: (svc.dig(:ssh, :user) || spawn[:identity]).to_s,
+        SSH_KEY_PATH: "#{agent_home}/.ssh/id_ed25519",
+        SSH_PORT: (svc.dig(:ssh, :port) || 22).to_s
       }
     }
-  }
-}
-MCPEOF
+  end
+
+  # Vikunja — include if provisioned
+  if svc[:vikunja]
+    config[:mcpServers][:vikunja] = {
+      command: python,
+      args: ["/opt/mcp/vikunja/server.py"],
+      env: {
+        VIKUNJA_API_URL: "http://#{host_ip}:3456/api/v1",
+        VIKUNJA_TOKEN: (svc.dig(:vikunja, :token) || "").to_s,
+        VIKUNJA_PROJECT_ID: (svc.dig(:vikunja, :project_id) || "1").to_s
+      }
+    }
+  end
+
+  # Valley — include if provisioned
+  if svc[:valley]
+    config[:mcpServers][:valley] = {
+      command: python,
+      args: ["/opt/mcp/valley/server.py"],
+      env: {
+        VALLEY_API: "http://#{host_ip}:8888/api/command",
+        VALLEY_TOKEN: (svc.dig(:valley, :token) || "").to_s
+      }
+    }
+  end
+
+  # ComfyUI — include if provisioned
+  if svc[:comfyui]
+    config[:mcpServers][:comfyui] = {
+      command: python,
+      args: ["/opt/mcp/comfyui/server.py"],
+      env: {
+        COMFYUI_URL: "http://#{host_ip}:8188"
+      }
+    }
+  end
+
+  # Zigbee — include if provisioned
+  if svc[:zigbee]
+    config[:mcpServers][:zigbee] = {
+      command: python,
+      args: ["/opt/mcp/zigbee/server.py"],
+      env: {
+        MQTT_HOST: host_ip,
+        MQTT_PORT: "1883"
+      }
+    }
+  end
+
+  # Matrix — include if token provided
+  if svc[:matrix] && !svc.dig(:matrix, :token).to_s.empty?
+    config[:mcpServers][:matrix] = {
+      command: python,
+      args: ["/opt/mcp/matrix/server.py"],
+      env: {
+        MATRIX_HOMESERVER: "http://#{host_ip}:8008",
+        MATRIX_TOKEN: svc.dig(:matrix, :token).to_s,
+        MATRIX_USER_ID: svc.dig(:matrix, :user_id).to_s
+      }
+    }
+  end
+
+  File.write(ARGV[1], JSON.pretty_generate(config))
+  $stderr.puts config[:mcpServers].keys.join(" ")
+' "$SPAWN_FILE" "${CLAUDE_DIR}/mcp.json" 2>&1 | while read -r line; do log "mcp config: $line"; done
+
 chown agent:agent "${CLAUDE_DIR}/mcp.json"
-log "mcp config: ssh → ${SSH_USER}@${HOST_IP}:${SSH_PORT}"
 
 # --- Own everything ---
 chown -R agent:agent "$CLAUDE_DIR"
@@ -155,6 +223,20 @@ chown -R agent:agent "$AGENT_HOME"
 # =====================================================================
 # Phase 2: Start Relay (as agent user)
 # =====================================================================
+
+# If SWAP_HOLD is set, wait for files to be restored before starting.
+# The swap script sets this, copies workspace + session, then removes the hold.
+if [ "${SWAP_HOLD:-}" = "1" ]; then
+    HOLD_FILE="/tmp/.swap-hold"
+    touch "$HOLD_FILE"
+    log "swap hold — waiting for files..."
+    while [ -f "$HOLD_FILE" ]; do sleep 0.5; done
+    # Re-own everything after files are copied in
+    chown -R agent:agent "$CLAUDE_DIR"
+    chown -R agent:agent "$AGENT_HOME"
+    chown -R agent:agent /workspace
+    log "swap hold released"
+fi
 
 log "starting relay"
 exec gosu agent ruby /app/relay.rb
