@@ -1,0 +1,18 @@
+[Unit]
+Description=NeoClaw Hub (Rails)
+After=network.target
+
+[Service]
+Type=simple
+User=hopper
+Group=hopper
+WorkingDirectory=/home/hopper/clawd/projects/neoclaw_rails
+Environment=RAILS_ENV=development
+Environment=NEOCLAW_AS_TOKEN=f6f2b7713fa76c0d9b8785770276a59181e55c159304bff93fcf0a54bd75f356
+Environment=NEOCLAW_HS_TOKEN=091c5f175e45ee0b3196cdce5ff869be1d1cf78de0470f80298009a3c5ec9d91
+ExecStart=/usr/bin/bundle exec puma -b tcp://0.0.0.0:3100
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
