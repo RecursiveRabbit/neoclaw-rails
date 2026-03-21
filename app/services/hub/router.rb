@@ -49,7 +49,13 @@ module Hub
           # so we don't block the Synapse transaction endpoint.
           wait_for_relay_and_deliver(agent, sender: sender, content: content)
         else
-          agent.deliver(sender: sender, content: content)
+          unless agent.deliver(sender: sender, content: content)
+            # Delivery failed — pod is gone. Clear the stale route
+            # and retry, which will trigger a fresh resolve.
+            Rails.logger.warn "Delivery to #{agent.instance_name} failed — clearing stale route"
+            agent.destroy!
+            deliver_to(identity, room: room, sender: sender, content: content)
+          end
         end
       end
 
