@@ -42,7 +42,9 @@
     "Crash detection — Manager DB says 'starting' when pod is dead, need faster feedback",
     "Service provisioning — Provisioner uses ghost IPs, needs Surface.host_wg_ip",
     "Persist nc-host WG + UFW across reboot — systemd unit",
-    "Clean up Manager seeds — drop old wg_* fields from ServiceType"
+    "Clean up Manager seeds — drop old wg_* fields from ServiceType",
+    "invoke_claude timeout — Claude can hang/crash silently during boot. popen3 never returns, typing pulses forever, no error reported. Need: timeout on invoke_claude (5min boot, 10min message), kill orphan process, stop typing, report failure to Matrix via puppet",
+    "Orphan MCP processes — when Claude exits, MCP server child processes (ssh, vikunja, valley) stay alive as zombies. Need cleanup on invoke_claude exit"
   ],
 
   "design_decisions": {
