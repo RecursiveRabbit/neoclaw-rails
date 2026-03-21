@@ -23,6 +23,7 @@ Rails.application.routes.draw do
       post :freeze
       post :kill
       post :refresh
+      post :stop
       get :stream
     end
   end

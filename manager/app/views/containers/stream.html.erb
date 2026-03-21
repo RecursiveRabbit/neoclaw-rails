@@ -9,6 +9,7 @@
     </div>
     <div class="flex items-center gap-4">
       <span class="text-stone-500 text-sm" data-stream-target="status">connecting...</span>
+      <%= button_to "stop", stop_container_path(@container), method: :post, class: "text-xs px-3 py-1 rounded bg-red-900/20 border border-red-700/30 text-red-400 hover:bg-red-900/50 transition-colors", data: { turbo_confirm: "Stop claude process?" } %>
       <%= link_to "← back", container_path(@container), class: "text-stone-500 text-sm hover:text-amber-400" %>
     </div>
   </div>
@@ -100,6 +101,11 @@
         appendLine(`  → ${content}`, "text-stone-500 text-xs")
         break
 
+      case "prompt":
+        // The prompt sent to claude — shows what triggered the response
+        appendLine(`▸ ${event.content}`, "text-amber-400")
+        break
+
       case "user":
         // Tool results coming back — show the output
         if (event.tool_use_result?.stdout) {
@@ -109,8 +115,7 @@
         break
 
       case "result":
-        const costStr = event.total_cost_usd ? ` · $${event.total_cost_usd.toFixed(4)}` : ""
-        appendLine(`✓ done (${event.duration_ms}ms${costStr})`, "text-emerald-600")
+        appendLine(`✓ done (${event.duration_ms}ms)`, "text-emerald-600")
         appendLine("", "")
         break
 

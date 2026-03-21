@@ -128,6 +128,9 @@ class Relay
     @processing = true
     @last_message_at = Time.now
 
+    # Forward the prompt to the stream so the transcript makes sense
+    forward_output(JSON.generate({ type: "prompt", content: prompt }))
+
     # Typing indicator: re-send every 20s while claude runs.
     # Matrix expires typing after 30s, so 20s keeps it alive.
     typing_thread = start_typing_keepalive
@@ -154,6 +157,7 @@ class Relay
     # No uid switching needed — entrypoint.sh already dropped to agent user.
     # No unsetenv_others — inherit the normal agent environment.
     Open3.popen3(*cmd, chdir: File.exist?(WORKSPACE) ? WORKSPACE : Dir.home) do |stdin, stdout, stderr, wait_thread|
+      @claude_pid = wait_thread.pid
       stdin.close
 
       stderr_thread = Thread.new do
@@ -323,7 +327,21 @@ class Relay
       handle_freeze("Push your work and commit. You're going idle. Another instance of you will pick up from your baton.")
     when "sunset"
       handle_freeze("Your context window is nearly full. Write your baton.json with current state and push everything. A fresh instance picks up next.")
+    when "stop"
+      handle_stop
     end
+  end
+
+  def handle_stop
+    log "Stop signal received — killing claude process"
+    if @claude_pid
+      Process.kill("TERM", @claude_pid) rescue nil
+      sleep 2
+      Process.kill("KILL", @claude_pid) rescue nil
+      log "Claude process #{@claude_pid} terminated"
+    end
+    @processing = false
+    post_to_hub("/agent/event", { instance: @instance_name, event: "done_typing" })
   end
 
   def handle_freeze(message)

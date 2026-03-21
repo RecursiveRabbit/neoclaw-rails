@@ -36,6 +36,15 @@ class ContainersController < AdminController
     redirect_to containers_path, notice: "Refreshing #{container.instance_name}..."
   end
 
+  # POST /containers/:id/stop — kill the running claude process
+  def stop
+    container = Container.find(params[:id])
+    HTTPX.post("http://#{container.wg_address}:9300/signal", json: { signal: "stop" })
+    redirect_to stream_container_path(container), notice: "Stop signal sent."
+  rescue => e
+    redirect_to containers_path, alert: "Stop failed: #{e.message}"
+  end
+
   # GET /containers/:id/stream — live Claude Code output
   def stream
     @container = Container.find(params[:id])
