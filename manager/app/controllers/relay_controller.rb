@@ -35,17 +35,12 @@ class RelayController < ApplicationController
     data = request.body.read
 
     # Broadcast to ActionCable subscribers
-    ContainerStreamChannel.broadcast_to(
-      container.instance_name,
+    ActionCable.server.broadcast(
+      "container_stream_#{container.instance_name}",
       data
     )
 
-    container.touch(:last_health_at)
-
-    # Update context usage if included
-    if params[:context_usage]
-      container.update_column(:context_usage, params[:context_usage].to_f)
-    end
+    container.update!(last_health_at: Time.current)
 
     head :ok
   end

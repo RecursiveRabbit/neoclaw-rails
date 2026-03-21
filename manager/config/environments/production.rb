@@ -21,6 +21,10 @@ Rails.application.configure do
   config.assume_ssl = false
   config.force_ssl = false
 
+  # ActionCable — no CSRF for WebSocket connections.
+  # The Manager is on a WG network, not the public internet.
+  config.action_cable.disable_request_forgery_protection = true
+
   # Log to STDOUT with the current request id as a default log tag.
   config.log_tags = [ :request_id ]
   config.logger   = ActiveSupport::TaggedLogging.logger(STDOUT)
