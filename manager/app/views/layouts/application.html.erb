@@ -30,12 +30,14 @@
 
   <main class="max-w-7xl mx-auto px-4 py-6">
     <% if notice %>
-      <div class="mb-4 px-4 py-2 bg-amber-900/20 border border-amber-700/30 rounded text-amber-400 text-sm">
+      <div class="mb-4 px-4 py-2 bg-amber-900/20 border border-amber-700/30 rounded text-amber-400 text-sm transition-opacity duration-500"
+           data-controller="autodismiss">
         <%= notice %>
       </div>
     <% end %>
     <% if alert %>
-      <div class="mb-4 px-4 py-2 bg-red-900/20 border border-red-700/30 rounded text-red-400 text-sm">
+      <div class="mb-4 px-4 py-2 bg-red-900/20 border border-red-700/30 rounded text-red-400 text-sm transition-opacity duration-500"
+           data-controller="autodismiss">
         <%= alert %>
       </div>
     <% end %>
