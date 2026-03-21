@@ -55,10 +55,11 @@ podman cp "${INSTANCE}:/home/agent/.claude" "${RESCUE_DIR}/dot-claude"
 
 # Grab the spawn.json path — we need it to start the new pod
 SPAWN_JSON=$(podman inspect "$INSTANCE" --format '{{range .Mounts}}{{if eq .Destination "/run/secrets/spawn.json"}}{{.Source}}{{end}}{{end}}')
-CREDS_PATH=$(podman inspect "$INSTANCE" --format '{{range .Mounts}}{{if eq .Destination "/run/secrets/claude-credentials"}}{{.Source}}{{end}}{{end}}')
+# Always use the live claude directory for new pods
+CLAUDE_DIR="/home/hopper/.claude"
 
 log "spawn.json: $SPAWN_JSON"
-log "credentials: $CREDS_PATH"
+log "credentials: $CLAUDE_DIR (live directory mount)"
 
 # =================================================================
 # Step 3: Stop and remove the old pod
@@ -80,7 +81,7 @@ podman run -d \
     --cap-add NET_ADMIN \
     -e SWAP_HOLD=1 \
     -v "${SPAWN_JSON}:/run/secrets/spawn.json:ro" \
-    -v "${CREDS_PATH}:/run/secrets/claude-credentials:ro" \
+    -v "${CLAUDE_DIR}:/run/secrets/claude:ro" \
     --memory 2g \
     --cpus 2 \
     "$IMAGE"

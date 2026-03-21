@@ -22,20 +22,18 @@ module Surface
     SPAWN_DIR              = "/spawn"
     SSH_KEYS_DIR           = "/ssh-keys"
     PODMAN_SOCKET          = "/run/podman/podman.sock"
-    CLAUDE_CREDENTIALS     = "/run/secrets/claude-credentials"
+    CLAUDE_DIR             = "/run/secrets/claude"
 
     HOST_SPAWN_DIR         = ENV.fetch("HOST_SPAWN_DIR", "/var/lib/neoclaw/spawn")
     HOST_SSH_KEYS_DIR      = ENV.fetch("HOST_SSH_KEYS_DIR", "/var/lib/neoclaw/ssh-keys")
     HOST_RESCUE_DIR        = ENV.fetch("HOST_RESCUE_DIR", "/var/lib/neoclaw/sessions")
-    HOST_CLAUDE_CREDENTIALS = ENV.fetch("HOST_CLAUDE_CREDENTIALS",
-                                        "/var/lib/neoclaw/secrets/claude-credentials.json")
+    HOST_CLAUDE_DIR        = ENV.fetch("HOST_CLAUDE_DIR", "/home/hopper/.claude")
 
     def verify_container!
       errors = []
       errors << "#{SPAWN_DIR} not mounted"           unless Dir.exist?(SPAWN_DIR)
       errors << "#{SSH_KEYS_DIR} not mounted"         unless Dir.exist?(SSH_KEYS_DIR)
       errors << "#{PODMAN_SOCKET} not mounted"        unless File.exist?(PODMAN_SOCKET)
-      errors << "#{CLAUDE_CREDENTIALS} not mounted"   unless File.exist?(CLAUDE_CREDENTIALS)
 
       unless errors.empty?
         $stderr.puts ""
@@ -76,7 +74,7 @@ module Surface
     def host_ssh_keys_dir = HOST_SSH_KEYS_DIR
     def host_rescue_dir = HOST_RESCUE_DIR
 
-    def host_claude_credentials = HOST_CLAUDE_CREDENTIALS
+    def host_claude_dir = HOST_CLAUDE_DIR
 
     def agent_network
       ENV.fetch("AGENT_NETWORK", "podman")

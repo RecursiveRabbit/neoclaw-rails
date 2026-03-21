@@ -63,12 +63,13 @@ AGENT_HOME="/home/agent"
 CLAUDE_DIR="${AGENT_HOME}/.claude"
 mkdir -p "$CLAUDE_DIR"
 
-if [ -f /run/secrets/claude-credentials ]; then
-    # Symlink to the bind mount so credential refreshes on the host
-    # are visible immediately. No stale copies.
-    ln -sf /run/secrets/claude-credentials "${CLAUDE_DIR}/.credentials.json"
+if [ -f /run/secrets/claude/.credentials.json ]; then
+    # Symlink to the directory bind mount. Directory mounts reflect
+    # file changes on the host — credentials stay live as Claude Code
+    # refreshes them.
+    ln -sf /run/secrets/claude/.credentials.json "${CLAUDE_DIR}/.credentials.json"
     chown -h agent:agent "${CLAUDE_DIR}/.credentials.json"
-    log "claude credentials linked"
+    log "claude credentials linked (live mount)"
 fi
 
 # --- Claude settings: auto-accept all permissions ---

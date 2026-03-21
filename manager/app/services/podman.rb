@@ -25,7 +25,7 @@ class Podman
         "--hostname", instance_name,
         "--network", Surface.agent_network,
         "-v", "#{host_spawn_path}:/run/secrets/spawn.json:ro",
-        "-v", "#{Surface.host_claude_credentials}:/run/secrets/claude-credentials:ro",
+        "-v", "#{Surface.host_claude_dir}:/run/secrets/claude:ro",
         "--memory", "2g",
         "--cpus", "2",
         "--cap-add", "NET_ADMIN",
