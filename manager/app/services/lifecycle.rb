@@ -9,11 +9,11 @@ class Lifecycle
       container = Container.find_by(instance_name: instance_name)
       return unless container
 
-      # Already stuck in freezing? Go straight to rescue.
-      if container.state == "freezing"
-        rescue!(container)
-      else
+      if container.alive?
         freeze!(container)
+      else
+        # Starting, freezing, or any other non-alive state — rescue.
+        rescue!(container)
       end
     end
 
@@ -48,7 +48,7 @@ class Lifecycle
       relay_signal(container, :sunset)
     end
 
-    # Hot swap — new image, preserved workspace and session.
+    # Hot swap — new image, fresh credentials, preserved workspace and session.
     # The agent resumes with --continue. Seconds, not minutes.
     def hot_swap!(container)
       instance = container.instance_name
@@ -58,8 +58,14 @@ class Lifecycle
       rescue_dir = File.join(Surface.host_rescue_dir, "swap-#{instance}")
       Podman.rescue_workspace(instance, rescue_dir)
 
-      # Get the spawn.json path (host side) before we kill the pod
-      spawn_path = File.join(Surface.host_spawn_dir, "#{instance}.json")
+      # Regenerate spawn.json with fresh credentials.
+      # Spawner.respawn handles: new WG/SSH keys, Router.activate,
+      # re-provision Forgejo/tokens, write new spawn.json.
+      spawn_path = Spawner.respawn(
+        identity: container.identity,
+        channel: container.channel,
+        instance_name: instance
+      )
 
       # Stop and remove old pod
       Podman.rm(container.container_id) if container.container_id
@@ -75,7 +81,7 @@ class Lifecycle
 
       AuditLog.record("SWAP_COMPLETE",
         instance_name: instance, identity: container.identity,
-        detail: "Workspace and session preserved")
+        detail: "Workspace and session preserved, credentials refreshed")
     end
 
     def rescue!(container)
@@ -83,13 +89,15 @@ class Lifecycle
         instance_name: container.instance_name,
         identity: container.identity)
 
+      # Save everything — workspace and .claude session.
+      # The whole point of rescue is to not lose work.
       begin
-        session_data = Podman.cp(container.container_id, "/workspace/.claude/session.json")
-        if session_data
-          AuditLog.record("SESSION_RECOVERED",
-            instance_name: container.instance_name,
-            detail: "#{session_data.bytesize} bytes recovered")
-        end
+        timestamp = Time.now.strftime("%Y%m%d-%H%M%S")
+        rescue_path = File.join(Surface.host_rescue_dir, container.instance_name, timestamp)
+        Podman.rescue_workspace(container.instance_name, rescue_path)
+        AuditLog.record("SESSION_RECOVERED",
+          instance_name: container.instance_name,
+          detail: "Workspace rescued to #{rescue_path}")
       rescue => e
         AuditLog.record("SESSION_RECOVERY_FAILED",
           instance_name: container.instance_name, detail: e.message)
@@ -145,7 +153,7 @@ class Lifecycle
         "http://#{container.wg_address}:9300/signal",
         json: { signal: signal.to_s }
       )
-      response.status == 200
+      response.respond_to?(:status) && response.status == 200
     rescue => e
       AuditLog.record("RELAY_SIGNAL_FAILED",
         instance_name: container.instance_name,

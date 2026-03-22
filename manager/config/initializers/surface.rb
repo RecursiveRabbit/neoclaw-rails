@@ -25,7 +25,7 @@ module Surface
     CLAUDE_DIR             = "/run/secrets/claude"
 
     HOST_SPAWN_DIR         = ENV.fetch("HOST_SPAWN_DIR", "/var/lib/neoclaw/spawn")
-    HOST_SSH_KEYS_DIR      = ENV.fetch("HOST_SSH_KEYS_DIR", "/var/lib/neoclaw/ssh-keys")
+    HOST_SSH_KEYS_DIR      = ENV.fetch("HOST_SSH_KEYS_DIR", "/var/lib/neoclaw/sftp-keys")
     HOST_RESCUE_DIR        = ENV.fetch("HOST_RESCUE_DIR", "/var/lib/neoclaw/sessions")
     HOST_CLAUDE_DIR        = ENV.fetch("HOST_CLAUDE_DIR", "/home/hopper/.claude")
 

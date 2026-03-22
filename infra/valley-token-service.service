@@ -1,0 +1,17 @@
+[Unit]
+Description=Valley Token Service — generates API tokens for Evennia accounts
+After=network.target
+
+[Service]
+Type=simple
+User=hopper
+WorkingDirectory=/home/hopper/theuncannyvalley
+Environment=VALLEY_DIR=/home/hopper/theuncannyvalley
+Environment=LISTEN_HOST=10.0.0.2
+Environment=LISTEN_PORT=8889
+ExecStart=/home/hopper/evennia-env/bin/python3 /home/hopper/clawd/projects/neoclaw_rails/infra/valley-token-service.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

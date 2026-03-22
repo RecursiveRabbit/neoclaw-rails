@@ -33,11 +33,54 @@ class Spawner
       spawn(identity: identity, channel: channel, instance_name: instance_name)
     end
 
+    # Regenerate credentials and spawn.json for a hot swap.
+    # Does NOT create a Container record or launch a pod.
+    # Returns the host-side spawn.json path.
+    def respawn(identity:, channel:, instance_name:)
+      config = AgentConfig.find_by!(identity: identity)
+      services = config.services_for(channel)
+
+      wg_keypair = generate_wg_keypair
+      ssh_keypair = generate_ssh_keypair
+
+      # Activate with new WG key (agent is already registered)
+      result = RouterClient.activate(name: instance_name, pubkey: wg_keypair[:public])
+      agent_ip = result[:ip]
+
+      # Re-provision service auth
+      secrets = {}
+      services.each do |service_name|
+        service = ServiceType.find_by(name: service_name)
+        next unless service
+        begin
+          secrets[service_name] = Provisioner.provision(service,
+            instance_name: instance_name, ssh_pubkey: ssh_keypair[:public])
+        rescue => e
+          Rails.logger.warn "Respawn provision #{service_name} for #{instance_name} failed: #{e.message}"
+          secrets[service_name] = {}
+        end
+      end
+
+      boot_state = determine_boot_state(instance_name)
+
+      spawn_data = build_spawn_file(
+        identity: identity, channel: channel, instance_name: instance_name,
+        config: config, agent_ip: agent_ip, wg_keypair: wg_keypair,
+        ssh_keypair: ssh_keypair, secrets: secrets, boot_state: boot_state
+      )
+
+      spawn_path = File.join(Surface.spawn_dir, "#{instance_name}.json")
+      File.write(spawn_path, JSON.pretty_generate(spawn_data))
+
+      # Return the host-side path for podman
+      File.join(Surface.host_spawn_dir, "#{instance_name}.json")
+    end
+
     private
 
     def spawn(identity:, channel:, instance_name:)
-      # Clean up dead records so we can reuse the instance_name
-      Container.where(instance_name: instance_name, state: "inactive").destroy_all
+      # Clean up inactive records so we can reuse the instance_name
+      Container.where(instance_name: instance_name).where.not(state: %w[alive starting]).destroy_all
 
       config = AgentConfig.find_by!(identity: identity)
       services = config.services_for(channel)
@@ -65,12 +108,19 @@ class Spawner
       end
 
       # Provision service auth (Forgejo users, SSH keys, etc.)
+      # Individual service failures don't block the spawn — the agent
+      # boots without that service and gets an empty token.
       secrets = {}
       services.each do |service_name|
         service = ServiceType.find_by(name: service_name)
         next unless service
-        secrets[service_name] = Provisioner.provision(service,
-          instance_name: instance_name, ssh_pubkey: ssh_keypair[:public])
+        begin
+          secrets[service_name] = Provisioner.provision(service,
+            instance_name: instance_name, ssh_pubkey: ssh_keypair[:public])
+        rescue => e
+          Rails.logger.warn "Provision #{service_name} for #{instance_name} failed: #{e.message}"
+          secrets[service_name] = {}
+        end
       end
 
       # Determine boot state from history

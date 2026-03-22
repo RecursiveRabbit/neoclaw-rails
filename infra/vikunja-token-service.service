@@ -1,0 +1,18 @@
+[Unit]
+Description=Vikunja Token Service — generates API tokens for Vikunja users
+After=network.target
+
+[Service]
+Type=simple
+User=vikunja
+WorkingDirectory=/opt/vikunja
+Environment=VIKUNJA_DB=/opt/vikunja/db/vikunja.db
+Environment=VIKUNJA_API=http://127.0.0.1:3456/api/v1
+Environment=LISTEN_HOST=10.0.0.2
+Environment=LISTEN_PORT=8890
+ExecStart=/usr/bin/python3 /home/hopper/clawd/projects/neoclaw_rails/infra/vikunja-token-service.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

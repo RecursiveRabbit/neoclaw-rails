@@ -43,6 +43,7 @@ class Relay
     @processing = false
     @context_usage = 0.0
     @last_message_at = Time.now
+    @message_count = 0
     @mutex = Mutex.new
   end
 
@@ -314,6 +315,7 @@ class Relay
         sender = data[:from] || data[:sender] || "unknown"
         content = data[:content] || ""
         attachments = data[:attachments] || []
+        @message_count += 1
 
         # Save attachments to disk so Claude can read them
         saved_paths = save_attachments(attachments)
@@ -356,6 +358,7 @@ class Relay
       res.body = JSON.generate({
         instance: @instance_name,
         last_message_at: @last_message_at.iso8601,
+        message_count: @message_count,
         context_usage: @context_usage,
         processing: @processing,
         booting: @booting,
@@ -385,7 +388,21 @@ class Relay
       handle_freeze("Your context window is nearly full. Write your baton to #{baton_path} with current state and push everything. A fresh instance picks up next.")
     when "stop"
       handle_stop
+    when "update_baton"
+      handle_update_baton(baton_path)
     end
+  end
+
+  def handle_update_baton(baton_path)
+    log "Baton update requested"
+    @mutex.synchronize do
+      invoke_claude(
+        "Write your current state to #{baton_path} — what you're working on, " \
+        "what's done, what's unresolved, what the next instance should know. " \
+        "Commit and push. Then continue what you were doing."
+      )
+    end
+    log "Baton updated"
   end
 
   def handle_stop

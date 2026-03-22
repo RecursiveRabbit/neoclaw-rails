@@ -95,3 +95,10 @@ podman exec wg-router wg set wg0 peer "$PUBKEY" allowed-ips "${MANAGER_WG_IP}/32
 
 log "restarting Manager..."
 "$SCRIPT_DIR/run.sh"
+
+# Hub's persistent HTTP client caches the old Manager connection.
+# New WG key = dead socket. Restart the Hub to clear it.
+log "restarting Hub (stale connection to old Manager WG key)..."
+systemctl restart neoclaw-rails-hub.service 2>/dev/null \
+    && log "Hub restarted" \
+    || log "WARNING: could not restart Hub — restart manually"

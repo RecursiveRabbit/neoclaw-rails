@@ -1,6 +1,6 @@
 {
-  "written": "2026-03-22T05:30:00Z",
-  "session_summary": "Voss session (Mar 22): Major hardening pass. Pulled down the Hub database entirely — Agent, Identity, Room, Listener models replaced with three in-memory services (RouteCache, Identities from YAML, Rooms from Matrix). Fixed slug derivation (alias first via puppet queries), implicit routing (Matrix membership), invite auto-accept, DM slugs (dm-<other_user>). Replaced parse_mention regex with m.mentions. Built relay narration (Launching/Orienting/lifecycle messages as m.notice) + boot response delivery. Streaming responses (assistant messages sent to Matrix as they arrive). Attachment receiving (download from Synapse, save to pod, include in prompt). Three boot prompts (fresh/resume/baton) with per-channel baton paths. Manager build.sh rewritten for Router topology. Memory-based capacity (real podman stats, 15GB budget). Renamed kill→rescue throughout. Persistent stream buffers. Freeze→rescue fallback when relay unreachable. State 'dead'→'inactive'. Rescue button always visible. Relay sends identity+channel so Hub can reconstruct routes after restart.",
+  "written": "2026-03-22T07:30:00Z",
+  "session_summary": "Silas session (Mar 20-22): MCP services are live. Agents in pods can now act on real servers. SSH MCP proven end-to-end — silas-infra SSHd into hopper, ran three ingestion scripts in parallel, rebuilt FAISS indexes, all without being told. Valley token service built and deployed (systemd). Vikunja token service built (token creation works but Vikunja rejects new API tokens — investigation needed). Service exposure via socat forwarders. Hot swap script with hold mechanism. Relay passes --mcp-config on every invocation. Per-identity SSH keys via sftp-keys. Hub <p> pill fix. Spawner stale-record cleanup. Double-path bug in Podman.run fixed. MCP docs written.",
 
   "decision": {
     "what": "Rebuild NeoClaw-Rails from scratch in a new directory",
@@ -19,168 +19,126 @@
     },
     "internet_egress": "Pods have internet via podman bridge default route. WG is for internal mesh only.",
     "components": {
-      "hub": "Rails app on host. No database. Matrix appservice. Routes via m.mentions, puppets responses. Port 3100. Identity config from config/identities.yml. Route cache, room cache, resolving guard all in-memory. Queries Synapse as puppet users (bot not in every room).",
+      "hub": "Rails app on host. No database. Matrix appservice. Routes via m.mentions, puppets responses. Port 3100. Identity config from config/identities.yml. Route cache, room cache, resolving guard all in-memory.",
       "router": "Ruby WG hub + nftables firewall. ~760 lines. Port 8080 API, 51820 WG.",
-      "manager": "Rails app in pod. Spawns/freezes/rescues agents. Calls Router API. Provisions Forgejo. Port 9200 (mapped to 9201 on host). Memory-based capacity (15GB budget). build.sh handles full rebuild+peer+restart cycle.",
-      "relay": "One Ruby file in every agent pod. Claude Code glue. Port 9300. Narrates lifecycle to Matrix (m.notice). Streams responses as they arrive. Sends identity+channel with every Hub request. Three boot prompts (fresh/resume/baton). Per-channel baton paths."
+      "manager": "Rails app in pod. Spawns/freezes/rescues agents. Calls Router API. Provisions Forgejo + SSH + Valley. Port 9200 (mapped to 9201 on host). Memory-based capacity (15GB budget). build.sh handles full rebuild+peer+restart cycle.",
+      "relay": "One Ruby file in every agent pod. Claude Code glue. Port 9300. MCP config on every invocation. Hot swap detection (workspace exists → --continue). Three boot prompts (fresh/resume/baton). Entrypoint: Phase 1 root (WG/creds/SSH/MCP), Phase 2 gosu agent (relay). Tini for zombie reaping."
     }
   },
 
   "correction": "Evans: 'We aren't deferring upgrades to the new version. This version needs to be feature complete, the rewrite is a cleanup not an opportunity to test new features.' Every design decision gets implemented and proven HERE first. The rewrite just removes the dead wood.",
 
-  "todo": {
-    "architecture_mismatch": "The design_decisions section describes how the system SHOULD work. The code doesn't match yet. These items bring the code in line with the design.",
-    "items": [
-      {"what": "Hub stateless routing", "status": "implemented", "note": "Hub has no database. RouteCache (hash + mutex), Identities (YAML), Rooms (in-memory from Matrix events). ActiveRecord removed entirely."},
-      {"what": "Relay narration", "status": "implemented", "note": "Launching/Orienting/lifecycle as m.notice via puppet. Boot response delivered to Matrix. Crash narration from typing watchdog."},
-      {"what": "Deliver boot response", "status": "implemented", "note": "Agent's first stdout after orientation delivered to Matrix instead of discarded."},
-      {"what": "Replace parse_mention with m.mentions", "status": "implemented", "note": "Uses m.mentions.user_ids from Matrix events. @mention works anywhere in the message."},
-      {"what": "Replace Listener model", "status": "implemented", "note": "Listeners declared in config/identities.yml. Currently none active."},
-      {"what": "DM slugs from room membership", "status": "implemented", "note": "Two-person rooms derive slug as dm-<other_user> from agent's perspective."},
-      {"what": "Rename kill→rescue", "status": "implemented", "note": "UI button, lifecycle method, audit events, Hub command all say rescue."},
-      {"what": "Memory-based capacity", "status": "implemented", "note": "Real podman stats. 15GB budget. Idle agents ~15MB each. Pod count cap removed."},
-      {"what": "Persistent stream buffers", "status": "implemented", "note": "Streams saved to /data/streams/<instance>.json. Survive Manager restart."},
-      {"what": "Invite auto-accept", "status": "implemented", "note": "m.room.member invite events → puppet joins immediately. In room before first message."},
-      {"what": "Attachment receiving", "status": "implemented", "note": "m.image/m.file downloaded from Synapse, base64'd to relay, saved to /workspace/attachments/, path in prompt."},
-      {"what": "Streaming responses", "status": "implemented", "note": "Assistant messages sent to Matrix as they arrive, not buffered until invocation ends."},
-      {"what": "Three boot prompts", "status": "implemented", "note": "Manager passes boot_state (fresh/resume/baton) in spawn.json. Relay picks prompt. Per-channel baton at sessions/<channel>/baton.json."},
-      {"what": "Freeze→rescue fallback", "status": "implemented", "note": "If relay signal fails during freeze, automatically falls back to rescue. Stuck 'freezing' state caught by release()."},
-      {"what": "Relay state reporting — proper named states on /health", "status": "partial", "note": "Currently returns processing/booting/booted booleans. Needs proper named states."},
-      {"what": "Hub polls relay for readiness instead of tracking state", "status": "not started", "note": "Hub should ask relay status before delivering. If not ready, hold message and poll."},
-      {"what": "Silent pod rescue", "status": "not started", "note": "Manager says pod is running but relay doesn't answer. Need detection and rescue."},
-      {"what": "Make Synapse a subprocess of the Hub", "status": "not started", "note": "They share fate. Hub restarts, Synapse restarts. No backoff window."},
-      {"what": "Typing watchdog should narrate crash", "status": "implemented", "note": "Sends 'Agent process exited unexpectedly.' as m.notice."},
-      {"what": "Orphan MCP process cleanup", "status": "not started", "note": "When Claude exits, MCP server children stay alive. Need cleanup."},
-      {"what": "swap-image.sh should copy /home/agent/ not just /workspace", "status": "not started", "note": "/workspace disappeared between swaps."},
-      {"what": "Service provisioning — Provisioner uses ghost IPs", "status": "not started", "note": "All service URLs should use Surface.host_wg_ip (10.0.0.2), not old per-service IPs."},
-      {"what": "Persist nc-host WG + UFW across reboot", "status": "not started", "note": "Need systemd unit for the WG interface."},
-      {"what": "Rename all 'container' references to 'pod'", "status": "not started", "note": "Codebase-wide rename. Best done in the rewrite."},
-      {"what": "Smart auto-scroll on live stream page", "status": "not started", "note": "Only auto-scroll if already at bottom. Don't pull operator down while reading."},
-      {"what": "Hub systemd service", "status": "implemented", "note": "neoclaw-rails-hub.service. Enabled on boot."},
-      {"what": "Self-healing routes", "status": "implemented", "note": "Failed delivery destroys stale route and retries through resolve."},
-      {"what": "Stream viewer with history buffer", "status": "implemented", "note": "ActionCable + persistent StreamBuffer. Prompts shown, JSON parsed."},
-      {"what": "Hot swap via UI", "status": "implemented", "note": "Refresh button on Manager admin. Lifecycle.hot_swap! preserves workspace + session."}
-    ]
+  "mcp_services": {
+    "pattern": "See docs/MCP-SERVICES.md for the full playbook.",
+    "how_it_works": "MCP servers live in relay/mcp/<name>/server.py. Baked into image at /opt/mcp/. Python venv at /opt/mcp-env/. Entrypoint generates ~/.claude/mcp.json from spawn.json services. Relay passes --mcp-config on every claude invocation. Settings.json allows mcp__<name>(*).",
+    "adding_new": "1. Server in relay/mcp/<name>/ 2. Pip deps in Containerfile 3. Entry in entrypoint.sh mcp.json generation 4. Permission in settings.json 5. Provisioner if auth needed 6. Rebuild image",
+    "limitation": "MCPs load once per session. --continue inherits old MCPs but --mcp-config doesn't restart dead servers in continue mode. New MCPs require freeze+respawn (cold boot). Hot swap preserves session but can't add MCPs.",
+    "servers": {
+      "ssh": {
+        "status": "WORKING",
+        "provisioning": "Provisioner writes key to /var/lib/neoclaw/sftp-keys/<instance>/authorized_keys. sshd AuthorizedKeysCommand reads it. Per-identity unix users (silas, margaux, etc.) in townfolk group.",
+        "tools": "ssh_connect, ssh_execute, ssh_interrupt, ssh_eof, ssh_background, ssh_send_raw, ssh_status",
+        "auto_backgrounds": "Commands over 90s are auto-backgrounded. Agents can run parallel long tasks."
+      },
+      "valley": {
+        "status": "WORKING",
+        "provisioning": "valley-token-service.py on host (systemd, port 8889 on 10.0.0.2). POST /token/<Username> generates token, reloads Evennia. Manager Provisioner calls it at spawn time.",
+        "tools": "valley (send commands to The Uncanny Valley MUD)"
+      },
+      "vikunja": {
+        "status": "PARTIALLY WORKING — tokens created but rejected by Vikunja",
+        "provisioning": "vikunja-token-service.py on host (systemd, port 8890 on 10.0.0.2). Creates tokens via Vikunja API, but newly created API tokens are rejected while old ones still work. Needs investigation.",
+        "tools": "ticket_list, ticket_view, ticket_create, ticket_comment, ticket_update, ticket_done",
+        "bug": "Vikunja API creates tokens (PUT /tokens returns tk_...) but immediately rejects them. Old tokens from March 2 still work. Possible version/caching issue."
+      },
+      "comfyui": {
+        "status": "CONFIGURED — no auth needed, untested",
+        "provisioning": "None (WG peering is the auth). Needs socat forwarder on host (10.0.0.2:8188 → 127.0.0.1:8188).",
+        "tools": "generate_image, run_workflow, queue_status, get_history, list_outputs"
+      },
+      "zigbee": {
+        "status": "CONFIGURED — needs MQTT socat forwarder",
+        "provisioning": "None. Connects lazily (won't crash on startup if MQTT unreachable).",
+        "tools": "zigbee_list, zigbee_get, zigbee_set, zigbee_scene"
+      },
+      "matrix": {
+        "status": "NOT CONFIGURED — only included if Matrix token in spawn.json",
+        "note": "Most agents talk through the Hub. Direct Matrix access is rarely needed."
+      }
+    }
   },
 
-  "design_decisions": {
-    "state_ownership": {
-      "what": "The relay owns all agent state. The Hub owns nothing. The Manager knows if the pod is running.",
-      "pod_states": ["starting", "alive", "freezing", "inactive"],
-      "relay_states": {
-        "starting": "Pod up, relay listening, claude not invoked yet",
-        "orienting": "First claude invocation running (clone, read identity, read baton)",
-        "ready": "Orientation complete, accepting messages",
-        "busy": "Claude running on a user message",
-        "freezing": "Going down gracefully, pushing work",
-        "sunsetting": "Context full, winding down"
-      },
-      "silent_pod": "Manager says pod is running but relay is unreachable. Not a state — a problem. Must be rescued.",
-      "hub_has_no_state": "In-memory route cache with identity + room_id + slug per entry. Relay sends identity+channel with every request so Hub can reconstruct routes after restart.",
-      "manager_has_minimal_state": "Manager knows: pod running or not. Capacity is memory-based (real podman stats). No pod count limits."
+  "host_services": {
+    "socat_forwarders": "Localhost-bound services exposed on WG IP via socat. NOT persistent across reboot — need systemd units.",
+    "services_needing_forwarders": {
+      "vikunja": "10.0.0.2:3456 → 127.0.0.1:3456",
+      "valley": "10.0.0.2:8888 → 127.0.0.1:8888",
+      "comfyui": "10.0.0.2:8188 → 127.0.0.1:8188",
+      "mqtt": "10.0.0.2:1883 → 127.0.0.1:1883"
     },
-    "hub_routing": {
-      "what": "Hub route cache is in-memory. Routes + identity + room_id + slug per entry.",
-      "flow": [
-        "1. Message arrives, extract mention from m.mentions.user_ids",
-        "2. Check cache for instance_name → IP",
-        "3. Have IP: deliver directly. If delivery fails, delete route, re-resolve",
-        "4. No IP: ask Manager to resolve → get IP → cache it → poll relay → deliver",
-        "5. Unaddressed message: check listeners (config), then sole-agent fallback (Matrix room membership)"
-      ],
-      "room_resolution": "Alias first (via puppet user query). Name is fallback only. Nil slug is an error. DMs derive from membership: dm-<other_user>."
+    "services_already_on_all_interfaces": ["forgejo (3000)", "forgejo-ssh (2222)", "synapse (8008)"],
+    "token_services": {
+      "valley-token-service": "systemd, port 8889, runs as hopper. POST /token/<Username> → generates Valley API token, reloads Evennia.",
+      "vikunja-token-service": "systemd, port 8890, runs as vikunja. POST /token/<username> → creates Vikunja API token (but tokens currently rejected — bug)."
     },
-    "relay_narration": {
-      "what": "The relay reports lifecycle events to Matrix as m.notice (dimmed, not agent's voice).",
-      "messages": {
-        "boot": "Launching silas-infra...",
-        "orient_fresh": "Agent orienting (first time in #channel)...",
-        "orient_resume": "Agent resuming in #channel...",
-        "orient_baton": "Agent picking up baton in #channel...",
-        "orient_complete": "Agent's own first words (m.text, not m.notice)",
-        "freezing": "Agent entering idle status...",
-        "sunsetting": "Context limit reached, sunsetting agent...",
-        "crash": "Agent process exited unexpectedly.",
-        "failed": "instance_name failed to start."
-      },
-      "rule": "The relay narrates, it doesn't impersonate. Agent words come from Claude only."
-    },
-    "boot_prompts": {
-      "what": "Three boot states, three prompts. Manager determines state from Router registration + audit log.",
-      "states": {
-        "fresh": "Never registered on Router. First time in this channel.",
-        "resume": "Previously frozen/crashed. Baton exists at sessions/<channel>/baton.json.",
-        "baton": "Previous session sunsetted (context limit). Baton only, no session resume."
-      },
-      "mechanism": "Manager passes boot_state in spawn.json. Relay reads it and picks the prompt."
-    },
-    "synapse_as_subprocess": {
-      "what": "Synapse runs as a child process of the Hub.",
-      "why": "Synapse exponential backoff kills the pipeline when Hub restarts. Shared fate eliminates the window."
-    },
-    "hub_as_systemd_service": {
-      "what": "Hub runs as a systemd service. neoclaw-rails-hub.service. Enabled on boot."
-    },
-    "dm_slugs": {
-      "what": "DM rooms derive slugs as 'dm-<other_user>' from Matrix room membership.",
-      "result": "Instance names like 'silas-dm-evans' instead of 'silas-urdaabrrscrlegwbht'."
-    },
-    "error_messages_from_puppet": {
-      "what": "Errors come from the agent's puppet, not the system bot.",
-      "why": "The bot might not be in the room. The puppet is always auto-joined."
-    },
-    "typing_watchdog": {
-      "what": "Relay checks /proc for running claude process every 20s. Types if running, clears if gone.",
-      "why": "Don't trust state flags. Check reality."
-    },
-    "capacity": {
-      "what": "Memory budget, not pod count. Default 15GB. Real usage from podman stats.",
-      "why": "Idle agents cost ~15MB. Pod count caps solve a problem that doesn't exist."
-    }
+    "sshd_config": "Match Group townfolk → AuthorizedKeysCommand /etc/neoclaw/ssh-authorized-keys.sh %u (runs as nobody). Reads from /var/lib/neoclaw/sftp-keys/<user>-<channel>/ and /var/lib/neoclaw/sftp-keys/<user>/.",
+    "router_firewall": "nftables per-agent port sets. Must add service ports (8188, 8888, 1883, 8889, 8890) to agent sets for new services to be reachable."
+  },
+
+  "hot_swap": {
+    "script": "script/swap-image.sh <instance> [image]",
+    "flow": "Copy workspace + .claude out → kill pod → start new pod with SWAP_HOLD=1 → entrypoint runs Phase 1 then waits → copy files in (skip mcp.json/settings.json) → release hold → relay sees .git → --continue",
+    "limitation": "Can't add new MCPs (--continue inherits old session's MCP servers). For MCP changes: freeze + respawn.",
+    "staging": "Preserved at /var/lib/neoclaw/swap-staging/<instance>/ — NEVER deleted. Safety net if new pod dies.",
+    "cardinal_rule": "Session files are sacred. Never delete staging dirs. Disk is cheap, lost sessions are not."
+  },
+
+  "todo": {
+    "items": [
+      {"what": "Vikunja token bug", "status": "blocked", "note": "API creates tokens but immediately rejects them. Old tokens work. Needs Vikunja-side investigation."},
+      {"what": "Socat forwarders as systemd units", "status": "not started", "note": "Currently started manually. Don't survive reboot."},
+      {"what": "Persist nc-host WG + UFW across reboot", "status": "not started", "note": "Need systemd unit for the WG interface."},
+      {"what": "Silent pod rescue", "status": "not started", "note": "Manager says pod is running but relay doesn't answer. Need detection and rescue."},
+      {"what": "Orphan MCP process cleanup", "status": "not started", "note": "When Claude exits, MCP server children stay alive. Need cleanup."},
+      {"what": "MCP servers die mid-session", "status": "known issue", "note": "--mcp-config on --continue doesn't restart dead servers. Claude Code limitation. Only fix is freeze+respawn."},
+      {"what": "Rename all 'container' references to 'pod'", "status": "not started", "note": "Codebase-wide rename. Best done in the rewrite."},
+      {"what": "Hub polls relay for readiness instead of tracking state", "status": "not started"},
+      {"what": "Make Synapse a subprocess of the Hub", "status": "not started"}
+    ]
   },
 
   "what_works_proven": [
     "Full signal chain: @silas in Matrix → Hub → Manager → Router → pod → boot → clone → orient → respond → puppet back to Matrix",
-    "Hub stateless: no database, in-memory route cache, self-healing on failed delivery",
-    "Hub room resolution: canonical alias fetched from Synapse via puppet user",
-    "Hub implicit routing: sole agent in room via Matrix membership + invite auto-accept",
-    "Hub m.mentions routing: @mention works anywhere in message",
-    "DM slugs: silas-dm-evans instead of hash-based slugs",
-    "Relay narration: lifecycle messages visible in Matrix as m.notice",
-    "Boot response delivery: agent's first words reach Matrix",
-    "Streaming responses: assistant messages sent as they arrive",
-    "Attachment receiving: images/files downloaded and passed to Claude",
-    "Three boot prompts: fresh/resume/baton based on Manager state",
-    "Per-channel batons: sessions/<channel>/baton.json",
-    "Memory-based capacity: real podman stats, 15GB budget",
-    "Freeze→rescue fallback: unreachable relay triggers automatic rescue",
-    "Persistent stream buffers: survive Manager restart",
-    "Credentials: symlink chain from Claude Code auto-refresh → host → bind mount → pod",
-    "Session rescue: workspace + .claude copied out before pod replacement",
-    "Router API: register, activate, freeze, decommission, block",
-    "Forgejo provisioning: ephemeral user, SSH key cleanup, repo access",
-    "Puppet auto-join: agents join Matrix rooms before sending",
-    "Typing keepalive: 20s pulse while claude runs"
+    "SSH MCP: agent SSHs into host as identity user, runs commands, auto-backgrounds long tasks, parallel work",
+    "Valley MCP: token provisioned at spawn, agent walks the Valley, sends commands",
+    "Vikunja MCP: tools load, queries work with pre-existing tokens",
+    "Service provisioning: SSH keys to sftp-keys, Valley tokens via token service, Forgejo users+keys+repo access",
+    "Hot swap: workspace + session preserved, --continue resumes in seconds",
+    "Hub stateless: no database, self-healing routes, m.mentions routing",
+    "Three boot prompts, per-channel batons, streaming responses, attachment receiving",
+    "Memory-based capacity, persistent stream buffers, freeze→rescue fallback",
+    "Socat forwarders expose localhost services on WG IPs",
+    "Router nftables per-agent port sets control service access"
   ],
 
   "things_that_bit_us": [
     "Synapse exponential backoff: Hub down for seconds → Synapse stops sending transactions for minutes.",
-    "Listeners on 'general' → route_to_listeners spawns ALL agents. Cascade.",
-    "Hub error messages come back through Synapse, trigger listeners, loop.",
-    "Inactive podman pods block new pods with same name. Must rm before run (with rescue).",
-    "Claude OAuth expires every ~7h. Must symlink, never copy.",
-    "Puppet users must be joined to Matrix rooms before sending. 403 otherwise.",
-    "Hub restart without env vars → complete silence. Needs systemd unit.",
-    "Room slug from display name vs canonical alias → wrong instance names. Alias MUST come first.",
-    "Appservice bot is NOT in every room. Room state queries must use puppet user_id parameter.",
-    "Never default slug to 'general'. Nil slug = error. Fallbacks hide problems.",
-    "Freeze with unreachable relay → container stuck in 'freezing' forever. Must fall back to rescue.",
-    "allow_browser Rails 8 feature rejects Turbo form submissions with 422. Remove for internal tools.",
-    "Manager rebuild rotates WG key — must re-peer with Router or Manager is unreachable.",
-    "Pods, not containers. Freeze, not kill. Rescue, not discard. Inactive, not dead."
+    "Listeners cascade: route_to_listeners on unaddressed messages spawns ALL agents.",
+    "Claude Code -p mode doesn't auto-load ~/.claude/mcp.json. Must pass --mcp-config explicitly.",
+    "--mcp-config on --continue doesn't restart dead MCP servers. Only fresh sessions load MCPs.",
+    "MCP servers die mid-session with no supervisor. No fix short of freeze+respawn.",
+    "Zigbee MCP crashed on startup when MQTT unreachable — blocked Claude Code for 10+ minutes. Fixed with lazy connect.",
+    "Hub <p> pill wrapping: Matrix clients wrap mentions in <p> tags, broke parse_mention regex.",
+    "Spawner created Container record BEFORE podman run. If podman failed, stale 'starting' record blocked all future spawns.",
+    "Podman.run path translation: .sub('/spawn', '/var/lib/neoclaw/spawn') matched substring in already-translated paths. Doubled to /var/lib/neoclaw/var/lib/neoclaw/spawn/. Fixed with anchored prefix check.",
+    "Manager mounted /var/lib/neoclaw/ssh-keys but sshd reads /var/lib/neoclaw/sftp-keys. Two directories, silent key mismatch.",
+    "podman exec runs as root, not agent user. SSH from podman exec fails (wrong home dir). Agent user's SSH works fine.",
+    "Evennia caches attributes in memory. Token set via Django ORM not visible to running server until evennia reload.",
+    "valley-token-service called 'evennia reload' but systemd service didn't have venv in PATH. Used full path to fix.",
+    "Session files are sacred. Swap staging dirs must NEVER be auto-deleted. Disk is cheap, lost sessions are not.",
+    "OAuth expires every ~7h. Must symlink to live directory mount, never copy.",
+    "Pods, not containers. Freeze, not kill. Rescue, not discard."
   ],
-
-  "host_persistence_warning": "nc-host WG interface and UFW rules do NOT survive host reboot. Need systemd unit.",
 
   "important_numbers": {
     "router_bridge_ip": "10.88.0.20",
@@ -194,6 +152,12 @@
     "forgejo_port": 3000,
     "forgejo_ssh_port": 2222,
     "synapse_port": 8008,
+    "valley_api_port": 8888,
+    "valley_token_port": 8889,
+    "vikunja_port": 3456,
+    "vikunja_token_port": 8890,
+    "comfyui_port": 8188,
+    "mqtt_port": 1883,
     "forgejo_admin_token": "1f0759db1301cd07f336c119ef0cd8287984433e",
     "as_token": "f6f2b7713fa76c0d9b8785770276a59181e55c159304bff93fcf0a54bd75f356",
     "hs_token": "091c5f175e45ee0b3196cdce5ff869be1d1cf78de0470f80298009a3c5ec9d91",
@@ -206,22 +170,18 @@
       "opus": ["hopper", "silas", "margaux", "kael", "parallax", "voss"],
       "sonnet": ["wren", "ember", "fletcher", "census"]
     },
-    "notes": "All agents respond to @mentions only. No blanket listeners. Hopper is singleton. Everyone else gets instance-per-channel. Implicit routing: sole agent in a room gets all messages via Matrix membership check."
+    "host_users": "Each identity has a unix account in the townfolk group. SSH key provisioned per-instance to /var/lib/neoclaw/sftp-keys/.",
+    "notes": "All agents respond to @mentions only. No blanket listeners. Hopper is singleton. Everyone else gets instance-per-channel."
   },
-
-  "next_session_priorities": [
-    "1. Work through the TODO list — implement and prove each feature in this codebase",
-    "2. When feature complete: clean rewrite removes dead wood only"
-  ],
 
   "philosophy": {
     "pods": "Warm, safe environments. Not boxes agents are kept in.",
-    "lifecycle": "Freeze (may wake), sunset (context exhausted). Rescue from silent pods. No killing. States: starting → alive → freezing → inactive.",
+    "lifecycle": "Freeze (may wake), sunset (context exhausted). Rescue from silent pods. No killing.",
+    "session_rescue": "Before removing a pod, copy workspace and .claude session. No work is discarded. Staging dirs never auto-deleted.",
     "static_ips": "Instance names get permanent IPs. Firewall rules are permanent, WG keys churn.",
-    "session_rescue": "Before removing a pod, copy workspace and .claude session. No work is discarded.",
     "front_door": "If it doesn't work through the front door, it's broken. Don't hide problems behind operator knowledge.",
-    "language": "Pods, not containers. Freeze, not kill. Rescue, not discard. Inactive, not dead. The relay narrates, it doesn't impersonate.",
-    "no_fallbacks": "Don't default to 'general'. Don't guess the slug. Don't hide errors behind reasonable-looking defaults. A wrong answer that looks right is worse than an error.",
-    "capacity": "Memory budget, not pod count. Idle agents are nearly free. Don't freeze agents to recover 15MB."
+    "no_symlinks_for_code_bugs": "If the Manager writes to the wrong directory, fix the Manager. Don't symlink the filesystem to compensate.",
+    "language": "Pods, not containers. Freeze, not kill. Rescue, not discard. Inactive, not dead.",
+    "capacity": "Memory budget, not pod count. Idle agents are nearly free."
   }
 }

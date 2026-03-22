@@ -154,12 +154,12 @@ class Provisioner
 
       resp = api_post("#{Surface.valley_token_url}/token/#{valley_name}", {})
 
-      if resp.status == 200
+      if resp.respond_to?(:status) && resp.status == 200
         data = JSON.parse(resp.body, symbolize_names: true)
         Rails.logger.info "valley: token generated for #{valley_name}"
         { token: data[:token], url: Surface.valley_url }
       else
-        Rails.logger.warn "valley: token generation failed for #{valley_name}: #{resp.status}"
+        Rails.logger.warn "valley: token generation failed for #{valley_name}"
         { url: Surface.valley_url }
       end
     end
@@ -221,7 +221,10 @@ class Provisioner
 
     def api_post(url, body, token: nil)
       headers = token ? auth_header(token) : {}
-      http.post(url, json: body, headers: headers)
+      resp = http.post(url, json: body, headers: headers)
+      check_response!(resp, "POST #{url}")
+    rescue ProvisionError
+      raise
     rescue => e
       Rails.logger.error "Provisioner POST #{url}: #{e.message}"
       raise ProvisionError, "HTTP POST #{url}: #{e.message}"
@@ -229,7 +232,10 @@ class Provisioner
 
     def api_put(url, body, token: nil)
       headers = token ? auth_header(token) : {}
-      http.put(url, json: body, headers: headers)
+      resp = http.put(url, json: body, headers: headers)
+      check_response!(resp, "PUT #{url}")
+    rescue ProvisionError
+      raise
     rescue => e
       Rails.logger.error "Provisioner PUT #{url}: #{e.message}"
       raise ProvisionError, "HTTP PUT #{url}: #{e.message}"
@@ -237,10 +243,21 @@ class Provisioner
 
     def api_delete(url, token: nil)
       headers = token ? auth_header(token) : {}
-      http.delete(url, headers: headers)
+      resp = http.delete(url, headers: headers)
+      check_response!(resp, "DELETE #{url}")
     rescue => e
       Rails.logger.error "Provisioner DELETE #{url}: #{e.message}"
       nil
+    end
+
+    # HTTPX returns ErrorResponse on connection failure instead of raising.
+    # Convert to a real exception so callers don't crash on .status
+    def check_response!(resp, context)
+      unless resp.respond_to?(:status)
+        error_msg = resp.respond_to?(:error) ? resp.error.message : resp.to_s
+        raise ProvisionError, "#{context}: #{error_msg}"
+      end
+      resp
     end
 
     def http
