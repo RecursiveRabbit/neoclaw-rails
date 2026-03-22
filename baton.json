@@ -41,7 +41,7 @@
       {"what": "Replace Listener model with Matrix notification settings", "status": "not started", "note": "Use 'All messages' vs 'Mentions and Keywords' per agent per room. Delete the Listener model."},
       {"what": "Make Synapse a subprocess of the Hub", "status": "not started", "note": "They share fate. Hub restarts, Synapse restarts. No backoff window."},
       {"what": "DM slugs from room membership", "status": "not started", "note": "Derive as dm-<other_user> instead of hashing the room ID."},
-      {"what": "invoke_claude timeout", "status": "not started", "note": "Claude can hang silently. Need timeout (5min boot, 10min message), kill orphan processes, report failure."},
+      {"what": "Typing watchdog should narrate crash", "status": "not started", "note": "Watchdog detects claude gone via /proc. Currently clears typing and logs. Should also send a narration message to Matrix: 'Agent process exited unexpectedly.' Time-based timeout is wrong — claude might legitimately run for hours."},
       {"what": "Orphan MCP process cleanup", "status": "not started", "note": "When Claude exits, MCP server children stay alive. Need cleanup."},
       {"what": "swap-image.sh should copy /home/agent/ not just /workspace", "status": "not started", "note": "/workspace disappeared between swaps. Bug never investigated because pod was killed."},
       {"what": "Service provisioning — Provisioner uses ghost IPs", "status": "not started", "note": "All service URLs should use Surface.host_wg_ip (10.0.0.2), not old per-service IPs."},
