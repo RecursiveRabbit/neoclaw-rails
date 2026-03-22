@@ -123,8 +123,9 @@ podman exec "$INSTANCE" chown -R agent:agent /home/agent/.claude
 log "releasing hold..."
 podman exec "$INSTANCE" rm -f /tmp/.swap-hold
 
-log "cleanup staging..."
-rm -rf "$RESCUE_DIR"
+# DO NOT delete staging. It's the only copy of the session if the new pod dies.
+# Staging dirs are cheap. Lost sessions are not.
+log "staging preserved at $RESCUE_DIR"
 
 # =================================================================
 # Step 6: Verify

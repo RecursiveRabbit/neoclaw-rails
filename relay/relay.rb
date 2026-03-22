@@ -143,9 +143,11 @@ class Relay
       "--dangerously-skip-permissions",
     ]
 
-    # Load MCP config if present — must be on the initial invocation
+    # Always pass MCP config — on fresh and continue invocations.
+    # MCP server processes can die mid-session (crash, OOM, idle timeout).
+    # Passing --mcp-config on --continue ensures dead servers get restarted.
     mcp_config = File.join(Dir.home, ".claude", "mcp.json")
-    cmd.push("--mcp-config", mcp_config) if File.exist?(mcp_config) && !continue
+    cmd.push("--mcp-config", mcp_config) if File.exist?(mcp_config)
 
     cmd.push("-p", prompt)
     cmd << "--continue" if continue

@@ -9,7 +9,7 @@
     </div>
     <div class="flex items-center gap-4">
       <span class="text-stone-500 text-sm" data-stream-target="status">connecting...</span>
-      <button onclick="if(confirm('Stop claude process?')){fetch('<%= stop_container_path(@container) %>',{method:'POST',headers:{'X-CSRF-Token':document.querySelector('meta[name=csrf-token]').content}}).then(()=>this.textContent='stopped').catch(e=>this.textContent='error')}"
+      <button onclick="if(confirm('Stop claude process?')){fetch('<%= stop_container_path(@container) %>',{method:'POST',headers:{'X-CSRF-Token':document.querySelector('meta[name=csrf-token]').content}})}"
               class="text-xs px-3 py-1 rounded bg-red-900/20 border border-red-700/30 text-red-400 hover:bg-red-900/50 transition-colors">stop</button>
       <%= link_to "← back", container_path(@container), class: "text-stone-500 text-sm hover:text-amber-400" %>
     </div>

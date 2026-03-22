@@ -12,7 +12,13 @@ class Podman
     def run(instance_name:, spawn_path:)
       # spawn_path is the Manager-internal path (e.g. /spawn/silas-test.json).
       # podman --remote executes on the HOST, so we translate to the host path.
-      host_spawn_path = spawn_path.sub(Surface.spawn_dir, Surface.host_spawn_dir)
+      # Translate container path → host path. Only replace if it starts with
+      # the container prefix — if it's already a host path, leave it alone.
+      if spawn_path.start_with?(Surface.spawn_dir)
+        host_spawn_path = spawn_path.sub(/\A#{Regexp.escape(Surface.spawn_dir)}/, Surface.host_spawn_dir)
+      else
+        host_spawn_path = spawn_path
+      end
 
       # A previous pod with this name may still exist (frozen, stopped,
       # or crashed). Rescue its workspace before removing it.
@@ -51,7 +57,13 @@ class Podman
     # Sets SWAP_HOLD=1 so the entrypoint waits after setup, copies files
     # in, then releases the hold.
     def run_swap(instance_name:, spawn_path:, rescue_dir:)
-      host_spawn_path = spawn_path.sub(Surface.spawn_dir, Surface.host_spawn_dir)
+      # Translate container path → host path. Only replace if it starts with
+      # the container prefix — if it's already a host path, leave it alone.
+      if spawn_path.start_with?(Surface.spawn_dir)
+        host_spawn_path = spawn_path.sub(/\A#{Regexp.escape(Surface.spawn_dir)}/, Surface.host_spawn_dir)
+      else
+        host_spawn_path = spawn_path
+      end
 
       args = [
         "podman", "--remote", "--url", "unix://#{Surface.podman_socket}",
@@ -104,8 +116,8 @@ class Podman
       run_cmd(["podman", "--remote", "--url", "unix://#{Surface.podman_socket}",
                "exec", instance_name, "rm", "-f", "/tmp/.swap-hold"])
 
-      # Cleanup staging
-      FileUtils.rm_rf(rescue_dir)
+      # DO NOT delete staging — it's the safety net if the new pod dies.
+      # Lost sessions are a cardinal sin. Disk is cheap.
 
       container_id
     end

@@ -107,6 +107,8 @@ class Spawner
 
       { ip: agent_ip }
     rescue => e
+      # Clean up the stale container record so future spawns aren't blocked
+      container&.update!(state: "dead") if container
       AuditLog.record("SPAWN_FAILED",
         instance_name: instance_name, identity: identity, detail: e.message)
       raise
