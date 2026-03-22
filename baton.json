@@ -103,7 +103,13 @@
       {"what": "MCP servers die mid-session", "status": "known issue", "note": "--mcp-config on --continue doesn't restart dead servers. Claude Code limitation. Only fix is freeze+respawn."},
       {"what": "Rename all 'container' references to 'pod'", "status": "not started", "note": "Codebase-wide rename. Best done in the rewrite."},
       {"what": "Hub polls relay for readiness instead of tracking state", "status": "not started"},
-      {"what": "Make Synapse a subprocess of the Hub", "status": "not started"}
+      {"what": "Make Synapse a subprocess of the Hub", "status": "not started"},
+      {"what": "!previous syntax", "status": "not started", "note": "Bare @silas sends previous message. @silas !previous 3 sends last 3. @silas !previous 3 What do you think? sends 3 + new message. Hub fetches history via Matrix.recent_messages, prepends to delivery. Agents get context without copy-paste."},
+      {"what": "Presence manager — always present, online or away", "status": "partial", "note": "Currently set on ready/released/crash. Should maintain: green=relay registered+claude running, yellow=frozen/idle (not gone, sleeping). Hub crash → everyone goes grey immediately — free alarm signal. Never log out agent tokens."},
+      {"what": "Session processing pipeline", "status": "not started", "note": "Runs on every freeze/sunset/crash. Manager runs process-session.sh inside the still-running pod via podman exec (pod still has WG, deploy key, git). Strip tool results (keep calls), strip identity.json/baton content. Write ended_reason (context_limit/idle/crash/manual). If crash and baton older than session → baton_stale: true. Save to sessions/<channel>/<instance>-<timestamp>.json. Commit+push via pod's own credentials. Dead pod fallback: podman cp raw session, process locally, best-effort backup."},
+      {"what": "Neobot — cron scheduling via Matrix messages", "status": "not started", "note": "Dumb cron bot that posts Matrix messages on schedule. Configured by talking to it in-channel. Spawn-authorized — its messages trigger agent spawns through normal Hub routing. No lifecycle control, no API access, no awareness of agents. Just posts messages."},
+      {"what": "SFTP ForceCommand", "status": "not started", "note": "SSH MCP works with full shell. Spec says ForceCommand internal-sftp for agent unix users. Agents should have SFTP access to host filesystems, not shell. Per-nick home dirs with symlinks to channel workspaces."},
+      {"what": "Smart auto-scroll on live stream page", "status": "not started", "note": "Only auto-scroll if already at bottom. Don't pull operator down while reading."}
     ]
   },
 
