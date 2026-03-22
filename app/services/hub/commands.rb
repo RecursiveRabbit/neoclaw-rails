@@ -1,4 +1,4 @@
-# Operator commands — !agents, !freeze, !kill, !status, !help, !cron.
+# Operator commands — !agents, !freeze, !kill, !status, !help.
 # Parsed from Matrix messages before routing. Only operators can execute.
 
 module Hub
@@ -6,7 +6,6 @@ module Hub
     REGISTRY = {}
 
     class << self
-      # Parse a !command from a message. Returns nil if not a command.
       def parse(body, sender:)
         return nil unless body.strip.start_with?("!")
         return nil unless Config.operators.include?(sender)
@@ -20,15 +19,14 @@ module Hub
         { name: name, args: parts[1] || "", sender: sender }
       end
 
-      # Execute a parsed command.
-      def execute(command, room:)
+      def execute(command, room_id:, slug:)
         handler = REGISTRY[command[:name]]
         return unless handler
 
-        result = handler.call(command[:args], room: room)
-        Matrix.notify(room.matrix_room_id, result) if result
+        result = handler.call(command[:args], room_id: room_id, slug: slug)
+        Matrix.notify(room_id, result) if result
       rescue => e
-        Matrix.notify(room.matrix_room_id, "Command failed: #{e.message}")
+        Matrix.notify(room_id, "Command failed: #{e.message}")
       end
 
       def register(name, description: "", usage: "", &block)
@@ -38,24 +36,22 @@ module Hub
 
     # --- Built-in commands ---
 
-    register("agents", description: "List running agents", usage: "!agents") do |_args, room:|
-      agents = Agent.alive.includes(:identity, :room)
-      if agents.empty?
+    register("agents", description: "List running agents", usage: "!agents") do |_args, room_id:, slug:|
+      routes = RouteCache.all
+      if routes.empty?
         "No agents running."
       else
-        agents.order(:instance_name).map { |a|
-          uptime = distance_of_time(Time.current - a.created_at)
-          ctx = a.context_usage > 0 ? "#{(a.context_usage * 100).round}%" : "—"
-          "  #{a.instance_name} (#{a.identity.name} in ##{a.room.slug}) — #{uptime}, ctx #{ctx}"
+        routes.sort_by { |name, _| name }.map { |name, r|
+          "  #{name} (#{r[:identity]} in ##{r[:slug]})"
         }.join("\n")
       end
     end
 
-    register("status", description: "System status", usage: "!status") do |_args, room:|
-      agents = Agent.alive.count
-      resolving = Agent.resolving.count
+    register("status", description: "System status", usage: "!status") do |_args, room_id:, slug:|
+      route_count = RouteCache.count
+      resolving = RouteCache.resolving_count
       manager = ManagerClient.status
-      lines = ["Hub: #{agents} alive, #{resolving} resolving"]
+      lines = ["Hub: #{route_count} routes, #{resolving} resolving"]
       if manager
         lines << "Manager: #{manager[:pods]} pods"
       else
@@ -64,10 +60,10 @@ module Hub
       lines.join("\n")
     end
 
-    register("freeze", description: "Freeze an agent", usage: "!freeze <nick>") do |args, room:|
+    register("freeze", description: "Freeze an agent", usage: "!freeze <nick>") do |args, room_id:, slug:|
       nick = args.strip
-      agent = Agent.alive.find_by(instance_name: nick)
-      unless agent
+      route = RouteCache.get(nick)
+      unless route
         next "#{nick} is not running."
       end
 
@@ -75,27 +71,20 @@ module Hub
       "Freezing #{nick}..."
     end
 
-    register("kill", description: "Kill immediately", usage: "!kill <nick>") do |args, room:|
+    register("rescue", description: "Rescue an unresponsive agent", usage: "!rescue <nick>") do |args, room_id:, slug:|
       nick = args.strip
-      agent = Agent.alive.find_by(instance_name: nick)
-      unless agent
+      route = RouteCache.get(nick)
+      unless route
         next "#{nick} is not running."
       end
 
       Thread.new { ManagerClient.release(instance: nick) }
-      agent.destroy!
-      "Killed #{nick}."
+      RouteCache.delete(nick)
+      "Rescuing #{nick}..."
     end
 
-    register("help", description: "List commands", usage: "!help") do |_args, room:|
+    register("help", description: "List commands", usage: "!help") do |_args, room_id:, slug:|
       "Commands:\n" + REGISTRY.keys.sort.map { |name| "  !#{name}" }.join("\n")
-    end
-
-    private_class_method def self.distance_of_time(seconds)
-      s = seconds.to_i
-      m, s = s.divmod(60)
-      h, m = m.divmod(60)
-      "#{h}h#{m.to_s.rjust(2, '0')}m"
     end
   end
 end

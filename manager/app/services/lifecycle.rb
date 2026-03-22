@@ -8,7 +8,13 @@ class Lifecycle
     def release(instance_name)
       container = Container.find_by(instance_name: instance_name)
       return unless container
-      freeze!(container)
+
+      # Already stuck in freezing? Go straight to rescue.
+      if container.state == "freezing"
+        rescue!(container)
+      else
+        freeze!(container)
+      end
     end
 
     def freeze!(container)
@@ -20,7 +26,14 @@ class Lifecycle
         identity: container.identity,
         detail: "Freezing — waiting for relay signal")
 
-      relay_signal(container, :freeze)
+      unless relay_signal(container, :freeze)
+        # Relay unreachable — fall back to rescue
+        AuditLog.record("FREEZE_FALLBACK_RESCUE",
+          instance_name: container.instance_name,
+          identity: container.identity,
+          detail: "Relay unreachable, falling back to rescue")
+        rescue!(container)
+      end
     end
 
     def sunset!(container)
@@ -65,8 +78,8 @@ class Lifecycle
         detail: "Workspace and session preserved")
     end
 
-    def force_kill!(container)
-      AuditLog.record("FORCE_KILL",
+    def rescue!(container)
+      AuditLog.record("RESCUE",
         instance_name: container.instance_name,
         identity: container.identity)
 
@@ -111,7 +124,7 @@ class Lifecycle
       spawn_path = File.join(Surface.spawn_dir, "#{container.instance_name}.json")
       FileUtils.rm_f(spawn_path)
 
-      container.update!(state: "dead")
+      container.update!(state: "inactive")
 
       HubClient.callback(
         event: "released",
@@ -128,14 +141,16 @@ class Lifecycle
     private
 
     def relay_signal(container, signal)
-      HTTPX.post(
+      response = HTTPX.post(
         "http://#{container.wg_address}:9300/signal",
         json: { signal: signal.to_s }
       )
+      response.status == 200
     rescue => e
       AuditLog.record("RELAY_SIGNAL_FAILED",
         instance_name: container.instance_name,
         detail: "#{signal}: #{e.message}")
+      false
     end
   end
 end

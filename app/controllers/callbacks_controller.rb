@@ -11,13 +11,13 @@ class CallbacksController < ApplicationController
 
     case event_type
     when "ready"
-      handle_ready(instance, params)
+      handle_ready(instance)
     when "released"
       handle_released(instance, params)
     when "sunset_warning"
       handle_sunset_warning(instance, params)
     when "crash"
-      handle_crash(instance, params)
+      handle_crash(instance)
     end
 
     render json: { received: true }
@@ -25,45 +25,43 @@ class CallbacksController < ApplicationController
 
   private
 
-  def handle_ready(instance, _data)
-    agent = Agent.resolving.find_by(instance_name: instance)
-    return unless agent
+  def handle_ready(instance)
+    route = Hub::RouteCache.get(instance)
+    return unless route
 
-    agent.update!(state: "alive", last_message_at: Time.current)
-    Hub::Matrix.set_typing(agent.identity.name, agent.room.matrix_room_id, false)
-    Hub::Matrix.set_presence(agent.identity.name, "online")
+    Hub::RouteCache.clear_resolving(instance)
+    Hub::Matrix.set_typing(route[:identity], route[:room_id], false)
+    Hub::Matrix.set_presence(route[:identity], "online")
   end
 
   def handle_released(instance, data)
-    agent = Agent.find_by(instance_name: instance)
-    return unless agent
+    route = Hub::RouteCache.get(instance)
+    return unless route
 
     reason = data[:reason] || "idle"
-    Hub::Matrix.set_typing(agent.identity.name, agent.room.matrix_room_id, false)
-    Hub::Matrix.set_presence(agent.identity.name, "unavailable")
-    Hub::Matrix.notify(agent.room.matrix_room_id,
-      "#{instance} session ended (#{reason}).")
-    agent.destroy!
+    Hub::Matrix.set_typing(route[:identity], route[:room_id], false)
+    Hub::Matrix.set_presence(route[:identity], "unavailable")
+    Hub::Matrix.notify(route[:room_id], "#{instance} session ended (#{reason}).")
+    Hub::RouteCache.delete(instance)
   end
 
   def handle_sunset_warning(instance, data)
-    agent = Agent.alive.find_by(instance_name: instance)
-    return unless agent
+    route = Hub::RouteCache.get(instance)
+    return unless route
 
     usage = data[:context_usage] || 0
-    Hub::Matrix.notify(agent.room.matrix_room_id,
+    Hub::Matrix.notify(route[:room_id],
       "#{instance} approaching context limit (#{(usage.to_f * 100).round}%). " \
       "Direct final priorities.")
   end
 
-  def handle_crash(instance, data)
-    agent = Agent.find_by(instance_name: instance)
-    return unless agent
+  def handle_crash(instance)
+    route = Hub::RouteCache.get(instance)
+    return unless route
 
-    Hub::Matrix.set_typing(agent.identity.name, agent.room.matrix_room_id, false)
-    Hub::Matrix.set_presence(agent.identity.name, "unavailable")
-    Hub::Matrix.notify(agent.room.matrix_room_id,
-      "#{instance} crashed. Session preserved.")
-    agent.destroy!
+    Hub::Matrix.set_typing(route[:identity], route[:room_id], false)
+    Hub::Matrix.set_presence(route[:identity], "unavailable")
+    Hub::Matrix.notify(route[:room_id], "#{instance} crashed. Session preserved.")
+    Hub::RouteCache.delete(instance)
   end
 end

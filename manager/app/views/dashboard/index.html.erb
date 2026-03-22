@@ -5,11 +5,12 @@
     <div class="flex items-center justify-between mb-2">
       <h2 class="text-amber-500 text-sm font-bold uppercase tracking-wider">capacity</h2>
       <span class="text-stone-500 text-sm">
-        <%= @capacity[:running] %> / <%= @capacity[:soft_cap] %> soft · <%= @capacity[:hard_cap] %> hard
+        <%= number_to_human_size(@capacity[:memory_used]) %> / <%= number_to_human_size(@capacity[:memory_budget]) %>
+        · <%= @capacity[:running] %> pods
       </span>
     </div>
     <div class="w-full bg-stone-800 rounded-full h-3">
-      <% pct = @capacity[:hard_cap] > 0 ? (@capacity[:running].to_f / @capacity[:hard_cap] * 100).round : 0 %>
+      <% pct = @capacity[:memory_pct] %>
       <% bar_color = pct > 88 ? "bg-red-500" : pct > 66 ? "bg-amber-500" : "bg-emerald-500" %>
       <div class="<%= bar_color %> h-3 rounded-full transition-all" style="width: <%= pct %>%"></div>
     </div>
@@ -54,7 +55,7 @@
                 <%= link_to "stream", stream_container_path(c), class: "text-xs px-2 py-1 rounded bg-stone-800 text-stone-400 hover:text-amber-400 hover:bg-stone-700 transition-colors" %>
                 <%= button_to "refresh", refresh_container_path(c), method: :post, class: "text-xs px-2 py-1 rounded bg-stone-800 text-stone-400 hover:text-amber-400 hover:bg-stone-700 transition-colors", data: { turbo_confirm: "Hot swap #{c.instance_name}?" } %>
                 <%= button_to "freeze", freeze_container_path(c), method: :post, class: "text-xs px-2 py-1 rounded bg-stone-800 text-stone-400 hover:text-blue-400 hover:bg-stone-700 transition-colors", data: { turbo_confirm: "Freeze #{c.instance_name}?" } %>
-                <%= button_to "kill", kill_container_path(c), method: :post, class: "text-xs px-2 py-1 rounded bg-stone-800 text-stone-400 hover:text-red-400 hover:bg-stone-700 transition-colors", data: { turbo_confirm: "Kill #{c.instance_name}?" } %>
+                <%= button_to "rescue", rescue_container_path(c), method: :post, class: "text-xs px-2 py-1 rounded bg-stone-800 text-stone-400 hover:text-red-400 hover:bg-stone-700 transition-colors", data: { turbo_confirm: "Rescue #{c.instance_name}?" } %>
               </div>
             </div>
           </div>

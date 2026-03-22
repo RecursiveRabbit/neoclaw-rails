@@ -140,6 +140,37 @@ class Podman
       FileUtils.rm_rf(dir) if dir
     end
 
+    # Get total memory usage across all agent pods (excludes manager/router).
+    # Returns bytes.
+    def agent_memory_usage
+      output = run_cmd(["podman", "--remote", "--url", "unix://#{Surface.podman_socket}",
+                        "stats", "--no-stream", "--format", "{{.Name}} {{.MemUsage}}"])
+      total = 0
+      output.each_line do |line|
+        name, usage = line.strip.split(" ", 2)
+        next unless name && usage
+        # Skip infrastructure pods
+        next if %w[neoclaw-manager wg-router].include?(name)
+        # Parse "14.82MB / 2.147GB" — we want the first number
+        if usage =~ /([\d.]+)(kB|KB|MB|GB|TB)/i
+          value = $1.to_f
+          unit = $2.upcase
+          bytes = case unit
+                  when "KB" then value * 1024
+                  when "MB" then value * 1024 * 1024
+                  when "GB" then value * 1024 * 1024 * 1024
+                  when "TB" then value * 1024 * 1024 * 1024 * 1024
+                  else value
+                  end
+          total += bytes.to_i
+        end
+      end
+      total
+    rescue => e
+      Rails.logger.error "podman stats failed: #{e.message}"
+      0
+    end
+
     def inventory
       output = run_cmd(["podman", "--remote", "--url", "unix://#{Surface.podman_socket}",
                         "ps", "--format", "{{.Names}}\t{{.ID}}\t{{.Status}}"])

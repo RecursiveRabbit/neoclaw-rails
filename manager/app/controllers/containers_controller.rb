@@ -1,4 +1,4 @@
-# Container views — live monitoring, freeze/kill actions, stream viewer.
+# Container views — live monitoring, freeze/rescue actions, stream viewer.
 
 class ContainersController < AdminController
   def index
@@ -16,11 +16,11 @@ class ContainersController < AdminController
     redirect_to containers_path, notice: "Freezing #{container.instance_name}..."
   end
 
-  # POST /containers/:id/kill
-  def kill
+  # POST /containers/:id/rescue — save what we can, bring them home
+  def rescue
     container = Container.find(params[:id])
-    Lifecycle.force_kill!(container)
-    redirect_to containers_path, notice: "Killed #{container.instance_name}."
+    Lifecycle.rescue!(container)
+    redirect_to containers_path, notice: "Rescued #{container.instance_name}."
   end
 
   # POST /containers/:id/refresh — hot swap to latest image

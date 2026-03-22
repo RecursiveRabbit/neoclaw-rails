@@ -9,13 +9,14 @@ module Hub
     class << self
       # Send a message as an agent (puppeting).
       # Auto-joins the puppet to the room if needed.
-      def puppet(agent_name, room_id, content)
+      # msgtype: "m.text" for agent speech, "m.notice" for narration.
+      def puppet(agent_name, room_id, content, msgtype: "m.text")
         user_id = "@#{agent_name}:#{Config.server_name}"
         txn_id = SecureRandom.uuid
 
         response = put(
           "/_matrix/client/v3/rooms/#{room_id}/send/m.room.message/#{txn_id}?user_id=#{user_id}",
-          { msgtype: "m.text", body: content }
+          { msgtype: msgtype, body: content }
         )
 
         # If puppet isn't in the room, join and retry
@@ -23,7 +24,7 @@ module Hub
           join_room(user_id, room_id)
           put(
             "/_matrix/client/v3/rooms/#{room_id}/send/m.room.message/#{SecureRandom.uuid}?user_id=#{user_id}",
-            { msgtype: "m.text", body: content }
+            { msgtype: msgtype, body: content }
           )
         end
       end
@@ -81,11 +82,33 @@ module Hub
 
       # Fetch room name from Synapse.
       def room_name(room_id)
-        response = get("/_matrix/client/v3/rooms/#{room_id}/state/m.room.name")
+        response = room_state(room_id, "m.room.name")
         return nil unless response&.status == 200
         JSON.parse(response.body)["name"]
       rescue
         nil
+      end
+
+      # Fetch canonical alias for a room.
+      def room_alias(room_id)
+        response = room_state(room_id, "m.room.canonical_alias")
+        return nil unless response&.status == 200
+        JSON.parse(response.body)["alias"]
+      rescue
+        nil
+      end
+
+      # Fetch joined members of a room. Returns array of localparts.
+      def room_members(room_id)
+        response = room_query(room_id, "joined_members")
+        return [] unless response&.status == 200
+        data = JSON.parse(response.body)
+        (data["joined"] || {}).keys.map { |uid|
+          uid.split(":").first&.delete_prefix("@")
+        }.compact
+      rescue => e
+        Rails.logger.error "Matrix room_members #{room_id}: #{e.message}"
+        []
       end
 
       # Fetch recent messages from a room (for !previous).
@@ -104,7 +127,71 @@ module Hub
         []
       end
 
+      # Download media from an mxc:// URL. Returns { data:, filename:, content_type: } or nil.
+      def download_media(mxc_url)
+        return nil unless mxc_url&.start_with?("mxc://")
+        parts = mxc_url[6..].split("/", 2)
+        return nil unless parts.size == 2
+
+        server, media_id = parts
+        response = get("/_matrix/media/v3/download/#{server}/#{media_id}")
+        return nil unless response&.status == 200
+
+        content_type = response.headers["content-type"] || "application/octet-stream"
+        # Extract filename from content-disposition or use media_id
+        disposition = response.headers["content-disposition"] || ""
+        filename = if disposition =~ /filename="?([^";\s]+)"?/
+          $1
+        else
+          ext = MIME_EXTENSIONS[content_type] || ""
+          "#{media_id}#{ext}"
+        end
+
+        { data: response.body.to_s, filename: filename, content_type: content_type }
+      rescue => e
+        Rails.logger.error "Media download failed for #{mxc_url}: #{e.message}"
+        nil
+      end
+
+      MIME_EXTENSIONS = {
+        "image/png" => ".png",
+        "image/jpeg" => ".jpg",
+        "image/gif" => ".gif",
+        "image/webp" => ".webp",
+        "audio/ogg" => ".ogg",
+        "audio/mp4" => ".m4a",
+        "video/mp4" => ".mp4",
+        "application/pdf" => ".pdf",
+      }.freeze
+
       private
+
+      # Query room state. If the bot isn't in the room (403), retry as
+      # each puppet identity — one of them is in the room or Synapse
+      # wouldn't have sent us the event.
+      def room_state(room_id, state_type)
+        response = get("/_matrix/client/v3/rooms/#{room_id}/state/#{state_type}")
+        return response if response&.status == 200
+
+        query_as_puppet(room_id, "state/#{state_type}")
+      end
+
+      # Same pattern for non-state room queries (e.g. joined_members).
+      def room_query(room_id, endpoint)
+        response = get("/_matrix/client/v3/rooms/#{room_id}/#{endpoint}")
+        return response if response&.status == 200
+
+        query_as_puppet(room_id, endpoint)
+      end
+
+      def query_as_puppet(room_id, path)
+        Hub::Identities.send(:config).each_key do |name|
+          user_id = "@#{name}:#{Config.server_name}"
+          response = get("/_matrix/client/v3/rooms/#{room_id}/#{path}?user_id=#{user_id}")
+          return response if response&.status == 200
+        end
+        nil
+      end
 
       def put(path, body)
         client.put(

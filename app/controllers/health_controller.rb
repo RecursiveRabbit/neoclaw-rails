@@ -5,10 +5,10 @@ class HealthController < ApplicationController
     render json: {
       status: "ok",
       hub: {
-        agents_alive: Agent.alive.count,
-        agents_resolving: Agent.resolving.count,
-        rooms: Room.count,
-        identities: Identity.count
+        routes: Hub::RouteCache.count,
+        resolving: Hub::RouteCache.resolving_count,
+        rooms: Hub::Rooms.count,
+        identities: Hub::Identities.count
       },
       manager: manager_status || "unreachable"
     }

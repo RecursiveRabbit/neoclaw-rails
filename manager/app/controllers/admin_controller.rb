@@ -2,5 +2,4 @@
 
 class AdminController < ApplicationController
   include Navigation
-  allow_browser versions: :modern
 end

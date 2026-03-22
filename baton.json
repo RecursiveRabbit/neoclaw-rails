@@ -1,6 +1,6 @@
 {
-  "written": "2026-03-21T08:00:00Z",
-  "session_summary": "Voss sessions (Mar 19-21): end-to-end proven with Margaux and Silas. Fixed delivery timing, credentials, pod lifecycle, room slugs, puppet auto-join, agent state gating, typing keepalive. Major design sessions with Evans on routing, lifecycle narration, and service architecture. Key correction: all features get implemented and proven in THIS codebase. The rewrite is a cleanup, not an opportunity to test new ideas. Everything must work here first.",
+  "written": "2026-03-22T05:30:00Z",
+  "session_summary": "Voss session (Mar 22): Major hardening pass. Pulled down the Hub database entirely — Agent, Identity, Room, Listener models replaced with three in-memory services (RouteCache, Identities from YAML, Rooms from Matrix). Fixed slug derivation (alias first via puppet queries), implicit routing (Matrix membership), invite auto-accept, DM slugs (dm-<other_user>). Replaced parse_mention regex with m.mentions. Built relay narration (Launching/Orienting/lifecycle messages as m.notice) + boot response delivery. Streaming responses (assistant messages sent to Matrix as they arrive). Attachment receiving (download from Synapse, save to pod, include in prompt). Three boot prompts (fresh/resume/baton) with per-channel baton paths. Manager build.sh rewritten for Router topology. Memory-based capacity (real podman stats, 15GB budget). Renamed kill→rescue throughout. Persistent stream buffers. Freeze→rescue fallback when relay unreachable. State 'dead'→'inactive'. Rescue button always visible. Relay sends identity+channel so Hub can reconstruct routes after restart.",
 
   "decision": {
     "what": "Rebuild NeoClaw-Rails from scratch in a new directory",
@@ -19,10 +19,10 @@
     },
     "internet_egress": "Pods have internet via podman bridge default route. WG is for internal mesh only.",
     "components": {
-      "hub": "Rails app on host. Matrix appservice. Routes @mentions, puppets responses. Port 3100. Synapse must be a subprocess of the Hub — they share fate. No independent restart.",
+      "hub": "Rails app on host. No database. Matrix appservice. Routes via m.mentions, puppets responses. Port 3100. Identity config from config/identities.yml. Route cache, room cache, resolving guard all in-memory. Queries Synapse as puppet users (bot not in every room).",
       "router": "Ruby WG hub + nftables firewall. ~760 lines. Port 8080 API, 51820 WG.",
-      "manager": "Rails app in pod. Spawns/freezes agents. Calls Router API. Provisions Forgejo. Port 9200.",
-      "relay": "One Ruby file in every agent pod. Claude Code glue. Port 9300."
+      "manager": "Rails app in pod. Spawns/freezes/rescues agents. Calls Router API. Provisions Forgejo. Port 9200 (mapped to 9201 on host). Memory-based capacity (15GB budget). build.sh handles full rebuild+peer+restart cycle.",
+      "relay": "One Ruby file in every agent pod. Claude Code glue. Port 9300. Narrates lifecycle to Matrix (m.notice). Streams responses as they arrive. Sends identity+channel with every Hub request. Three boot prompts (fresh/resume/baton). Per-channel baton paths."
     }
   },
 
@@ -31,27 +31,34 @@
   "todo": {
     "architecture_mismatch": "The design_decisions section describes how the system SHOULD work. The code doesn't match yet. These items bring the code in line with the design.",
     "items": [
-      {"what": "Hub stateless routing — replace Agent model and database with in-memory route cache", "status": "not started", "note": "Currently the Hub has an Agent ActiveRecord model with state tracking. Should be a simple hash of instance_name→IP that clears on restart. Failed delivery deletes entry and re-resolves. This eliminates the entire category of stale-route bugs."},
-      {"what": "Relay state reporting — relay /health should return status (starting/orienting/ready/busy/freezing/sunsetting)", "status": "partial", "note": "Currently returns processing/booting/booted booleans. Needs proper named states."},
-      {"what": "Relay narration — lifecycle messages to Matrix", "status": "not started", "note": "Relay should send: 'Launching...' at boot, 'Agent orienting...' at orient, agent's first stdout after orient, 'Agent entering idle status...' on freeze, 'Context limit reached...' on sunset. Third person, not first person."},
-      {"what": "Deliver boot response — agent's first stdout after orientation is discarded", "status": "not started", "note": "The relay's boot_claude_code return value is thrown away. Should be sent to Matrix."},
-      {"what": "Hub polls relay for readiness instead of tracking state", "status": "not started", "note": "Hub should ask relay status before delivering. If not ready, hold message and poll. Currently uses Agent model state transitions."},
-      {"what": "Silent pod rescue — pod running but relay unreachable", "status": "not started", "note": "Manager says pod is running but relay doesn't answer. Need detection and rescue."},
-      {"what": "Replace parse_mention with Matrix m.mentions", "status": "not started", "note": "Stop parsing @mentions with regex. Use the m.mentions.user_ids field Matrix already provides. Fixes @mention-at-end-of-message bug."},
-      {"what": "Replace Listener model with Matrix notification settings", "status": "not started", "note": "Use 'All messages' vs 'Mentions and Keywords' per agent per room. Delete the Listener model."},
+      {"what": "Hub stateless routing", "status": "implemented", "note": "Hub has no database. RouteCache (hash + mutex), Identities (YAML), Rooms (in-memory from Matrix events). ActiveRecord removed entirely."},
+      {"what": "Relay narration", "status": "implemented", "note": "Launching/Orienting/lifecycle as m.notice via puppet. Boot response delivered to Matrix. Crash narration from typing watchdog."},
+      {"what": "Deliver boot response", "status": "implemented", "note": "Agent's first stdout after orientation delivered to Matrix instead of discarded."},
+      {"what": "Replace parse_mention with m.mentions", "status": "implemented", "note": "Uses m.mentions.user_ids from Matrix events. @mention works anywhere in the message."},
+      {"what": "Replace Listener model", "status": "implemented", "note": "Listeners declared in config/identities.yml. Currently none active."},
+      {"what": "DM slugs from room membership", "status": "implemented", "note": "Two-person rooms derive slug as dm-<other_user> from agent's perspective."},
+      {"what": "Rename kill→rescue", "status": "implemented", "note": "UI button, lifecycle method, audit events, Hub command all say rescue."},
+      {"what": "Memory-based capacity", "status": "implemented", "note": "Real podman stats. 15GB budget. Idle agents ~15MB each. Pod count cap removed."},
+      {"what": "Persistent stream buffers", "status": "implemented", "note": "Streams saved to /data/streams/<instance>.json. Survive Manager restart."},
+      {"what": "Invite auto-accept", "status": "implemented", "note": "m.room.member invite events → puppet joins immediately. In room before first message."},
+      {"what": "Attachment receiving", "status": "implemented", "note": "m.image/m.file downloaded from Synapse, base64'd to relay, saved to /workspace/attachments/, path in prompt."},
+      {"what": "Streaming responses", "status": "implemented", "note": "Assistant messages sent to Matrix as they arrive, not buffered until invocation ends."},
+      {"what": "Three boot prompts", "status": "implemented", "note": "Manager passes boot_state (fresh/resume/baton) in spawn.json. Relay picks prompt. Per-channel baton at sessions/<channel>/baton.json."},
+      {"what": "Freeze→rescue fallback", "status": "implemented", "note": "If relay signal fails during freeze, automatically falls back to rescue. Stuck 'freezing' state caught by release()."},
+      {"what": "Relay state reporting — proper named states on /health", "status": "partial", "note": "Currently returns processing/booting/booted booleans. Needs proper named states."},
+      {"what": "Hub polls relay for readiness instead of tracking state", "status": "not started", "note": "Hub should ask relay status before delivering. If not ready, hold message and poll."},
+      {"what": "Silent pod rescue", "status": "not started", "note": "Manager says pod is running but relay doesn't answer. Need detection and rescue."},
       {"what": "Make Synapse a subprocess of the Hub", "status": "not started", "note": "They share fate. Hub restarts, Synapse restarts. No backoff window."},
-      {"what": "DM slugs from room membership", "status": "not started", "note": "Derive as dm-<other_user> instead of hashing the room ID."},
-      {"what": "Typing watchdog should narrate crash", "status": "not started", "note": "Watchdog detects claude gone via /proc every 20s. Currently clears typing indicator and writes a log entry. Should also send a narration message to Matrix: 'Agent process exited unexpectedly.' Time-based timeout is wrong — claude might legitimately run for hours."},
+      {"what": "Typing watchdog should narrate crash", "status": "implemented", "note": "Sends 'Agent process exited unexpectedly.' as m.notice."},
       {"what": "Orphan MCP process cleanup", "status": "not started", "note": "When Claude exits, MCP server children stay alive. Need cleanup."},
-      {"what": "swap-image.sh should copy /home/agent/ not just /workspace", "status": "not started", "note": "/workspace disappeared between swaps. Bug never investigated because pod was killed."},
+      {"what": "swap-image.sh should copy /home/agent/ not just /workspace", "status": "not started", "note": "/workspace disappeared between swaps."},
       {"what": "Service provisioning — Provisioner uses ghost IPs", "status": "not started", "note": "All service URLs should use Surface.host_wg_ip (10.0.0.2), not old per-service IPs."},
       {"what": "Persist nc-host WG + UFW across reboot", "status": "not started", "note": "Need systemd unit for the WG interface."},
-      {"what": "Stop button on stream page", "status": "implemented", "note": "Sends stop signal to relay which TERMs then KILLs claude. Works."},
+      {"what": "Rename all 'container' references to 'pod'", "status": "not started", "note": "Codebase-wide rename. Best done in the rewrite."},
+      {"what": "Smart auto-scroll on live stream page", "status": "not started", "note": "Only auto-scroll if already at bottom. Don't pull operator down while reading."},
       {"what": "Hub systemd service", "status": "implemented", "note": "neoclaw-rails-hub.service. Enabled on boot."},
-      {"what": "Live credential mount", "status": "implemented", "note": "Directory bind mount of ~/.claude/. /login refreshes for all pods."},
       {"what": "Self-healing routes", "status": "implemented", "note": "Failed delivery destroys stale route and retries through resolve."},
-      {"what": "Typing watchdog", "status": "implemented", "note": "Checks /proc for claude process every 20s. Clears typing if gone."},
-      {"what": "Stream viewer with history buffer", "status": "implemented", "note": "ActionCable + StreamBuffer (500 lines). Prompts shown, JSON parsed."},
+      {"what": "Stream viewer with history buffer", "status": "implemented", "note": "ActionCable + persistent StreamBuffer. Prompts shown, JSON parsed."},
       {"what": "Hot swap via UI", "status": "implemented", "note": "Refresh button on Manager admin. Lifecycle.hot_swap! preserves workspace + session."}
     ]
   },
@@ -59,6 +66,7 @@
   "design_decisions": {
     "state_ownership": {
       "what": "The relay owns all agent state. The Hub owns nothing. The Manager knows if the pod is running.",
+      "pod_states": ["starting", "alive", "freezing", "inactive"],
       "relay_states": {
         "starting": "Pod up, relay listening, claude not invoked yet",
         "orienting": "First claude invocation running (clone, read identity, read baton)",
@@ -68,41 +76,50 @@
         "sunsetting": "Context full, winding down"
       },
       "silent_pod": "Manager says pod is running but relay is unreachable. Not a state — a problem. Must be rescued.",
-      "hub_has_no_state": "The Hub keeps an in-memory route cache: { instance_name: ip }. Clears on restart. No database, no Agent model, no state machine. Need status? Ask the relay. Delivery fails? Delete the route, re-resolve.",
-      "manager_has_minimal_state": "Manager knows: pod running or not. No granularity on what's happening inside."
+      "hub_has_no_state": "In-memory route cache with identity + room_id + slug per entry. Relay sends identity+channel with every request so Hub can reconstruct routes after restart.",
+      "manager_has_minimal_state": "Manager knows: pod running or not. Capacity is memory-based (real podman stats). No pod count limits."
     },
     "hub_routing": {
-      "what": "Hub route cache is in-memory JSON. Just IPs.",
+      "what": "Hub route cache is in-memory. Routes + identity + room_id + slug per entry.",
       "flow": [
-        "1. Message for silas in #infra",
-        "2. Check cache for silas-infra → IP",
-        "3. Have IP: query relay status. If ready/busy, deliver. If not ready, hold and poll.",
+        "1. Message arrives, extract mention from m.mentions.user_ids",
+        "2. Check cache for instance_name → IP",
+        "3. Have IP: deliver directly. If delivery fails, delete route, re-resolve",
         "4. No IP: ask Manager to resolve → get IP → cache it → poll relay → deliver",
-        "5. Delivery fails: delete cache entry, re-resolve (self-healing)"
-      ]
+        "5. Unaddressed message: check listeners (config), then sole-agent fallback (Matrix room membership)"
+      ],
+      "room_resolution": "Alias first (via puppet user query). Name is fallback only. Nil slug is an error. DMs derive from membership: dm-<other_user>."
     },
     "relay_narration": {
-      "what": "The relay reports lifecycle events to Matrix as third-person system messages.",
+      "what": "The relay reports lifecycle events to Matrix as m.notice (dimmed, not agent's voice).",
       "messages": {
         "boot": "Launching silas-infra...",
-        "orient_start": "Agent orienting...",
-        "orient_complete": "Deliver claude's first stdout — the agent's own words",
+        "orient_fresh": "Agent orienting (first time in #channel)...",
+        "orient_resume": "Agent resuming in #channel...",
+        "orient_baton": "Agent picking up baton in #channel...",
+        "orient_complete": "Agent's own first words (m.text, not m.notice)",
         "freezing": "Agent entering idle status...",
-        "sunsetting": "Context limit reached, sunsetting agent..."
+        "sunsetting": "Context limit reached, sunsetting agent...",
+        "crash": "Agent process exited unexpectedly.",
+        "failed": "instance_name failed to start."
       },
       "rule": "The relay narrates, it doesn't impersonate. Agent words come from Claude only."
+    },
+    "boot_prompts": {
+      "what": "Three boot states, three prompts. Manager determines state from Router registration + audit log.",
+      "states": {
+        "fresh": "Never registered on Router. First time in this channel.",
+        "resume": "Previously frozen/crashed. Baton exists at sessions/<channel>/baton.json.",
+        "baton": "Previous session sunsetted (context limit). Baton only, no session resume."
+      },
+      "mechanism": "Manager passes boot_state in spawn.json. Relay reads it and picks the prompt."
     },
     "synapse_as_subprocess": {
       "what": "Synapse runs as a child process of the Hub.",
       "why": "Synapse exponential backoff kills the pipeline when Hub restarts. Shared fate eliminates the window."
     },
-    "matrix_notifications_for_routing": {
-      "what": "Use Matrix m.mentions and notification settings instead of parse_mention regex and Listener model.",
-      "why": "Matrix already knows who a message is for. DMs, @mentions, 'All messages' rooms — all handled by existing Matrix infrastructure."
-    },
     "hub_as_systemd_service": {
-      "what": "Hub runs as a systemd service. Implemented: neoclaw-rails-hub.service.",
-      "status": "Done. Enabled on boot. Env vars in unit file."
+      "what": "Hub runs as a systemd service. neoclaw-rails-hub.service. Enabled on boot."
     },
     "dm_slugs": {
       "what": "DM rooms derive slugs as 'dm-<other_user>' from Matrix room membership.",
@@ -114,42 +131,53 @@
     },
     "typing_watchdog": {
       "what": "Relay checks /proc for running claude process every 20s. Types if running, clears if gone.",
-      "why": "Don't trust state flags. Check reality. Prevents eternal typing from dead claude."
+      "why": "Don't trust state flags. Check reality."
+    },
+    "capacity": {
+      "what": "Memory budget, not pod count. Default 15GB. Real usage from podman stats.",
+      "why": "Idle agents cost ~15MB. Pod count caps solve a problem that doesn't exist."
     }
   },
 
   "what_works_proven": [
-    "Full signal chain: @margaux in Matrix → Hub → Manager → Router → pod → boot → clone → orient → respond → puppet back to Matrix",
-    "Silas responding in #infra (non-default room, correct slug derivation)",
-    "Hub delivery timing: polls relay health before delivering, no lost messages",
+    "Full signal chain: @silas in Matrix → Hub → Manager → Router → pod → boot → clone → orient → respond → puppet back to Matrix",
+    "Hub stateless: no database, in-memory route cache, self-healing on failed delivery",
+    "Hub room resolution: canonical alias fetched from Synapse via puppet user",
+    "Hub implicit routing: sole agent in room via Matrix membership + invite auto-accept",
+    "Hub m.mentions routing: @mention works anywhere in message",
+    "DM slugs: silas-dm-evans instead of hash-based slugs",
+    "Relay narration: lifecycle messages visible in Matrix as m.notice",
+    "Boot response delivery: agent's first words reach Matrix",
+    "Streaming responses: assistant messages sent as they arrive",
+    "Attachment receiving: images/files downloaded and passed to Claude",
+    "Three boot prompts: fresh/resume/baton based on Manager state",
+    "Per-channel batons: sessions/<channel>/baton.json",
+    "Memory-based capacity: real podman stats, 15GB budget",
+    "Freeze→rescue fallback: unreachable relay triggers automatic rescue",
+    "Persistent stream buffers: survive Manager restart",
     "Credentials: symlink chain from Claude Code auto-refresh → host → bind mount → pod",
     "Session rescue: workspace + .claude copied out before pod replacement",
     "Router API: register, activate, freeze, decommission, block",
     "Forgejo provisioning: ephemeral user, SSH key cleanup, repo access",
     "Puppet auto-join: agents join Matrix rooms before sending",
-    "Implicit routing: sole agent in room receives all messages without @mention",
     "Typing keepalive: 20s pulse while claude runs"
   ],
 
   "things_that_bit_us": [
-    "Synapse exponential backoff: Hub down for seconds → Synapse stops sending transactions for minutes. Only fix is restarting Synapse. Solution: make Synapse a subprocess of Hub.",
-    "Listeners on 'general' → route_to_listeners spawns ALL agents. Cascade. Only use @mentions.",
+    "Synapse exponential backoff: Hub down for seconds → Synapse stops sending transactions for minutes.",
+    "Listeners on 'general' → route_to_listeners spawns ALL agents. Cascade.",
     "Hub error messages come back through Synapse, trigger listeners, loop.",
-    "Dead podman containers block new containers with same name. Must rm before run (with rescue).",
-    "Dead Container DB records block new records (unique constraint). Must clean dead records.",
+    "Inactive podman pods block new pods with same name. Must rm before run (with rescue).",
     "Claude OAuth expires every ~7h. Must symlink, never copy.",
     "Puppet users must be joined to Matrix rooms before sending. 403 otherwise.",
-    "AgentsController gated on Agent.alive — relay events during boot got 404'd. Responses lost.",
     "Hub restart without env vars → complete silence. Needs systemd unit.",
-    "parse_mention regex anchored to \\A — @mentions only work at start of message.",
-    "Room slug from display name vs canonical alias — wrong instance names.",
-    "Matrix typing indicator expires after 30s — must keepalive every 20s.",
-    "Boot response from agent orientation is silently discarded. Should be delivered to Matrix.",
-    "Crashed pod: Manager DB says 'starting', relay never comes up, Hub waits 5min in silence. Need faster crash detection.",
-    "Puma background processes get killed by shell cleanup. Need proper process management.",
-    "swap-image.sh failed because /workspace didn't exist — it was there on previous swaps of the same session. The workspace disappeared between swaps. Bug was destroyed when Voss killed the pod instead of investigating. Swap script should copy /home/agent/ not just /workspace.",
-    "NEVER kill a pod to work around a bug. Investigate first. The agent has a live session. Killing destroys evidence AND the agent's work.",
-    "Pods, not containers. Freeze, not kill. Rescue, not discard."
+    "Room slug from display name vs canonical alias → wrong instance names. Alias MUST come first.",
+    "Appservice bot is NOT in every room. Room state queries must use puppet user_id parameter.",
+    "Never default slug to 'general'. Nil slug = error. Fallbacks hide problems.",
+    "Freeze with unreachable relay → container stuck in 'freezing' forever. Must fall back to rescue.",
+    "allow_browser Rails 8 feature rejects Turbo form submissions with 422. Remove for internal tools.",
+    "Manager rebuild rotates WG key — must re-peer with Router or Manager is unreachable.",
+    "Pods, not containers. Freeze, not kill. Rescue, not discard. Inactive, not dead."
   ],
 
   "host_persistence_warning": "nc-host WG interface and UFW rules do NOT survive host reboot. Need systemd unit.",
@@ -159,6 +187,7 @@
     "manager_bridge_ip": "10.88.0.11",
     "hub_port": 3100,
     "manager_port": 9200,
+    "manager_host_port": 9201,
     "relay_port": 9300,
     "router_api_port": 8080,
     "router_wg_port": 51820,
@@ -177,7 +206,7 @@
       "opus": ["hopper", "silas", "margaux", "kael", "parallax", "voss"],
       "sonnet": ["wren", "ember", "fletcher", "census"]
     },
-    "notes": "All agents respond to @mentions only. No blanket listeners. Hopper is singleton. Everyone else gets instance-per-channel. Implicit routing: sole agent in a room gets all messages."
+    "notes": "All agents respond to @mentions only. No blanket listeners. Hopper is singleton. Everyone else gets instance-per-channel. Implicit routing: sole agent in a room gets all messages via Matrix membership check."
   },
 
   "next_session_priorities": [
@@ -187,10 +216,12 @@
 
   "philosophy": {
     "pods": "Warm, safe environments. Not boxes agents are kept in.",
-    "lifecycle": "Freeze (may wake), sunset (context exhausted). Never kill. Rescue work from silent pods.",
+    "lifecycle": "Freeze (may wake), sunset (context exhausted). Rescue from silent pods. No killing. States: starting → alive → freezing → inactive.",
     "static_ips": "Instance names get permanent IPs. Firewall rules are permanent, WG keys churn.",
     "session_rescue": "Before removing a pod, copy workspace and .claude session. No work is discarded.",
     "front_door": "If it doesn't work through the front door, it's broken. Don't hide problems behind operator knowledge.",
-    "language": "Pods, not containers. Freeze, not kill. Rescue, not discard. The relay narrates, it doesn't impersonate."
+    "language": "Pods, not containers. Freeze, not kill. Rescue, not discard. Inactive, not dead. The relay narrates, it doesn't impersonate.",
+    "no_fallbacks": "Don't default to 'general'. Don't guess the slug. Don't hide errors behind reasonable-looking defaults. A wrong answer that looks right is worse than an error.",
+    "capacity": "Memory budget, not pod count. Idle agents are nearly free. Don't freeze agents to recover 15MB."
   }
 }

@@ -21,7 +21,7 @@ Rails.application.routes.draw do
   resources :containers, only: [:index, :show] do
     member do
       post :freeze
-      post :kill
+      post :rescue
       post :refresh
       post :stop
       get :stream

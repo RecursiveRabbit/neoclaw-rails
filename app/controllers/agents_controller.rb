@@ -7,54 +7,43 @@
 
 class AgentsController < ApplicationController
   # POST /agent/message
-  # Relay sends: { instance: "margaux-security", content: "Here's what I found..." }
+  # Relay sends: { instance: "margaux-security", content: "...", identity: "margaux", channel: "security" }
   def message
     instance = params[:instance]
     content  = params[:content]
 
-    agent = Agent.find_by(instance_name: instance)
-    unless agent
+    route = resolve_route(instance)
+    unless route
       render json: { error: "unknown agent" }, status: :not_found
       return
     end
 
-    # Relay is alive if it's sending messages
-    agent.update!(state: "alive") if agent.resolving?
-
-    Hub::Matrix.puppet(
-      agent.identity.name,
-      agent.room.matrix_room_id,
-      content
-    )
-
-    agent.touch(:last_message_at)
+    msgtype = params[:msgtype] || "m.text"
+    Hub::Matrix.puppet(route[:identity], route[:room_id], content, msgtype: msgtype)
     render json: { ok: true }
   end
 
   # POST /agent/event
-  # Relay sends: { instance: "margaux-security", event: "typing" }
+  # Relay sends: { instance: "margaux-security", event: "typing", identity: "margaux", channel: "security" }
   def event
     instance   = params[:instance]
     event_type = params[:event]
 
-    agent = Agent.find_by(instance_name: instance)
-    unless agent
+    route = resolve_route(instance)
+    unless route
       render json: { error: "unknown agent" }, status: :not_found
       return
     end
 
-    # Relay is alive if it's sending events — flip from resolving
-    agent.update!(state: "alive") if agent.resolving?
-
     case event_type
     when "typing"
-      Hub::Matrix.set_typing(agent.identity.name, agent.room.matrix_room_id, true)
+      Hub::Matrix.set_typing(route[:identity], route[:room_id], true)
     when "done_typing"
-      Hub::Matrix.set_typing(agent.identity.name, agent.room.matrix_room_id, false)
+      Hub::Matrix.set_typing(route[:identity], route[:room_id], false)
     when "online"
-      Hub::Matrix.set_presence(agent.identity.name, "online")
+      Hub::Matrix.set_presence(route[:identity], "online")
     when "idle"
-      Hub::Matrix.set_presence(agent.identity.name, "unavailable")
+      Hub::Matrix.set_presence(route[:identity], "unavailable")
     end
 
     render json: { ok: true }
@@ -76,5 +65,38 @@ class AgentsController < ApplicationController
     end
 
     head :ok
+  end
+
+  private
+
+  # Find the route from cache, or rebuild it from the relay's identity/channel.
+  # The relay always sends identity and channel so we can recover after Hub restart.
+  def resolve_route(instance)
+    route = Hub::RouteCache.get(instance)
+    return route if route
+
+    # Route cache miss — relay sent identity + channel, reconstruct.
+    identity = params[:identity]
+    channel  = params[:channel]
+    return nil unless identity && channel
+
+    # Find the room_id for this channel from the Manager status
+    # (the Manager knows which container is running and its IP).
+    status = Hub::ManagerClient.status
+    return nil unless status
+
+    container = status[:containers]&.find { |c| c[:instance] == instance }
+    return nil unless container
+
+    ip = container[:ip] || container[:wg_address]
+    return nil unless ip
+
+    # Find the room_id for this channel from our cache.
+    room_id = Hub::Rooms.room_id_for_slug(channel)
+    return nil unless room_id
+
+    # Re-cache the route
+    Hub::RouteCache.set(instance, ip: ip, identity: identity, room_id: room_id, slug: channel)
+    Hub::RouteCache.get(instance)
   end
 end

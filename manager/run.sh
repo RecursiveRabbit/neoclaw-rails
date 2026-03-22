@@ -19,6 +19,7 @@ HOST_SPAWN_DIR="/var/lib/neoclaw/spawn"
 HOST_SSH_KEYS_DIR="/var/lib/neoclaw/ssh-keys"
 HOST_DB_DIR="/var/lib/neoclaw/manager-db"
 HOST_CLAUDE_CREDS="/var/lib/neoclaw/secrets/claude-credentials.json"
+HOST_WG_CONF="/var/lib/neoclaw/manager-wg/wg0.conf"
 PODMAN_SOCKET="/run/podman/podman.sock"
 
 log() { echo "[manager-run] $*"; }
@@ -35,11 +36,13 @@ podman run -d \
     --name "$CONTAINER_NAME" \
     --hostname "$CONTAINER_NAME" \
     --cap-add NET_ADMIN \
+    -p 9201:9200 \
     -v "${PODMAN_SOCKET}:/run/podman/podman.sock" \
     -v "${HOST_SPAWN_DIR}:/spawn" \
     -v "${HOST_SSH_KEYS_DIR}:/ssh-keys" \
     -v "${HOST_DB_DIR}:/data" \
     -v "${HOST_CLAUDE_CREDS}:/run/secrets/claude-credentials:ro" \
+    -v "${HOST_WG_CONF}:/etc/wireguard/wg0.conf:ro" \
     -e HOST_SPAWN_DIR="$HOST_SPAWN_DIR" \
     -e HOST_SSH_KEYS_DIR="$HOST_SSH_KEYS_DIR" \
     -e HOST_CLAUDE_CREDENTIALS="$HOST_CLAUDE_CREDS" \

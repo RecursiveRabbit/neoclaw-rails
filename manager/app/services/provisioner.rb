@@ -21,6 +21,8 @@ class Provisioner
         provision_ssh_key(service, instance_name: instance_name, ssh_pubkey: ssh_pubkey)
       when "token"
         provision_token(service, instance_name: instance_name)
+      when "valley"
+        provision_valley(instance_name: instance_name)
       when "none"
         {}
       else
@@ -36,6 +38,8 @@ class Provisioner
         teardown_ssh_key(service, instance_name: instance_name)
       when "token"
         teardown_token(service, instance_name: instance_name)
+      when "valley"
+        teardown_valley(instance_name: instance_name)
       when "none"
         # Nothing to revoke
       end
@@ -138,6 +142,34 @@ class Provisioner
       keys_dir = File.join(Surface.ssh_keys_dir, instance_name)
       FileUtils.rm_rf(keys_dir)
       Rails.logger.info "ssh: deauthorized #{instance_name}"
+    end
+
+    # ----------------------------------------------------------------
+    # Valley — token via the valley-token-service on the host
+    # ----------------------------------------------------------------
+
+    def provision_valley(instance_name:)
+      identity = instance_name.split("-").first
+      valley_name = identity.capitalize  # Evennia accounts are capitalized
+
+      resp = api_post("#{Surface.valley_token_url}/token/#{valley_name}", {})
+
+      if resp.status == 200
+        data = JSON.parse(resp.body, symbolize_names: true)
+        Rails.logger.info "valley: token generated for #{valley_name}"
+        { token: data[:token], url: Surface.valley_url }
+      else
+        Rails.logger.warn "valley: token generation failed for #{valley_name}: #{resp.status}"
+        { url: Surface.valley_url }
+      end
+    end
+
+    def teardown_valley(instance_name:)
+      identity = instance_name.split("-").first
+      valley_name = identity.capitalize
+      api_delete("#{Surface.valley_token_url}/token/#{valley_name}")
+    rescue => e
+      Rails.logger.warn "valley: token revocation failed for #{valley_name}: #{e.message}"
     end
 
     # ----------------------------------------------------------------

@@ -23,8 +23,8 @@ class Spawner
       starting = Container.starting.find_by(instance_name: instance_name)
       return { ip: starting.wg_address, starting: true } if starting
 
-      # At capacity? Freeze the coldest.
-      if Container.alive.count >= Surface.soft_cap
+      # Over memory budget? Freeze the coldest to make room.
+      if Podman.agent_memory_usage >= Surface.memory_budget
         coldest = Container.idle.order(:last_message_at).first
         coldest ||= Container.alive.order(:last_message_at).first
         Lifecycle.freeze!(coldest) if coldest
@@ -37,7 +37,7 @@ class Spawner
 
     def spawn(identity:, channel:, instance_name:)
       # Clean up dead records so we can reuse the instance_name
-      Container.where(instance_name: instance_name, state: "dead").destroy_all
+      Container.where(instance_name: instance_name, state: "inactive").destroy_all
 
       config = AgentConfig.find_by!(identity: identity)
       services = config.services_for(channel)
@@ -73,11 +73,14 @@ class Spawner
           instance_name: instance_name, ssh_pubkey: ssh_keypair[:public])
       end
 
+      # Determine boot state from history
+      boot_state = determine_boot_state(instance_name)
+
       # Build spawn file — one peer: the Router
       spawn_data = build_spawn_file(
         identity: identity, channel: channel, instance_name: instance_name,
         config: config, agent_ip: agent_ip, wg_keypair: wg_keypair,
-        ssh_keypair: ssh_keypair, secrets: secrets
+        ssh_keypair: ssh_keypair, secrets: secrets, boot_state: boot_state
       )
 
       spawn_path = File.join(Surface.spawn_dir, "#{instance_name}.json")
@@ -108,7 +111,7 @@ class Spawner
       { ip: agent_ip }
     rescue => e
       # Clean up the stale container record so future spawns aren't blocked
-      container&.update!(state: "dead") if container
+      container&.update!(state: "inactive") if container
       AuditLog.record("SPAWN_FAILED",
         instance_name: instance_name, identity: identity, detail: e.message)
       raise
@@ -129,7 +132,7 @@ class Spawner
 
       # New agent — allocate from pool
       # Check both Router state and local container records
-      used = Container.where.not(state: "dead").pluck(:wg_address).compact.to_set
+      used = Container.where.not(state: "inactive").pluck(:wg_address).compact.to_set
       (1..255).each do |third|
         (1..254).each do |fourth|
           ip = "10.0.#{third}.#{fourth}"
@@ -174,14 +177,36 @@ class Spawner
       FileUtils.rm_rf(dir) if dir
     end
 
+    # Fresh, resume, or baton? The Manager knows.
+    # - fresh: never registered on the Router (first time in this channel)
+    # - baton: last session was sunsetted (context limit)
+    # - resume: everything else (frozen, crashed, idle timeout)
+    def determine_boot_state(instance_name)
+      unless RouterClient.registered?(instance_name)
+        return "fresh"
+      end
+
+      last_event = AuditLog.where(instance_name: instance_name)
+        .where(event: %w[SUNSET FREEZE TEARDOWN CRASH])
+        .order(created_at: :desc).first
+
+      case last_event&.event
+      when "SUNSET"
+        "baton"
+      else
+        "resume"
+      end
+    end
+
     # Spawn file has one WG peer: the Router. That's it.
     # The Router forwards to everything else.
-    def build_spawn_file(identity:, channel:, instance_name:, config:, agent_ip:, wg_keypair:, ssh_keypair:, secrets:)
+    def build_spawn_file(identity:, channel:, instance_name:, config:, agent_ip:, wg_keypair:, ssh_keypair:, secrets:, boot_state: "fresh")
       {
         identity: identity,
         instance: instance_name,
         channel: channel,
         model: config.model_for(channel),
+        boot_state: boot_state,
         git: {
           repo: config.repo,
           ssh_key: ssh_keypair[:private],

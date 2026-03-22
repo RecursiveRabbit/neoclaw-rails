@@ -20,6 +20,7 @@ require "open3"
 require "fileutils"
 require "net/http"
 require "uri"
+require "base64"
 
 WORKSPACE   = "/workspace"
 SPAWN_FILE  = "/run/secrets/spawn.json"
@@ -33,6 +34,7 @@ class Relay
     @identity = @spawn[:identity]
     @channel = @spawn[:channel]
     @model = @spawn[:model] || "claude-opus-4-6"
+    @boot_state = @spawn[:boot_state] || "fresh"
     @hub_ip = detect_hub_ip
     @manager_ip = detect_manager_ip
     @running = true
@@ -58,12 +60,14 @@ class Relay
 
   def boot_in_background
     @booting = true
+    narrate "Launching #{@instance_name}..."
     Thread.new do
       begin
         boot_claude_code
       rescue => e
         log "Boot failed: #{e.message}"
         log e.backtrace.first(5).join("\n")
+        narrate "#{@instance_name} failed to start."
       ensure
         @booting = false
       end
@@ -79,32 +83,65 @@ class Relay
     "ssh://git@#{detect_hub_ip}:2222/#{repo}.git"
   end
 
+  BATON_PATH_TEMPLATE = "#{WORKSPACE}/sessions/%s/baton.json"
+
   def boot_claude_code
     if File.exist?(File.join(WORKSPACE, ".git"))
       # Hot swap — workspace and session preserved from previous pod.
-      # Resume with --continue, no clone needed.
       log "Hot swap detected — workspace exists, resuming session"
+      narrate "Agent resuming session..."
       swap_prompt = [
         "You were hot-swapped to a new container image.",
         "Your workspace and conversation history are intact.",
         "New capabilities may be available (check MCP tools).",
         "Continue where you left off.",
       ].join("\n")
-      @mutex.synchronize { invoke_claude(swap_prompt, continue: true) }
+      response = @mutex.synchronize { invoke_claude(swap_prompt, continue: true) }
     else
-      # Cold boot — empty workspace, clone and orient.
+      # Cold boot — three prompts based on boot state.
       clone_url = boot_clone_url
-      boot_prompt = [
+      baton_path = BATON_PATH_TEMPLATE % @channel
+
+      preamble = [
         "You have just been instantiated as #{@identity} in channel ##{@channel}.",
         "Your workspace is empty. Your first act is to clone your repo:",
         "  git clone #{clone_url} #{WORKSPACE}",
         "Then read #{WORKSPACE}/identity.json to learn who you are.",
-        "Read #{WORKSPACE}/baton.json to pick up where you left off.",
-        "Read #{WORKSPACE}/memory/ for your accumulated memories.",
-        "Orient yourself. Push your work before you go.",
-      ].join("\n")
-      log "Cold boot — cloning workspace"
-      @mutex.synchronize { invoke_claude(boot_prompt, continue: false) }
+        "Push your work before you go.",
+      ]
+
+      case @boot_state
+      when "fresh"
+        narrate "Agent orienting (first time in ##{@channel})..."
+        boot_prompt = preamble + [
+          "This is your first time in ##{@channel}. Orient yourself, then respond in the channel — someone is waiting.",
+        ]
+      when "resume"
+        narrate "Agent resuming in ##{@channel}..."
+        boot_prompt = preamble + [
+          "You are resuming a previous session in ##{@channel}.",
+          "Read #{baton_path} — you left it for yourself.",
+          "Orient yourself, then respond in the channel — someone is waiting.",
+        ]
+      when "baton"
+        narrate "Agent picking up baton in ##{@channel}..."
+        boot_prompt = preamble + [
+          "Your previous session in ##{@channel} hit the context limit.",
+          "Read #{baton_path} — you left it for yourself. The previous session is too large to resume.",
+          "Orient yourself, then respond in the channel — someone is waiting.",
+        ]
+      end
+
+      log "Cold boot (#{@boot_state}) — cloning workspace"
+      response = @mutex.synchronize { invoke_claude(boot_prompt.join("\n"), continue: false) }
+    end
+
+    # Deliver the agent's first words — this used to be thrown away.
+    unless response.nil? || response.empty?
+      post_to_hub("/agent/message", {
+        instance: @instance_name,
+        content: response
+      })
     end
 
     @booted = true
@@ -121,10 +158,11 @@ class Relay
   # Claude Code invocation
   # ==================================================================
 
-  # Run claude -p with a prompt. Streams output, collects response.
+  # Run claude -p with a prompt. Streams output to Matrix as it arrives.
   # If continue: true, resumes the previous conversation.
   # Caller must hold @mutex.
-  def invoke_claude(prompt, continue: true)
+  # If stream_to_hub is true, sends each assistant message to Matrix immediately.
+  def invoke_claude(prompt, continue: true, stream_to_hub: false)
     @processing = true
     @last_message_at = Time.now
 
@@ -186,6 +224,15 @@ class Relay
               .map { |b| b[:text] }
             response_text.concat(text_parts)
 
+            # Send each assistant message to Matrix as it arrives
+            if stream_to_hub && !text_parts.empty?
+              text = text_parts.join("\n")
+              post_to_hub("/agent/message", {
+                instance: @instance_name,
+                content: text
+              })
+            end
+
             # Track context usage
             if event.dig(:message, :usage)
               input_t = event.dig(:message, :usage, :input_tokens) || 0
@@ -235,6 +282,7 @@ class Relay
       unless @processing == false
         @processing = false
         post_to_hub("/agent/event", { instance: @instance_name, event: "done_typing" })
+        narrate "Agent process exited unexpectedly."
         log "Typing watchdog: claude process gone, cleared typing"
       end
     rescue => e
@@ -265,19 +313,22 @@ class Relay
         data = JSON.parse(req.body, symbolize_names: true)
         sender = data[:from] || data[:sender] || "unknown"
         content = data[:content] || ""
+        attachments = data[:attachments] || []
 
-        # Invoke Claude Code with --continue (resumes conversation).
-        # invoke_claude handles typing indicators.
+        # Save attachments to disk so Claude can read them
+        saved_paths = save_attachments(attachments)
+
+        # Build prompt with attachment references
         prompt = "@#{sender}: #{content}"
-        Thread.new do
-          response = @mutex.synchronize { invoke_claude(prompt) }
+        unless saved_paths.empty?
+          file_list = saved_paths.map { |p| "  #{p}" }.join("\n")
+          prompt += "\n\n[Attached files — use the Read tool to view them]\n#{file_list}"
+        end
 
-          unless response.empty?
-            post_to_hub("/agent/message", {
-              instance: @instance_name,
-              content: response
-            })
-          end
+        Thread.new do
+          # stream_to_hub: true sends each assistant message to Matrix
+          # as it arrives instead of buffering until the end.
+          @mutex.synchronize { invoke_claude(prompt, stream_to_hub: true) }
         end
 
         res.status = 200
@@ -324,11 +375,14 @@ class Relay
   # ==================================================================
 
   def handle_signal(signal)
+    baton_path = BATON_PATH_TEMPLATE % @channel
     case signal.to_s
     when "freeze"
-      handle_freeze("Push your work and commit. You're going idle. Another instance of you will pick up from your baton.")
+      narrate "Agent entering idle status..."
+      handle_freeze("Push your work and commit. You're going idle. Write your baton to #{baton_path} — another instance of you will pick up from it.")
     when "sunset"
-      handle_freeze("Your context window is nearly full. Write your baton.json with current state and push everything. A fresh instance picks up next.")
+      narrate "Context limit reached, sunsetting agent..."
+      handle_freeze("Your context window is nearly full. Write your baton to #{baton_path} with current state and push everything. A fresh instance picks up next.")
     when "stop"
       handle_stop
     end
@@ -427,7 +481,48 @@ class Relay
   # HTTP clients — use stdlib Net::HTTP (no gem dependencies)
   # ==================================================================
 
+  # Save base64-encoded attachments to disk. Returns array of file paths.
+  def save_attachments(attachments)
+    return [] if attachments.nil? || attachments.empty?
+
+    dir = File.join(WORKSPACE, "attachments")
+    FileUtils.mkdir_p(dir)
+
+    attachments.filter_map do |att|
+      filename = att[:filename] || "attachment"
+      data = att[:data]
+      next unless data
+
+      # Sanitize filename
+      safe_name = "#{Time.now.strftime('%Y%m%d-%H%M%S')}-#{filename.gsub(/[^\w.\-]/, '_')}"
+      path = File.join(dir, safe_name)
+
+      File.open(path, "wb") { |f| f.write(Base64.decode64(data)) }
+      log "Saved attachment: #{path} (#{File.size(path)} bytes)"
+      path
+    end
+  rescue => e
+    log "Failed to save attachments: #{e.message}"
+    []
+  end
+
+  # Send a narration message to Matrix via the Hub.
+  # Appears as m.notice (dimmed/italic) — system speech, not the agent's voice.
+  def narrate(message)
+    post_to_hub("/agent/message", {
+      instance: @instance_name,
+      content: message,
+      msgtype: "m.notice"
+    })
+  rescue => e
+    log "Narration failed: #{e.message}"
+  end
+
   def post_to_hub(path, body)
+    # Always include identity and channel so the Hub can puppet
+    # even if its route cache was cleared by a restart.
+    body[:identity] ||= @identity
+    body[:channel] ||= @channel
     post_json("http://#{@hub_ip}:3100#{path}", body)
   end
 

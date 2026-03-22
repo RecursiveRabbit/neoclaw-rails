@@ -52,15 +52,13 @@ module Surface
     end
 
     # =================================================================
-    # Capacity
+    # Capacity — memory budget, not pod count.
+    # Idle agents cost ~15MB each. The budget is the real constraint.
     # =================================================================
 
-    def soft_cap
-      ENV.fetch("MANAGER_SOFT_CAP", "8").to_i
-    end
-
-    def hard_cap
-      ENV.fetch("MANAGER_HARD_CAP", "9").to_i
+    def memory_budget
+      # Default 15GB in bytes
+      ENV.fetch("MANAGER_MEMORY_BUDGET", (15 * 1024 * 1024 * 1024).to_s).to_i
     end
 
     # =================================================================
@@ -130,7 +128,11 @@ module Surface
     end
 
     def valley_url
-      ENV.fetch("VALLEY_URL", "http://#{host_wg_ip}:4006")
+      ENV.fetch("VALLEY_URL", "http://#{host_wg_ip}:8888")
+    end
+
+    def valley_token_url
+      ENV.fetch("VALLEY_TOKEN_URL", "http://#{host_wg_ip}:8889")
     end
 
     def vikunja_url

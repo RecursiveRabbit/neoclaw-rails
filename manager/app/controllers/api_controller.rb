@@ -37,12 +37,16 @@ class ApiController < ApplicationController
 
   # GET /status
   def status
+    memory_used = Podman.agent_memory_usage
+    memory_budget = Surface.memory_budget
+
     render json: {
       pods: Container.alive.count,
       capacity: {
         running: Container.active.count,
-        soft_cap: Surface.soft_cap,
-        hard_cap: Surface.hard_cap
+        memory_used: memory_used,
+        memory_budget: memory_budget,
+        memory_pct: memory_budget > 0 ? (memory_used.to_f / memory_budget * 100).round(1) : 0
       },
       containers: Container.active.order(:instance_name).map { |c|
         {

@@ -1,0 +1,46 @@
+# Identity configuration for the Hub.
+# The Manager has the full config (model, repo, services).
+# The Hub needs only: name, singleton flag, and listeners.
+#
+# All agents respond to @mentions. Listeners are for unaddressed
+# messages — use sparingly (see: the cascade incident).
+
+hopper:
+  singleton: true
+  listeners: []
+
+silas:
+  singleton: false
+  listeners: []
+
+margaux:
+  singleton: false
+  listeners: []
+
+kael:
+  singleton: false
+  listeners: []
+
+wren:
+  singleton: false
+  listeners: []
+
+ember:
+  singleton: false
+  listeners: []
+
+parallax:
+  singleton: false
+  listeners: []
+
+fletcher:
+  singleton: false
+  listeners: []
+
+census:
+  singleton: false
+  listeners: []
+
+voss:
+  singleton: false
+  listeners: []

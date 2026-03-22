@@ -35,7 +35,9 @@
             <% if c.alive? %>
               <%= button_to "refresh", refresh_container_path(c), method: :post, class: "text-xs px-2 py-1 rounded bg-stone-800 text-stone-400 hover:text-amber-400 hover:bg-stone-700", data: { turbo_confirm: "Hot swap #{c.instance_name} to latest image?" } %>
               <%= button_to "freeze", freeze_container_path(c), method: :post, class: "text-xs px-2 py-1 rounded bg-stone-800 text-stone-400 hover:text-blue-400 hover:bg-stone-700", data: { turbo_confirm: "Freeze #{c.instance_name}?" } %>
-              <%= button_to "kill", kill_container_path(c), method: :post, class: "text-xs px-2 py-1 rounded bg-stone-800 text-stone-400 hover:text-red-400 hover:bg-stone-700", data: { turbo_confirm: "Kill #{c.instance_name}?" } %>
+            <% end %>
+            <% unless c.state == "inactive" %>
+              <%= button_to "rescue", rescue_container_path(c), method: :post, class: "text-xs px-2 py-1 rounded bg-stone-800 text-stone-400 hover:text-red-400 hover:bg-stone-700", data: { turbo_confirm: "Rescue #{c.instance_name}?" } %>
             <% end %>
           </div>
         </div>

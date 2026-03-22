@@ -1,123 +1,91 @@
 # The routing engine. A message arrives, the router figures out
 # where it goes. If the agent isn't running, it asks the Manager.
 #
-# This is the heart of the Hub. Everything else is plumbing.
+# No database. Routes live in memory. Need status? Ask the relay.
 
 module Hub
   class Router
     class << self
-      # Route a message to the right agent(s). Returns delivery results.
-      def route(matrix_event, room:)
+      # Route a message to the right agent(s).
+      def route(matrix_event, room_id:, slug:, attachments: [])
         sender = extract_sender(matrix_event)
         return if sender == Config.appservice_user  # loop prevention
 
-        # Operator commands intercept before routing
         body = matrix_event.dig("content", "body") || ""
         if command = Commands.parse(body, sender: sender)
-          return Commands.execute(command, room: room)
+          return Commands.execute(command, room_id: room_id, slug: slug)
         end
 
-        # Who is this message for?
-        target, message = parse_mention(body, matrix_event.dig("content", "formatted_body"))
+        # Use Matrix m.mentions to find the target — works regardless of
+        # where in the message the @mention appears.
+        target = extract_mention(matrix_event)
 
         if target
-          # Explicit @mention → route to one identity
-          identity = Identity.find_by(name: target)
-          return deny("unknown agent '#{target}'", room: room) unless identity
-          deliver_to(identity, room: room, sender: sender, content: message)
+          deliver_to(target, room_id: room_id, slug: slug, sender: sender, content: body, attachments: attachments)
         else
-          # No mention → route to all listeners on this channel
-          route_to_listeners(room: room, sender: sender, content: body)
+          route_to_listeners(room_id: room_id, slug: slug, sender: sender, content: body, attachments: attachments)
         end
       end
 
       private
 
       # Resolve an agent and deliver a message. Spawns if needed.
-      def deliver_to(identity, room:, sender:, content:)
-        agent = room.agent_for(identity)
-        just_spawned = false
+      def deliver_to(identity_name, room_id:, slug:, sender:, content:, attachments: [])
+        instance_name = Identities.instance_name_for(identity_name, slug)
 
-        unless agent
-          agent = resolve(identity, room)
-          return unless agent  # resolve failed, error already reported
-          just_spawned = true
+        route = RouteCache.get(instance_name)
+
+        unless route
+          route = resolve(identity_name, instance_name: instance_name, room_id: room_id, slug: slug)
+          return unless route
+          wait_for_relay_and_deliver(instance_name, route, sender: sender, content: content, attachments: attachments)
+          return
         end
 
-        if just_spawned || agent.resolving?
-          # Relay may not be listening yet. Wait for it in background
-          # so we don't block the Synapse transaction endpoint.
-          wait_for_relay_and_deliver(agent, sender: sender, content: content)
-        else
-          unless agent.deliver(sender: sender, content: content)
-            # Delivery failed — pod is gone. Clear the stale route
-            # and retry, which will trigger a fresh resolve.
-            Rails.logger.warn "Delivery to #{agent.instance_name} failed — clearing stale route"
-            agent.destroy!
-            deliver_to(identity, room: room, sender: sender, content: content)
-          end
+        if RouteCache.resolving?(instance_name)
+          wait_for_relay_and_deliver(instance_name, route, sender: sender, content: content, attachments: attachments)
+          return
+        end
+
+        unless deliver(route[:ip], sender: sender, channel: slug, content: content, attachments: attachments)
+          Rails.logger.warn "Delivery to #{instance_name} failed — clearing stale route"
+          RouteCache.delete(instance_name)
+          deliver_to(identity_name, room_id: room_id, slug: slug, sender: sender, content: content, attachments: attachments)
         end
       end
 
-      # Ask the Manager for an agent. Creates the Agent route on success.
-      def resolve(identity, room)
-        instance_name = identity.instance_name_for(room.slug)
+      # Ask the Manager for an agent. Caches the route on success.
+      def resolve(identity_name, instance_name:, room_id:, slug:)
+        return RouteCache.get(instance_name) if RouteCache.resolving?(instance_name)
 
-        # Already resolving? Don't double-spawn.
-        existing = Agent.resolving.find_by(instance_name: instance_name)
-        return existing if existing
+        RouteCache.mark_resolving(instance_name)
 
-        # Create a placeholder route while we wait
-        agent = room.agents.create!(
-          identity: identity,
-          instance_name: instance_name,
-          state: "resolving"
-        )
-
-        result = ManagerClient.resolve(
-          identity: identity.name,
-          channel: room.slug
-        )
+        result = ManagerClient.resolve(identity: identity_name, channel: slug)
 
         if result && result[:ip]
-          # Store the IP but stay "resolving" — we don't know if the
-          # relay is listening yet. deliver_to will poll and flip to alive.
-          agent.update!(
-            wg_address: result[:ip],
-            state: "resolving",
-            last_message_at: Time.current
-          )
-          agent
+          RouteCache.set(instance_name, ip: result[:ip], identity: identity_name, room_id: room_id, slug: slug)
+          RouteCache.get(instance_name)
         else
-          agent.destroy!
-          Matrix.puppet(identity.name, room.matrix_room_id,
-            "Failed to spawn. Manager returned no IP.")
+          RouteCache.clear_resolving(instance_name)
+          Matrix.puppet(identity_name, room_id, "Failed to spawn. Manager returned no IP.")
           nil
         end
       rescue => e
-        Rails.logger.error "resolve failed for #{identity.name}: #{e.message}"
-        agent&.destroy!
-        Matrix.puppet(identity.name, room.matrix_room_id,
-          "Failed to spawn: #{e.message}")
+        Rails.logger.error "resolve failed for #{identity_name}: #{e.message}"
+        RouteCache.clear_resolving(instance_name)
+        Matrix.puppet(identity_name, room_id, "Failed to spawn: #{e.message}")
         nil
       end
 
       # Wait for a relay to come online, then deliver the message.
       # Runs in a background thread so we don't block Synapse.
-      # The relay's HTTP server starts before Claude Code boots, and
-      # messages queue behind the boot mutex — so we just need to wait
-      # for the HTTP server, not for boot to complete.
-      def wait_for_relay_and_deliver(agent, sender:, content:)
+      def wait_for_relay_and_deliver(instance_name, route, sender:, content:, attachments: [])
         Thread.new do
-          ip = agent.wg_address
-          identity_name = agent.identity.name
-          room_id = agent.room.matrix_room_id
-          instance_name = agent.instance_name
+          ip = route[:ip]
+          identity_name = route[:identity]
+          room_id = route[:room_id]
+          slug = route[:slug]
 
-          # Poll relay health every 2s for up to 5 minutes.
-          # Also check Manager status periodically — if the container
-          # died (entrypoint crash, OOM, etc.), fail immediately instead
-          # of waiting the full 5 minutes in silence.
           ready = false
           150.times do |i|
             sleep 2
@@ -126,18 +94,14 @@ module Hub
               break
             end
 
-            # After 30s with no relay, check if the container is even running.
-            # The Manager DB may say "starting" even if podman says it's dead,
-            # so we also check if it's been starting too long without a relay.
-            if i == 15  # 30 seconds
+            if i == 15
               status = ManagerClient.status
               if status
                 container = status[:containers]&.find { |c| c[:instance] == instance_name }
-                if container.nil? || container[:state] == "dead"
-                  Rails.logger.error "Container #{instance_name} died during boot"
+                if container.nil? || container[:state] == "inactive"
+                  Rails.logger.error "Pod #{instance_name} went inactive during boot"
                   break
                 end
-                # Still "starting" after 30s with no relay = probably crashed
                 if container[:state] == "starting"
                   Rails.logger.error "Container #{instance_name} still starting after 30s with no relay — likely crashed"
                   break
@@ -147,61 +111,72 @@ module Hub
           end
 
           if ready
-            agent.reload
-            agent.update!(state: "alive") unless agent.alive?
-            agent.deliver(sender: sender, content: content)
+            RouteCache.clear_resolving(instance_name)
+            deliver(ip, sender: sender, channel: slug, content: content, attachments: attachments)
             Rails.logger.info "Delivered to #{instance_name} after relay came up"
           else
             Rails.logger.error "Relay for #{instance_name} never came up"
-            agent.reload
-            agent.destroy!
+            RouteCache.delete(instance_name)
             Matrix.puppet(identity_name, room_id, "Failed to start. Check the pod logs.")
           end
         rescue => e
-          Rails.logger.error "wait_for_relay failed for #{agent&.instance_name}: #{e.message}"
+          Rails.logger.error "wait_for_relay failed for #{instance_name}: #{e.message}"
         end
       end
 
-      # Route to all identities listening on this channel.
-      # If no listeners match but the room has exactly one agent,
-      # route to them — DMs and single-agent rooms are implicitly directed.
-      def route_to_listeners(room:, sender:, content:)
-        listeners = Listener.for_channel(room.slug).includes(:identity)
+      def deliver(ip, sender:, channel:, content:, attachments: [])
+        Relay.post_message(ip: ip, sender: sender, channel: channel, content: content, attachments: attachments)
+      end
 
-        if listeners.empty?
-          # No explicit listeners — check for a sole agent in the room
-          sole_agent = room.agents.includes(:identity).first
-          if sole_agent && room.agents.count == 1 && sole_agent.identity.name != sender
-            deliver_to(sole_agent.identity, room: room, sender: sender, content: content)
+      # Route to all identities listening on this channel.
+      def route_to_listeners(room_id:, slug:, sender:, content:, attachments: [])
+        listener_names = Identities.listeners_for(slug)
+
+        if listener_names.empty?
+          routes = RouteCache.routes_in_room(room_id)
+          if routes.size == 1
+            _, route = routes.first
+            unless route[:identity] == sender
+              deliver_to(route[:identity], room_id: room_id, slug: slug, sender: sender, content: content, attachments: attachments)
+            end
+            return
+          end
+
+          if routes.empty?
+            identity_name = sole_agent_in_room(room_id, exclude: sender)
+            if identity_name
+              deliver_to(identity_name, room_id: room_id, slug: slug, sender: sender, content: content, attachments: attachments)
+            end
           end
           return
         end
 
-        listeners.each do |listener|
-          identity = listener.identity
-          next if identity.name == sender  # don't echo back
-
-          listen_content = "@#{sender} in ##{room.slug} said: \"#{content}\""
-          deliver_to(identity, room: room, sender: sender, content: listen_content)
+        listener_names.each do |name|
+          next if name == sender
+          listen_content = "@#{sender} in ##{slug} said: \"#{content}\""
+          deliver_to(name, room_id: room_id, slug: slug, sender: sender, content: listen_content, attachments: attachments)
         end
       end
 
-      # Parse @mention from message body or Matrix pill.
-      def parse_mention(body, formatted_body = nil)
-        # Plain @mention
-        if body =~ /\A\s*@([\w-]+)\s*(.*)/m
-          return [$1.downcase, $2.strip]
-        end
+      # Check Matrix room membership for a sole agent.
+      def sole_agent_in_room(room_id, exclude:)
+        members = Matrix.room_members(room_id)
+        agents = members.select { |name| name != exclude && Identities.exists?(name) }
+        agents.size == 1 ? agents.first : nil
+      rescue => e
+        Rails.logger.error "sole_agent_in_room failed: #{e.message}"
+        nil
+      end
 
-        # Matrix pill: <a href="https://matrix.to/#/@user:server">Name</a>
-        # May be wrapped in <p> tags by Element/clients
-        if formatted_body =~ %r{\A\s*(?:<p>)?\s*<a href="https://matrix\.to/#/@([\w.-]+):[\w.-]+">[^<]*</a>\s*:?\s*(.*)}m
-          localpart = $1.downcase
-          rest = body.sub(/\A\s*\S+\s*:?\s*/, "").strip
-          return [localpart, rest]
+      # Extract mentioned identity from m.mentions.user_ids.
+      # Returns the first mentioned identity we know, or nil.
+      def extract_mention(event)
+        user_ids = event.dig("content", "m.mentions", "user_ids") || []
+        user_ids.each do |uid|
+          name = uid.split(":").first&.delete_prefix("@")
+          return name if name && Identities.exists?(name)
         end
-
-        [nil, body]
+        nil
       end
 
       def extract_sender(event)
@@ -209,7 +184,7 @@ module Hub
         sender.split(":").first&.delete_prefix("@") || sender
       end
 
-      def deny(reason, room:)
+      def deny(reason, room_id:)
         Rails.logger.info "DENY: #{reason}"
       end
     end
