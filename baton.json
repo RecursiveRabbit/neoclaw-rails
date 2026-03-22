@@ -28,24 +28,33 @@
 
   "correction": "Evans: 'We aren't deferring upgrades to the new version. This version needs to be feature complete, the rewrite is a cleanup not an opportunity to test new features.' Every design decision gets implemented and proven HERE first. The rewrite just removes the dead wood.",
 
-  "todo": [
-    "Replace parse_mention with Matrix m.mentions — stop parsing @mentions, use what Matrix gives us",
-    "Replace Listener model with Matrix notification settings — 'All messages' vs 'Mentions and Keywords' per agent per room",
-    "Make Synapse a subprocess of the Hub — they share fate, no backoff window",
-    "Hub as systemd service with EnvironmentFile for tokens — front door, not operator hacks",
-    "Relay narration — third person system messages at boot ('Spawning silas-infra...'), orient ('Orienting new agent, please wait.'), freeze ('Agent going idle.'), sunset ('Context full, sunsetting agent.')",
-    "Deliver boot response — agent's first words after orientation currently discarded, should go to Matrix",
-    "DM slugs — derive as 'dm-<other_user>' from Matrix room membership, not room ID hash",
-    "DM cold start — DM rooms should know which agent they belong to even before spawn",
-    "Implicit routing — sole agent in room receives all messages without @mention (implemented, needs testing)",
-    "Error messages from puppet, not bot — implemented but bot auto-join still broken for some rooms",
-    "Crash detection — Manager DB says 'starting' when pod is dead, need faster feedback",
-    "Service provisioning — Provisioner uses ghost IPs, needs Surface.host_wg_ip",
-    "Persist nc-host WG + UFW across reboot — systemd unit",
-    "Clean up Manager seeds — drop old wg_* fields from ServiceType",
-    "invoke_claude timeout — Claude can hang/crash silently during boot. popen3 never returns, typing pulses forever, no error reported. Need: timeout on invoke_claude (5min boot, 10min message), kill orphan process, stop typing, report failure to Matrix via puppet",
-    "Orphan MCP processes — when Claude exits, MCP server child processes (ssh, vikunja, valley) stay alive as zombies. Need cleanup on invoke_claude exit"
-  ],
+  "todo": {
+    "architecture_mismatch": "The design_decisions section describes how the system SHOULD work. The code doesn't match yet. These items bring the code in line with the design.",
+    "items": [
+      {"what": "Hub stateless routing — replace Agent model and database with in-memory route cache", "status": "not started", "note": "Currently the Hub has an Agent ActiveRecord model with state tracking. Should be a simple hash of instance_name→IP that clears on restart. Failed delivery deletes entry and re-resolves. This eliminates the entire category of stale-route bugs."},
+      {"what": "Relay state reporting — relay /health should return status (starting/orienting/ready/busy/freezing/sunsetting)", "status": "partial", "note": "Currently returns processing/booting/booted booleans. Needs proper named states."},
+      {"what": "Relay narration — lifecycle messages to Matrix", "status": "not started", "note": "Relay should send: 'Launching...' at boot, 'Agent orienting...' at orient, agent's first stdout after orient, 'Agent entering idle status...' on freeze, 'Context limit reached...' on sunset. Third person, not first person."},
+      {"what": "Deliver boot response — agent's first stdout after orientation is discarded", "status": "not started", "note": "The relay's boot_claude_code return value is thrown away. Should be sent to Matrix."},
+      {"what": "Hub polls relay for readiness instead of tracking state", "status": "not started", "note": "Hub should ask relay status before delivering. If not ready, hold message and poll. Currently uses Agent model state transitions."},
+      {"what": "Silent pod rescue — pod running but relay unreachable", "status": "not started", "note": "Manager says pod is running but relay doesn't answer. Need detection and rescue."},
+      {"what": "Replace parse_mention with Matrix m.mentions", "status": "not started", "note": "Stop parsing @mentions with regex. Use the m.mentions.user_ids field Matrix already provides. Fixes @mention-at-end-of-message bug."},
+      {"what": "Replace Listener model with Matrix notification settings", "status": "not started", "note": "Use 'All messages' vs 'Mentions and Keywords' per agent per room. Delete the Listener model."},
+      {"what": "Make Synapse a subprocess of the Hub", "status": "not started", "note": "They share fate. Hub restarts, Synapse restarts. No backoff window."},
+      {"what": "DM slugs from room membership", "status": "not started", "note": "Derive as dm-<other_user> instead of hashing the room ID."},
+      {"what": "invoke_claude timeout", "status": "not started", "note": "Claude can hang silently. Need timeout (5min boot, 10min message), kill orphan processes, report failure."},
+      {"what": "Orphan MCP process cleanup", "status": "not started", "note": "When Claude exits, MCP server children stay alive. Need cleanup."},
+      {"what": "swap-image.sh should copy /home/agent/ not just /workspace", "status": "not started", "note": "/workspace disappeared between swaps. Bug never investigated because pod was killed."},
+      {"what": "Service provisioning — Provisioner uses ghost IPs", "status": "not started", "note": "All service URLs should use Surface.host_wg_ip (10.0.0.2), not old per-service IPs."},
+      {"what": "Persist nc-host WG + UFW across reboot", "status": "not started", "note": "Need systemd unit for the WG interface."},
+      {"what": "Stop button on stream page", "status": "implemented", "note": "Sends stop signal to relay which TERMs then KILLs claude. Works."},
+      {"what": "Hub systemd service", "status": "implemented", "note": "neoclaw-rails-hub.service. Enabled on boot."},
+      {"what": "Live credential mount", "status": "implemented", "note": "Directory bind mount of ~/.claude/. /login refreshes for all pods."},
+      {"what": "Self-healing routes", "status": "implemented", "note": "Failed delivery destroys stale route and retries through resolve."},
+      {"what": "Typing watchdog", "status": "implemented", "note": "Checks /proc for claude process every 20s. Clears typing if gone."},
+      {"what": "Stream viewer with history buffer", "status": "implemented", "note": "ActionCable + StreamBuffer (500 lines). Prompts shown, JSON parsed."},
+      {"what": "Hot swap via UI", "status": "implemented", "note": "Refresh button on Manager admin. Lifecycle.hot_swap! preserves workspace + session."}
+    ]
+  },
 
   "design_decisions": {
     "state_ownership": {
