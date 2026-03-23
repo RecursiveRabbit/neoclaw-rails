@@ -98,31 +98,20 @@
   },
 
   "todo": {
-    "items": [
-      {"what": "Vikunja token bug", "status": "RESOLVED", "note": "v2.1.0 API hashing bug. Fixed by generating PBKDF2 hashes ourselves and inserting directly into SQLite."},
-      {"what": "TOOLS.md injection into pods", "status": "not started", "note": "Write tool descriptions for each MCP service. Provisioner generates dynamic TOOLS.md per agent. Addresses pod-Silas P04."},
-      {"what": "Channel repo conventions", "status": "not started", "note": "Each channel repo needs a README with rules (PR required? direct push OK? who reviews whom?). Admin sets branch protection per-repo."},
-      {"what": "Watchdog monitoring dashboard", "status": "not started", "note": "Watchdog is running but no operator visibility. Could add !watchdog command or admin UI panel showing: last check time, silent pods detected, idle freezes triggered. Container dashboard could show health staleness with color coding."},
-      {"what": "MCP servers die mid-session", "status": "known issue", "note": "--mcp-config on --continue doesn't restart dead servers. Claude Code limitation. Only fix is freeze+respawn."},
-      {"what": "Rename all 'container' references to 'pod'", "status": "not started", "note": "Codebase-wide rename. Best done in the rewrite."},
-      {"what": "Hub polls relay for readiness instead of tracking state", "status": "not started"},
-      {"what": "Make Synapse a subprocess of the Hub", "status": "not started"},
-      {"what": "Presence manager — Hub startup route recovery", "status": "not started", "note": "After Hub restart, RouteCache is empty. Presence is grey until agents re-register. Could ask Manager for running containers on startup to pre-populate routes and restore green dots immediately."},
-      {"what": "Session processing — boot state from metadata", "status": "not started", "note": "Spawner.determine_boot_state could read the latest .meta.json to check baton_stale. If stale, boot prompt should warn the agent. Also: Podman.rescue_and_remove (spawn cleanup) doesn't go through SessionProcessor — rescued files exist but aren't processed. Could add processing there if Container context is available."},
-      {"what": "Neobot — cron scheduling via Matrix messages", "status": "not started", "note": "Dumb cron bot that posts Matrix messages on schedule. Configured by talking to it in-channel. Spawn-authorized — its messages trigger agent spawns through normal Hub routing. No lifecycle control, no API access, no awareness of agents. Just posts messages."},
-      {"what": "SFTP ForceCommand", "status": "deferred", "note": "SSH MCP needs full shell (ssh_execute runs commands). ForceCommand internal-sftp would break it. Needs design decision: either keep shell (works now) or split file access (SFTP) from command execution (separate mechanism). Not a quick change."},
-      {"what": "Smart auto-scroll on live stream page", "status": "not started", "note": "Only auto-scroll if already at bottom. Don't pull operator down while reading."},
-      {"what": "Image/attachment UX — context with media", "status": "not started", "note": "Pasting an image in Matrix sends it immediately as its own m.image message. No way to include a description in the same message. Agent gets 'image.png' with no context. Need a way to associate a description with an attachment — maybe hold the image and wait for a follow-up text message within N seconds, or use the !previous pattern to bundle them."}
+    "priority": [
+      {
+        "what": "Hub /sync migration — replace appservice transactions with per-puppet /sync",
+        "status": "NEXT",
+        "note": "The big one. Evans: 'Matrix already has a notification system. We don't need to parse messages. Regex is for the birds. Tear it down.' Remove: TransactionsController, Router mention parsing, identities.yml, ListenerQueue, sole-agent fallback. Build: SyncManager with one /sync loop per puppet. Each loop: GET /sync?user_id=@name:matrix.home&since=TOKEN&timeout=30000 with as_token. Matrix decides who gets notified (DMs, @mentions, All Messages setting). Hub just delivers to relay. Singleton logic moves entirely to Manager — Hub asks Manager for an IP, Manager handles singleton internally. Hub becomes a thin bridge, not a router. Keep appservice registration for outbound (puppeting responses, presence, typing). ListenerQueue already ripped out. Identities.yml already stripped of listeners. This is the first real collaborative task for voss-neoclaw and silas-neoclaw."
+      }
     ],
-    "done_this_session": [
-      "Socat forwarders as systemd units — neoclaw-socat@{vikunja,valley,comfyui,mqtt}.service, enabled and running",
-      "Persist nc-host WG across reboot — wg-quick@nc-host enabled, /etc/wireguard/nc-host.conf with iptables bridge block in PostUp/PostDown",
-      "Orphan MCP process cleanup — relay.rb cleanup_mcp_processes kills /opt/mcp/ Python processes on TERM/INT/freeze/stop",
-      "!previous syntax — Router.process_previous parses @agent !previous N [msg], fetches Matrix history, prepends as context",
-      "Listener context queue — ListenerQueue queues @mentioned messages, flushes as [Earlier in #channel] context when reply routes to listeners",
-      "Presence manager — PresenceManager background thread refreshes 'online' for all agents in RouteCache every 60s. Hub crash = presence expires = grey dots (free alarm). !status shows presence thread health.",
-      "Session processing pipeline — SessionProcessor in Manager. Normal path (freeze/sunset): writes .meta.json sidecar via podman cp, commits+pushes. Crash path: processes rescued session locally, strips tool results, detects baton staleness. Metadata: ended_reason, context_usage, duration, timestamps. Hooks: freeze_ready controller + Lifecycle.rescue!",
-      "Silent pod rescue + idle freeze — Watchdog service in Manager. Checks every 60s. Silent pod: alive container with stale health (>2min) + relay unreachable → rescue (which triggers SessionProcessor.process_crash). Idle agent: no messages > idle_timeout → freeze. 5-min boot grace period. Confirms via relay /health before rescuing."
+    "items": [
+      {"what": "TOOLS.md injection into pods", "status": "not started", "note": "Write tool descriptions for each MCP service. Provisioner generates dynamic TOOLS.md per agent."},
+      {"what": "Channel repo conventions", "status": "not started", "note": "Each channel repo needs a README with rules. Admin sets branch protection per-repo."},
+      {"what": "MCP servers die mid-session", "status": "known issue", "note": "--mcp-config on --continue doesn't restart dead servers. Claude Code limitation. Only fix is freeze+respawn."},
+      {"what": "Session processing — boot state from metadata", "status": "not started", "note": "Spawner could read .meta.json baton_stale flag and warn agent on boot."},
+      {"what": "Neobot — cron scheduling via Matrix messages", "status": "not started"},
+      {"what": "Image/attachment UX — context with media", "status": "not started"}
     ]
   },
 
