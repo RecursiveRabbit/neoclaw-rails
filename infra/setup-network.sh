@@ -124,6 +124,41 @@ setup_socat() {
 }
 
 # =====================================================================
+# Bridge lockdown — pods can ONLY reach the Router via WireGuard
+# =====================================================================
+
+ROUTER_BRIDGE_IP="10.88.0.20"
+ROUTER_WG_PORT="51820"
+POD_SUBNET="10.88.0.0/16"
+
+setup_bridge_lockdown() {
+    # Create a dedicated chain for pod bridge traffic
+    iptables -N NEOCLAW-BRIDGE 2>/dev/null || iptables -F NEOCLAW-BRIDGE
+
+    # Router pod gets unrestricted bridge access (it's the egress point)
+    iptables -A NEOCLAW-BRIDGE -s ${ROUTER_BRIDGE_IP}/32 -j RETURN
+
+    # All other pods: only WG UDP to the Router
+    iptables -A NEOCLAW-BRIDGE -d ${ROUTER_BRIDGE_IP}/32 -p udp --dport ${ROUTER_WG_PORT} -j ACCEPT
+
+    # WG handshake responses back to pods
+    iptables -A NEOCLAW-BRIDGE -s ${ROUTER_BRIDGE_IP}/32 -p udp --sport ${ROUTER_WG_PORT} -j ACCEPT
+
+    # DROP everything else from pods
+    iptables -A NEOCLAW-BRIDGE -j DROP
+
+    # Apply to FORWARD (pod → internet, pod → pod)
+    iptables -C FORWARD -s ${POD_SUBNET} -j NEOCLAW-BRIDGE 2>/dev/null || \
+        iptables -I FORWARD 1 -s ${POD_SUBNET} -j NEOCLAW-BRIDGE
+
+    # Apply to INPUT (pod → host services)
+    iptables -C INPUT -s ${POD_SUBNET} -j NEOCLAW-BRIDGE 2>/dev/null || \
+        iptables -I INPUT 1 -s ${POD_SUBNET} -j NEOCLAW-BRIDGE
+
+    log "bridge lockdown active — pods can only reach Router via WG UDP"
+}
+
+# =====================================================================
 # Verify
 # =====================================================================
 
@@ -153,11 +188,16 @@ verify() {
         fi
     done
 
-    # iptables
-    if iptables -C INPUT -s 10.88.0.0/16 -d 10.0.0.0/16 -j DROP &>/dev/null; then
-        log "iptables bridge block: active"
+    # Bridge lockdown
+    if iptables -C FORWARD -s ${POD_SUBNET} -j NEOCLAW-BRIDGE &>/dev/null; then
+        log "bridge lockdown: active (FORWARD)"
     else
-        log "iptables bridge block: MISSING"
+        log "bridge lockdown: MISSING (FORWARD)"
+    fi
+    if iptables -C INPUT -s ${POD_SUBNET} -j NEOCLAW-BRIDGE &>/dev/null; then
+        log "bridge lockdown: active (INPUT)"
+    else
+        log "bridge lockdown: MISSING (INPUT)"
     fi
 }
 
@@ -172,6 +212,9 @@ setup_wireguard
 echo ""
 
 setup_socat
+echo ""
+
+setup_bridge_lockdown
 echo ""
 
 verify
