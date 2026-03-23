@@ -1,9 +1,9 @@
 {
-  "written": "2026-03-23T01:15:00Z",
+  "written": "2026-03-23T05:45:00Z",
   "session_summaries": {
-    "silas (Mar 20-22)": "MCP services are live. Agents in pods can now act on real servers. SSH MCP proven end-to-end — silas-infra SSHd into hopper, ran three ingestion scripts in parallel, rebuilt FAISS indexes, all without being told. Valley token service built and deployed (systemd). Vikunja token service built (token creation works but Vikunja rejects new API tokens — investigation needed). Service exposure via socat forwarders. Hot swap script with hold mechanism. Relay passes --mcp-config on every invocation. Per-identity SSH keys via sftp-keys. Hub <p> pill fix. Spawner stale-record cleanup. Double-path bug in Podman.run fixed. MCP docs written.",
-    "voss (Mar 22)": "Pulled down the Hub database entirely — four models replaced with three in-memory services (RouteCache, Identities from YAML, Rooms from Matrix). Relay narration (m.notice lifecycle messages, boot response delivery, streaming responses). m.mentions routing replaces parse_mention regex. Invite auto-accept. DM slugs (dm-<other_user>). Attachment receiving. Three boot prompts (fresh/resume/baton) with per-channel baton paths. Manager: build.sh rewritten for Router topology, memory-based capacity, persistent stream buffers, HTTPX ErrorResponse guards on all provisioners, per-service error isolation. Rescue saves full workspace. Refresh regenerates credentials. kill→rescue, dead→inactive. Freeze→rescue fallback. Session processing pipeline, !previous, presence, neobot added to TODO.",
-    "voss (Mar 23)": "Eight features built, tested, deployed. Infrastructure: socat forwarders as systemd units (template + 4 env files), WG persistence (wg-quick@nc-host with iptables bridge block), orphan MCP process cleanup in relay. Hub: !previous syntax (fetch Matrix history, prepend to delivery), listener context queue (ListenerQueue — queues @mentioned messages for listeners, flushes as context on reply), PresenceManager (60s refresh for green dots, Hub crash = grey = free alarm). Manager: SessionProcessor (metadata sidecar on freeze/sunset via podman cp, crash path processes rescued sessions, baton staleness detection), Watchdog (silent pod rescue + idle freeze — confirmed working: detected 6 idle agents, froze all, sessions processed). Frontend: smart auto-scroll on stream page (only scroll if at bottom). All rebuilt and deployed — Hub restarted, Manager image rebuilt, agent image rebuilt."
+    "silas (Mar 20-22)": "MCP services are live. Agents in pods can now act on real servers. SSH MCP proven end-to-end. Valley token service built and deployed. Vikunja token service built but broken (API creates tokens that fail verification). Service exposure via socat forwarders. Hot swap with hold mechanism. Per-identity SSH keys. MCP docs written.",
+    "voss (Mar 22-23)": "Hub stateless rewrite (RouteCache, Identities from YAML, Rooms from Matrix). Relay narration, m.mentions routing, DM slugs, attachment receiving. Three boot prompts. Manager: build.sh for Router topology, memory-based capacity, session processing pipeline, Watchdog. Hub: !previous syntax, ListenerQueue, PresenceManager. Socat systemd units. WG persistence. Orphan MCP cleanup.",
+    "silas (Mar 23)": "Vikunja token bug diagnosed and fixed — Vikunja v2.1.0 has a hashing bug where API-created tokens fail PBKDF2 verification. Rewrote vikunja-token-service to generate tokens with correct hashes and insert directly into SQLite. End-to-end tested: create/use/revoke lifecycle works. Added dedicated 'vikunja' provision type to Provisioner (matching valley pattern). Fixed valley seeds.rb provision_type (was 'token', should be 'valley'). Added sudo to agent containers. Built P10 graceful degradation — entrypoint probes each provisioned service at boot, writes service-status.md for agents. Added Forgejo API token provisioning — agents can now create PRs and do code review via the REST API. Set branch protection on main (1 review required). Built channel repo system — Provisioner auto-creates channels/<channel> repos and grants collaborator access at spawn. Relay boot prompt tells agents about the shared project repo. Two-repo model: /identity (personal) + /workspace (shared channel project). Migrated neoclaw-rails history (42 commits) from neoclaw/neoclaw-rails to channels/neoclaw. Set up Forgejo push mirror to GitHub (RecursiveRabbit/neoclaw-rails). Archived old repo. Updated local working directory remote."
   },
 
   "decision": {
@@ -50,10 +50,10 @@
         "tools": "valley (send commands to The Uncanny Valley MUD)"
       },
       "vikunja": {
-        "status": "PARTIALLY WORKING — tokens created but rejected by Vikunja",
-        "provisioning": "vikunja-token-service.py on host (systemd, port 8890 on 10.0.0.2). Creates tokens via Vikunja API, but newly created API tokens are rejected while old ones still work. Needs investigation.",
+        "status": "WORKING",
+        "provisioning": "vikunja-token-service.py on host (systemd, port 8890 on 10.0.0.2). Generates tokens with PBKDF2-SHA256 hashes and inserts directly into SQLite (bypasses Vikunja v2.1.0 API bug). Ephemeral per-session — purged on teardown via DELETE /token/<username>.",
         "tools": "ticket_list, ticket_view, ticket_create, ticket_comment, ticket_update, ticket_done",
-        "bug": "Vikunja API creates tokens (PUT /tokens returns tk_...) but immediately rejects them. Old tokens from March 2 still work. Possible version/caching issue."
+        "bug_resolved": "Vikunja v2.1.0 PUT /tokens creates tokens but stores hashes that fail its own verification. Old v1-created tokens work fine. Root cause: likely double-hashing or salt mismatch in the Go code. Workaround: generate token+hash ourselves with matching PBKDF2 params and insert directly."
       },
       "comfyui": {
         "status": "CONFIGURED — no auth needed, untested",
@@ -99,7 +99,9 @@
 
   "todo": {
     "items": [
-      {"what": "Vikunja token bug", "status": "blocked", "note": "API creates tokens but immediately rejects them. Old tokens work. Needs Vikunja-side investigation."},
+      {"what": "Vikunja token bug", "status": "RESOLVED", "note": "v2.1.0 API hashing bug. Fixed by generating PBKDF2 hashes ourselves and inserting directly into SQLite."},
+      {"what": "TOOLS.md injection into pods", "status": "not started", "note": "Write tool descriptions for each MCP service. Provisioner generates dynamic TOOLS.md per agent. Addresses pod-Silas P04."},
+      {"what": "Channel repo conventions", "status": "not started", "note": "Each channel repo needs a README with rules (PR required? direct push OK? who reviews whom?). Admin sets branch protection per-repo."},
       {"what": "Watchdog monitoring dashboard", "status": "not started", "note": "Watchdog is running but no operator visibility. Could add !watchdog command or admin UI panel showing: last check time, silent pods detected, idle freezes triggered. Container dashboard could show health staleness with color coding."},
       {"what": "MCP servers die mid-session", "status": "known issue", "note": "--mcp-config on --continue doesn't restart dead servers. Claude Code limitation. Only fix is freeze+respawn."},
       {"what": "Rename all 'container' references to 'pod'", "status": "not started", "note": "Codebase-wide rename. Best done in the rewrite."},
@@ -135,7 +137,12 @@
     "Three boot prompts, per-channel batons, streaming responses, attachment receiving",
     "Memory-based capacity, persistent stream buffers, freeze→rescue fallback",
     "Socat forwarders expose localhost services on WG IPs",
-    "Router nftables per-agent port sets control service access"
+    "Router nftables per-agent port sets control service access",
+    "Vikunja MCP: ephemeral tokens generated with PBKDF2, full create/use/revoke lifecycle",
+    "Forgejo API tokens: agents can create PRs and do code review via REST API",
+    "Channel repos: auto-created at channels/<channel>, agents granted collaborator at spawn",
+    "Two-repo boot: /identity (personal) + /workspace (shared channel project)",
+    "GitHub push mirror: channels/neoclaw → RecursiveRabbit/neoclaw-rails, sync on commit"
   ],
 
   "things_that_bit_us": [
