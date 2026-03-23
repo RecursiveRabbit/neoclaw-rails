@@ -22,14 +22,14 @@ BRIDGE_GATEWAY = "10.88.0.1"
     wg_interface: "wg-valley",  wg_ip: "10.0.0.4", wg_listen_port: 51824,
     wg_public_key: "0YGxaf+hgyssGxciGCKAkhd9DPbsqzYccDR3jAdiVCc=",
     wg_endpoint: "#{BRIDGE_GATEWAY}:51824",
-    provision_type: "token",    has_own_auth: true,
+    provision_type: "valley",   has_own_auth: true,
     provision_config: { service_port: 4006 } },
 
   { name: "vikunja",
     wg_interface: "wg-vikunja", wg_ip: "10.0.0.5", wg_listen_port: 51825,
     wg_public_key: "Z4uOoKX+8sEfxPbHn7T75D+M3y5YreBkOtBjbgCJiwM=",
     wg_endpoint: "#{BRIDGE_GATEWAY}:51825",
-    provision_type: "token",    has_own_auth: true,
+    provision_type: "vikunja",  has_own_auth: true,
     provision_config: { service_port: 3456 } },
 
   { name: "comfyui",

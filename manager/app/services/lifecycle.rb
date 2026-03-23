@@ -91,6 +91,7 @@ class Lifecycle
 
       # Save everything — workspace and .claude session.
       # The whole point of rescue is to not lose work.
+      rescue_path = nil
       begin
         timestamp = Time.now.strftime("%Y%m%d-%H%M%S")
         rescue_path = File.join(Surface.host_rescue_dir, container.instance_name, timestamp)
@@ -101,6 +102,12 @@ class Lifecycle
       rescue => e
         AuditLog.record("SESSION_RECOVERY_FAILED",
           instance_name: container.instance_name, detail: e.message)
+      end
+
+      # Process the crashed session — relay didn't run, so we do it here.
+      # Strips tool results, detects baton staleness, writes metadata.
+      if rescue_path && Dir.exist?(rescue_path.to_s)
+        SessionProcessor.process_crash(container, rescue_path: rescue_path)
       end
 
       teardown!(container)

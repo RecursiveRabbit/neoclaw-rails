@@ -227,11 +227,11 @@ This copies workspace + session out, kills the old pod, starts a new one, copies
 | Service | MCP Dir | Status | Provision Type | Notes |
 |---------|---------|--------|----------------|-------|
 | SSH | `relay/mcp/ssh/` | **Working** | ssh_key → authorized_keys | paramiko PTY session |
-| Vikunja | `relay/mcp/vikunja/` | TODO | token | Task management REST API |
-| Valley | `relay/mcp/valley/` | TODO (stub exists) | token | Evennia game world |
-| ComfyUI | `relay/mcp/comfyui/` | TODO | none (WG-only) | Image generation |
-| Matrix | `relay/mcp/matrix/` | TODO | none | Chat (might not need MCP — agents talk through the Hub) |
-| Zigbee | `relay/mcp/zigbee/` | TODO | none | Home automation |
+| Vikunja | `relay/mcp/vikunja/` | **Working** | vikunja → token service (port 8890) | Ephemeral token per session, PBKDF2 direct insert |
+| Valley | `relay/mcp/valley/` | **Working** | valley → token service (port 8889) | Evennia game world |
+| ComfyUI | `relay/mcp/comfyui/` | Configured | none (WG-only) | Image generation, needs socat forwarder |
+| Matrix | `relay/mcp/matrix/` | Configured | none | Chat (might not need MCP — agents talk through the Hub) |
+| Zigbee | `relay/mcp/zigbee/` | Configured | none | Home automation, needs socat forwarder |
 | Semantic Search | — | TODO | — | May be HTTP-only, no MCP needed |
 
 ---

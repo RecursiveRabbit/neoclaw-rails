@@ -1,8 +1,9 @@
 {
-  "written": "2026-03-22T07:30:00Z",
+  "written": "2026-03-23T05:45:00Z",
   "session_summaries": {
-    "silas (Mar 20-22)": "MCP services are live. Agents in pods can now act on real servers. SSH MCP proven end-to-end — silas-infra SSHd into hopper, ran three ingestion scripts in parallel, rebuilt FAISS indexes, all without being told. Valley token service built and deployed (systemd). Vikunja token service built (token creation works but Vikunja rejects new API tokens — investigation needed). Service exposure via socat forwarders. Hot swap script with hold mechanism. Relay passes --mcp-config on every invocation. Per-identity SSH keys via sftp-keys. Hub <p> pill fix. Spawner stale-record cleanup. Double-path bug in Podman.run fixed. MCP docs written.",
-    "voss (Mar 22)": "Pulled down the Hub database entirely — four models replaced with three in-memory services (RouteCache, Identities from YAML, Rooms from Matrix). Relay narration (m.notice lifecycle messages, boot response delivery, streaming responses). m.mentions routing replaces parse_mention regex. Invite auto-accept. DM slugs (dm-<other_user>). Attachment receiving. Three boot prompts (fresh/resume/baton) with per-channel baton paths. Manager: build.sh rewritten for Router topology, memory-based capacity, persistent stream buffers, HTTPX ErrorResponse guards on all provisioners, per-service error isolation. Rescue saves full workspace. Refresh regenerates credentials. kill→rescue, dead→inactive. Freeze→rescue fallback. Session processing pipeline, !previous, presence, neobot added to TODO."
+    "silas (Mar 20-22)": "MCP services are live. Agents in pods can now act on real servers. SSH MCP proven end-to-end. Valley token service built and deployed. Vikunja token service built but broken (API creates tokens that fail verification). Service exposure via socat forwarders. Hot swap with hold mechanism. Per-identity SSH keys. MCP docs written.",
+    "voss (Mar 22-23)": "Hub stateless rewrite (RouteCache, Identities from YAML, Rooms from Matrix). Relay narration, m.mentions routing, DM slugs, attachment receiving. Three boot prompts. Manager: build.sh for Router topology, memory-based capacity, session processing pipeline, Watchdog. Hub: !previous syntax, ListenerQueue, PresenceManager. Socat systemd units. WG persistence. Orphan MCP cleanup.",
+    "silas (Mar 23)": "Vikunja token bug diagnosed and fixed — Vikunja v2.1.0 has a hashing bug where API-created tokens fail PBKDF2 verification. Rewrote vikunja-token-service to generate tokens with correct hashes and insert directly into SQLite. End-to-end tested: create/use/revoke lifecycle works. Added dedicated 'vikunja' provision type to Provisioner (matching valley pattern). Fixed valley seeds.rb provision_type (was 'token', should be 'valley'). Added sudo to agent containers. Built P10 graceful degradation — entrypoint probes each provisioned service at boot, writes service-status.md for agents. Added Forgejo API token provisioning — agents can now create PRs and do code review via the REST API. Set branch protection on main (1 review required). Built channel repo system — Provisioner auto-creates channels/<channel> repos and grants collaborator access at spawn. Relay boot prompt tells agents about the shared project repo. Two-repo model: /identity (personal) + /workspace (shared channel project). Migrated neoclaw-rails history (42 commits) from neoclaw/neoclaw-rails to channels/neoclaw. Set up Forgejo push mirror to GitHub (RecursiveRabbit/neoclaw-rails). Archived old repo. Updated local working directory remote."
   },
 
   "decision": {
@@ -49,10 +50,10 @@
         "tools": "valley (send commands to The Uncanny Valley MUD)"
       },
       "vikunja": {
-        "status": "PARTIALLY WORKING — tokens created but rejected by Vikunja",
-        "provisioning": "vikunja-token-service.py on host (systemd, port 8890 on 10.0.0.2). Creates tokens via Vikunja API, but newly created API tokens are rejected while old ones still work. Needs investigation.",
+        "status": "WORKING",
+        "provisioning": "vikunja-token-service.py on host (systemd, port 8890 on 10.0.0.2). Generates tokens with PBKDF2-SHA256 hashes and inserts directly into SQLite (bypasses Vikunja v2.1.0 API bug). Ephemeral per-session — purged on teardown via DELETE /token/<username>.",
         "tools": "ticket_list, ticket_view, ticket_create, ticket_comment, ticket_update, ticket_done",
-        "bug": "Vikunja API creates tokens (PUT /tokens returns tk_...) but immediately rejects them. Old tokens from March 2 still work. Possible version/caching issue."
+        "bug_resolved": "Vikunja v2.1.0 PUT /tokens creates tokens but stores hashes that fail its own verification. Old v1-created tokens work fine. Root cause: likely double-hashing or salt mismatch in the Go code. Workaround: generate token+hash ourselves with matching PBKDF2 params and insert directly."
       },
       "comfyui": {
         "status": "CONFIGURED — no auth needed, untested",
@@ -72,7 +73,7 @@
   },
 
   "host_services": {
-    "socat_forwarders": "Localhost-bound services exposed on WG IP via socat. NOT persistent across reboot — need systemd units.",
+    "socat_forwarders": "Localhost-bound services exposed on WG IP via socat. Persistent via systemd template unit neoclaw-socat@{name}.service with env files at /etc/neoclaw/socat/. Setup: infra/setup-network.sh.",
     "services_needing_forwarders": {
       "vikunja": "10.0.0.2:3456 → 127.0.0.1:3456",
       "valley": "10.0.0.2:8888 → 127.0.0.1:8888",
@@ -97,23 +98,20 @@
   },
 
   "todo": {
+    "priority": [
+      {
+        "what": "Hub /sync migration — replace appservice transactions with per-puppet /sync",
+        "status": "NEXT",
+        "note": "The big one. Evans: 'Matrix already has a notification system. We don't need to parse messages. Regex is for the birds. Tear it down.' Remove: TransactionsController, Router mention parsing, identities.yml, ListenerQueue, sole-agent fallback. Build: SyncManager with one /sync loop per puppet. Each loop: GET /sync?user_id=@name:matrix.home&since=TOKEN&timeout=30000 with as_token. Matrix decides who gets notified (DMs, @mentions, All Messages setting). Hub just delivers to relay. Singleton logic moves entirely to Manager — Hub asks Manager for an IP, Manager handles singleton internally. Hub becomes a thin bridge, not a router. Keep appservice registration for outbound (puppeting responses, presence, typing). ListenerQueue already ripped out. Identities.yml already stripped of listeners. This is the first real collaborative task for voss-neoclaw and silas-neoclaw."
+      }
+    ],
     "items": [
-      {"what": "Vikunja token bug", "status": "blocked", "note": "API creates tokens but immediately rejects them. Old tokens work. Needs Vikunja-side investigation."},
-      {"what": "Socat forwarders as systemd units", "status": "not started", "note": "Currently started manually. Don't survive reboot."},
-      {"what": "Persist nc-host WG + UFW across reboot", "status": "not started", "note": "Need systemd unit for the WG interface."},
-      {"what": "Silent pod rescue", "status": "not started", "note": "Manager says pod is running but relay doesn't answer. Need detection and rescue."},
-      {"what": "Orphan MCP process cleanup", "status": "not started", "note": "When Claude exits, MCP server children stay alive. Need cleanup."},
+      {"what": "TOOLS.md injection into pods", "status": "not started", "note": "Write tool descriptions for each MCP service. Provisioner generates dynamic TOOLS.md per agent."},
+      {"what": "Channel repo conventions", "status": "not started", "note": "Each channel repo needs a README with rules. Admin sets branch protection per-repo."},
       {"what": "MCP servers die mid-session", "status": "known issue", "note": "--mcp-config on --continue doesn't restart dead servers. Claude Code limitation. Only fix is freeze+respawn."},
-      {"what": "Rename all 'container' references to 'pod'", "status": "not started", "note": "Codebase-wide rename. Best done in the rewrite."},
-      {"what": "Hub polls relay for readiness instead of tracking state", "status": "not started"},
-      {"what": "Make Synapse a subprocess of the Hub", "status": "not started"},
-      {"what": "!previous syntax", "status": "not started", "note": "Bare @silas sends previous message. @silas !previous 3 sends last 3. @silas !previous 3 What do you think? sends 3 + new message. Hub fetches history via Matrix.recent_messages, prepends to delivery. Agents get context without copy-paste."},
-      {"what": "Presence manager — always present, online or away", "status": "partial", "note": "Currently set on ready/released/crash. Should maintain: green=relay registered+claude running, yellow=frozen/idle (not gone, sleeping). Hub crash → everyone goes grey immediately — free alarm signal. Never log out agent tokens."},
-      {"what": "Session processing pipeline", "status": "not started", "note": "Runs on every freeze/sunset/crash. Manager runs process-session.sh inside the still-running pod via podman exec (pod still has WG, deploy key, git). Strip tool results (keep calls), strip identity.json/baton content. Write ended_reason (context_limit/idle/crash/manual). If crash and baton older than session → baton_stale: true. Save to sessions/<channel>/<instance>-<timestamp>.json. Commit+push via pod's own credentials. Dead pod fallback: podman cp raw session, process locally, best-effort backup."},
-      {"what": "Neobot — cron scheduling via Matrix messages", "status": "not started", "note": "Dumb cron bot that posts Matrix messages on schedule. Configured by talking to it in-channel. Spawn-authorized — its messages trigger agent spawns through normal Hub routing. No lifecycle control, no API access, no awareness of agents. Just posts messages."},
-      {"what": "SFTP ForceCommand", "status": "not started", "note": "SSH MCP works with full shell. Spec says ForceCommand internal-sftp for agent unix users. Agents should have SFTP access to host filesystems, not shell. Per-nick home dirs with symlinks to channel workspaces."},
-      {"what": "Smart auto-scroll on live stream page", "status": "not started", "note": "Only auto-scroll if already at bottom. Don't pull operator down while reading."},
-      {"what": "Image/attachment UX — context with media", "status": "not started", "note": "Pasting an image in Matrix sends it immediately as its own m.image message. No way to include a description in the same message. Agent gets 'image.png' with no context. Need a way to associate a description with an attachment — maybe hold the image and wait for a follow-up text message within N seconds, or use the !previous pattern to bundle them."}
+      {"what": "Session processing — boot state from metadata", "status": "not started", "note": "Spawner could read .meta.json baton_stale flag and warn agent on boot."},
+      {"what": "Neobot — cron scheduling via Matrix messages", "status": "not started"},
+      {"what": "Image/attachment UX — context with media", "status": "not started"}
     ]
   },
 
@@ -128,7 +126,12 @@
     "Three boot prompts, per-channel batons, streaming responses, attachment receiving",
     "Memory-based capacity, persistent stream buffers, freeze→rescue fallback",
     "Socat forwarders expose localhost services on WG IPs",
-    "Router nftables per-agent port sets control service access"
+    "Router nftables per-agent port sets control service access",
+    "Vikunja MCP: ephemeral tokens generated with PBKDF2, full create/use/revoke lifecycle",
+    "Forgejo API tokens: agents can create PRs and do code review via REST API",
+    "Channel repos: auto-created at channels/<channel>, agents granted collaborator at spawn",
+    "Two-repo boot: /identity (personal) + /workspace (shared channel project)",
+    "GitHub push mirror: channels/neoclaw → RecursiveRabbit/neoclaw-rails, sync on commit"
   ],
 
   "things_that_bit_us": [

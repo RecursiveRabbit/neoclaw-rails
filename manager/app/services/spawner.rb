@@ -61,12 +61,24 @@ class Spawner
         end
       end
 
+      # Channel repo (agent already exists in Forgejo from prior spawn)
+      channel_repo = nil
+      if secrets["forgejo"]&.dig(:forge_user)
+        begin
+          channel_repo = Provisioner.provision_channel_repo(
+            channel: channel, instance_name: instance_name)
+        rescue => e
+          Rails.logger.warn "Respawn channel repo for #{instance_name} failed: #{e.message}"
+        end
+      end
+
       boot_state = determine_boot_state(instance_name)
 
       spawn_data = build_spawn_file(
         identity: identity, channel: channel, instance_name: instance_name,
         config: config, agent_ip: agent_ip, wg_keypair: wg_keypair,
-        ssh_keypair: ssh_keypair, secrets: secrets, boot_state: boot_state
+        ssh_keypair: ssh_keypair, secrets: secrets, boot_state: boot_state,
+        channel_repo: channel_repo
       )
 
       spawn_path = File.join(Surface.spawn_dir, "#{instance_name}.json")
@@ -123,6 +135,18 @@ class Spawner
         end
       end
 
+      # Provision channel repo — shared git repo for all agents in this channel.
+      # Non-fatal: agent works fine without it.
+      channel_repo = nil
+      if secrets["forgejo"]&.dig(:forge_user)
+        begin
+          channel_repo = Provisioner.provision_channel_repo(
+            channel: channel, instance_name: instance_name)
+        rescue => e
+          Rails.logger.warn "Channel repo for #{instance_name} in ##{channel} failed: #{e.message}"
+        end
+      end
+
       # Determine boot state from history
       boot_state = determine_boot_state(instance_name)
 
@@ -130,7 +154,8 @@ class Spawner
       spawn_data = build_spawn_file(
         identity: identity, channel: channel, instance_name: instance_name,
         config: config, agent_ip: agent_ip, wg_keypair: wg_keypair,
-        ssh_keypair: ssh_keypair, secrets: secrets, boot_state: boot_state
+        ssh_keypair: ssh_keypair, secrets: secrets, boot_state: boot_state,
+        channel_repo: channel_repo
       )
 
       spawn_path = File.join(Surface.spawn_dir, "#{instance_name}.json")
@@ -228,14 +253,14 @@ class Spawner
     end
 
     # Fresh, resume, or baton? The Manager knows.
-    # - fresh: never registered on the Router (first time in this channel)
+    # - fresh: no audit trail (first time, or Manager rebuilt since last session)
     # - baton: last session was sunsetted (context limit)
-    # - resume: everything else (frozen, crashed, idle timeout)
+    # - resume: last session was frozen or crashed (workspace may exist)
+    #
+    # Note: Router registration persists across Manager rebuilds but AuditLog
+    # doesn't. So Router state alone can't distinguish fresh from resume —
+    # the audit trail is the source of truth for boot state.
     def determine_boot_state(instance_name)
-      unless RouterClient.registered?(instance_name)
-        return "fresh"
-      end
-
       last_event = AuditLog.where(instance_name: instance_name)
         .where(event: %w[SUNSET FREEZE TEARDOWN CRASH])
         .order(created_at: :desc).first
@@ -243,15 +268,17 @@ class Spawner
       case last_event&.event
       when "SUNSET"
         "baton"
-      else
+      when "FREEZE", "TEARDOWN", "CRASH"
         "resume"
+      else
+        "fresh"
       end
     end
 
     # Spawn file has one WG peer: the Router. That's it.
     # The Router forwards to everything else.
-    def build_spawn_file(identity:, channel:, instance_name:, config:, agent_ip:, wg_keypair:, ssh_keypair:, secrets:, boot_state: "fresh")
-      {
+    def build_spawn_file(identity:, channel:, instance_name:, config:, agent_ip:, wg_keypair:, ssh_keypair:, secrets:, boot_state: "fresh", channel_repo: nil)
+      data = {
         identity: identity,
         instance: instance_name,
         channel: channel,
@@ -275,6 +302,12 @@ class Spawner
         },
         services: secrets
       }
+
+      if channel_repo
+        data[:channel_repo] = channel_repo
+      end
+
+      data
     end
   end
 end

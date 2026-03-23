@@ -111,19 +111,36 @@ module Hub
         []
       end
 
-      # Fetch recent messages from a room (for !previous).
-      def recent_messages(room_id, limit: 10)
-        response = get(
-          "/_matrix/client/v3/rooms/#{room_id}/messages?dir=b&limit=#{limit}")
+      # Fetch recent messages from a room. Returns array of
+      # { sender: "name", content: "text" } in chronological order.
+      # Excludes the triggering event if exclude_event_id is given.
+      def recent_messages(room_id, limit: 10, exclude_event_id: nil)
+        base_path = "/_matrix/client/v3/rooms/#{room_id}/messages?dir=b&limit=#{limit}"
+        response = get(base_path)
+
+        # Bot not in room — try as each puppet
+        unless response&.status == 200
+          Hub::Identities.send(:config).each_key do |name|
+            user_id = "@#{name}:#{Config.server_name}"
+            response = get("#{base_path}&user_id=#{user_id}")
+            break if response&.status == 200
+          end
+        end
+
         return [] unless response&.status == 200
 
         data = JSON.parse(response.body)
         (data["chunk"] || [])
           .select { |e| e["type"] == "m.room.message" }
-          .map { |e| e.dig("content", "body") }
-          .compact
+          .reject { |e| exclude_event_id && e["event_id"] == exclude_event_id }
+          .map { |e|
+            sender = e["sender"]&.split(":")&.first&.delete_prefix("@") || "unknown"
+            content = e.dig("content", "body") || ""
+            { sender: sender, content: content }
+          }
           .reverse
-      rescue
+      rescue => e
+        Rails.logger.error "Matrix recent_messages #{room_id}: #{e.message}"
         []
       end
 
