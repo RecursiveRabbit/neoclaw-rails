@@ -57,12 +57,8 @@ ruby -rjson -e '
 chmod 600 /etc/wireguard/wg0.conf
 if ! wg-quick up wg0 2>&1; then
     log "FATAL: wireguard failed to start"
-    # Try to report failure to Manager before dying.
-    # Manager is on the podman bridge network (not WG), so this may reach it.
-    curl -sf -X POST "http://10.88.0.20:9200/containers/${INSTANCE}/error" \
-        -H "Content-Type: application/json" \
-        -d "{\"error\": \"WireGuard failed to start\", \"instance\": \"${INSTANCE}\"}" \
-        2>/dev/null || true
+    # Don't try to reach Manager without WG — it must not be reachable
+    # outside the mesh. Manager's watchdog will detect the failed pod.
     exit 1
 fi
 log "wireguard up (${WG_ADDRESS})"
