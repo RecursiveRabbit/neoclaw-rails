@@ -72,6 +72,14 @@ class RelayController < ApplicationController
     container = find_container
     return unless container
 
+    # Determine ended_reason from the audit trail — SUNSET vs FREEZE
+    last_event = AuditLog.where(instance_name: container.instance_name)
+      .where(event: %w[FREEZE SUNSET]).order(created_at: :desc).first
+    ended_reason = last_event&.event == "SUNSET" ? "context_limit" : "idle"
+
+    # Process session metadata before teardown (pod still alive)
+    SessionProcessor.process(container, ended_reason: ended_reason)
+
     Lifecycle.teardown!(container)
 
     head :ok

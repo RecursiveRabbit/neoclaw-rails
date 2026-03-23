@@ -16,11 +16,21 @@ module Hub
           return Commands.execute(command, room_id: room_id, slug: slug)
         end
 
+        # Process !previous — fetch history and prepend to content.
+        event_id = matrix_event["event_id"]
+        body = process_previous(body, room_id: room_id, event_id: event_id)
+
         # Use Matrix m.mentions to find the target — works regardless of
         # where in the message the @mention appears.
         target = extract_mention(matrix_event)
 
         if target
+          # Queue this message for listeners — they'll get it as context
+          # when the target agent responds. Without this, listeners see
+          # the reply but not what was asked.
+          if Identities.listeners_for(slug).any?
+            ListenerQueue.push(room_id, sender: sender, content: body)
+          end
           deliver_to(target, room_id: room_id, slug: slug, sender: sender, content: body, attachments: attachments)
         else
           route_to_listeners(room_id: room_id, slug: slug, sender: sender, content: body, attachments: attachments)
@@ -130,6 +140,14 @@ module Hub
 
       # Route to all identities listening on this channel.
       def route_to_listeners(room_id:, slug:, sender:, content:, attachments: [])
+        # Flush queued context — @mentioned messages that listeners missed.
+        queued = ListenerQueue.flush(room_id)
+        unless queued.empty?
+          context = "[Earlier in ##{slug}]\n" +
+            queued.map { |m| "@#{m[:sender]}: #{m[:content]}" }.join("\n")
+          content = "#{context}\n\n#{content}"
+        end
+
         listener_names = Identities.listeners_for(slug)
 
         if listener_names.empty?
@@ -177,6 +195,38 @@ module Hub
           return name if name && Identities.exists?(name)
         end
         nil
+      end
+
+      # Process !previous syntax — fetch room history and prepend as context.
+      #
+      # Syntax:
+      #   @agent !previous          → send 1 previous message
+      #   @agent !previous 3        → send 3 previous messages
+      #   @agent !previous 3 <msg>  → send 3 previous messages + new message
+      #   !previous 3               → works without @mention (DMs, sole agent)
+      #
+      # Returns the transformed body, or the original body if no !previous found.
+      def process_previous(body, room_id:, event_id:)
+        # Strip optional @mention prefix — routing already handled by m.mentions
+        stripped = body.sub(/\A\s*@[\w.\-]+\s+/, "")
+
+        match = stripped.match(/\A!previous(?:\s+(\d+))?\s*(.*)\z/m)
+        return body unless match
+
+        count = (match[1] || "1").to_i.clamp(1, 50)
+        remaining = match[2]&.strip
+        remaining = nil if remaining&.empty?
+
+        # Fetch extra to account for non-message events in the chunk
+        messages = Matrix.recent_messages(room_id, limit: count + 5, exclude_event_id: event_id)
+        messages = messages.last(count)
+
+        return body if messages.empty?
+
+        context = "[Previous messages]\n" +
+          messages.map { |m| "@#{m[:sender]}: #{m[:content]}" }.join("\n")
+
+        remaining ? "#{context}\n\n#{remaining}" : context
       end
 
       def extract_sender(event)

@@ -119,6 +119,23 @@ fi
 gosu agent git config --global user.name "$IDENTITY"
 gosu agent git config --global user.email "${IDENTITY}@neoclaw.local"
 
+# --- Forgejo API token ---
+# Written to ~/.forgejo-token so agents can use the Forgejo REST API
+# for creating PRs, requesting reviews, etc.
+FORGEJO_TOKEN=$(ruby -rjson -e '
+  s = JSON.parse(File.read(ARGV[0]), symbolize_names: true)
+  puts s.dig(:services, :forgejo, :api_token) || ""
+' "$SPAWN_FILE")
+
+if [ -n "${FORGEJO_TOKEN}" ]; then
+    echo "${FORGEJO_TOKEN}" > "${AGENT_HOME}/.forgejo-token"
+    chmod 600 "${AGENT_HOME}/.forgejo-token"
+    chown agent:agent "${AGENT_HOME}/.forgejo-token"
+    # Also set in gitconfig so `git` can use it for HTTPS operations
+    gosu agent git config --global credential.helper "!f() { echo \"password=${FORGEJO_TOKEN}\"; }; f"
+    log "forgejo API token installed"
+fi
+
 # --- MCP config ---
 # All services are on the host (10.0.0.2), reached through the Router.
 # Only include MCPs for services present in spawn.json's services block.
@@ -216,6 +233,83 @@ ruby -rjson -e '
 ' "$SPAWN_FILE" "${CLAUDE_DIR}/mcp.json" 2>&1 | while read -r line; do log "mcp config: $line"; done
 
 chown agent:agent "${CLAUDE_DIR}/mcp.json"
+
+# --- Service health probes ---
+# Probe each provisioned service. Write results to service-status.md so the
+# agent knows what's working before it wastes context retrying broken tools.
+# Quick probes only — fail fast, don't block boot.
+ruby -rjson -rnet/http -e '
+  spawn = JSON.parse(File.read(ARGV[0]), symbolize_names: true)
+  host_ip = "'"${HOST_IP}"'"
+  svc = spawn[:services] || {}
+  mcp = JSON.parse(File.read(ARGV[1]), symbolize_names: true)
+  lines = ["# Service Status", "", "Probed at boot. If a service is DOWN, do not retry — note the error and move on.", ""]
+
+  def probe(url, timeout: 3)
+    uri = URI(url)
+    http = Net::HTTP.new(uri.host, uri.port)
+    http.open_timeout = timeout
+    http.read_timeout = timeout
+    http.get(uri.request_uri)
+    "UP"
+  rescue => e
+    "DOWN (#{e.message})"
+  end
+
+  # SSH — try TCP connect
+  if mcp[:mcpServers]&.key?(:ssh)
+    begin
+      s = TCPSocket.new(host_ip, 22)
+      s.close
+      lines << "- **ssh**: UP"
+    rescue => e
+      lines << "- **ssh**: DOWN (#{e.message})"
+    end
+  end
+
+  # Vikunja
+  if svc[:vikunja] && mcp[:mcpServers]&.key?(:vikunja)
+    token = svc.dig(:vikunja, :token).to_s
+    if token.empty?
+      lines << "- **vikunja**: DOWN (no token provisioned)"
+    else
+      status = probe("http://#{host_ip}:3456/api/v1/tasks/all")
+      lines << "- **vikunja**: #{status}"
+    end
+  end
+
+  # Valley
+  if svc[:valley] && mcp[:mcpServers]&.key?(:valley)
+    status = probe("http://#{host_ip}:8888/api/command?cmd=look&token=#{svc.dig(:valley, :token)}")
+    lines << "- **valley**: #{status}"
+  end
+
+  # ComfyUI
+  if svc[:comfyui] && mcp[:mcpServers]&.key?(:comfyui)
+    status = probe("http://#{host_ip}:8188/queue")
+    lines << "- **comfyui**: #{status}"
+  end
+
+  # Zigbee/MQTT — just TCP probe the broker
+  if svc[:zigbee] && mcp[:mcpServers]&.key?(:zigbee)
+    begin
+      s = TCPSocket.new(host_ip, 1883)
+      s.close
+      lines << "- **zigbee**: UP (MQTT broker reachable)"
+    rescue => e
+      lines << "- **zigbee**: DOWN (#{e.message})"
+    end
+  end
+
+  if lines.length <= 4
+    lines << "- No services provisioned."
+  end
+
+  File.write(ARGV[2], lines.join("\n") + "\n")
+  $stderr.puts lines.select { |l| l.start_with?("- ") }.join(", ")
+' "$SPAWN_FILE" "${CLAUDE_DIR}/mcp.json" "${AGENT_HOME}/service-status.md" 2>&1 | while read -r line; do log "services: $line"; done
+
+chown agent:agent "${AGENT_HOME}/service-status.md"
 
 # --- Own everything ---
 chown -R agent:agent "$CLAUDE_DIR"

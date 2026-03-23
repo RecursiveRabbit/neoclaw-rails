@@ -140,11 +140,19 @@
     }
   }
 
+  const outputEl = document.getElementById("stream-output")
+
+  function isNearBottom() {
+    const threshold = 80
+    return outputEl.scrollHeight - outputEl.scrollTop - outputEl.clientHeight < threshold
+  }
+
   function appendLine(text, classes) {
+    const wasAtBottom = isNearBottom()
     const el = document.createElement("div")
     el.className = classes + " whitespace-pre-wrap break-words"
     el.textContent = text
     linesEl.appendChild(el)
-    anchorEl.scrollIntoView({ behavior: "smooth" })
+    if (wasAtBottom) anchorEl.scrollIntoView({ behavior: "smooth" })
   }
 </script>

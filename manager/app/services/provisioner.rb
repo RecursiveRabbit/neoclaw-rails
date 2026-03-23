@@ -3,7 +3,9 @@
 # Each service type has a provision_type that determines what happens:
 #   "forgejo"  -> create user, add SSH key, grant repo access
 #   "ssh_key"  -> append to authorized_keys via host SSH service
-#   "token"    -> generate API token (service-specific)
+#   "valley"   -> token via valley-token-service on the host
+#   "vikunja"  -> token via vikunja-token-service on the host
+#   "token"    -> generate API token (generic, needs provision_config)
 #   "none"     -> WireGuard peering only (no additional auth)
 #
 # Every provision step reaches the service over WireGuard.
@@ -23,10 +25,60 @@ class Provisioner
         provision_token(service, instance_name: instance_name)
       when "valley"
         provision_valley(instance_name: instance_name)
+      when "vikunja"
+        provision_vikunja(instance_name: instance_name)
       when "none"
         {}
       else
         raise ProvisionError, "unknown provision type: #{service.provision_type}"
+      end
+    end
+
+    # ----------------------------------------------------------------
+    # Channel repo — shared project repo for all agents in a channel.
+    # Called after Forgejo user provisioning so the user already exists.
+    #
+    # Creates channels/<channel> if it doesn't exist, then grants the
+    # agent's Forgejo user collaborator access.
+    # ----------------------------------------------------------------
+
+    def provision_channel_repo(channel:, instance_name:)
+      base_url = Surface.forgejo_url
+      token = Surface.forgejo_admin_token
+      repo_path = "channels/#{channel}"
+
+      # Check if repo exists
+      resp = http.get("#{base_url}/api/v1/repos/#{repo_path}",
+        headers: auth_header(token))
+
+      if !resp.respond_to?(:status) || resp.status == 404
+        # Create it
+        resp = api_post("#{base_url}/api/v1/orgs/channels/repos", {
+          name: channel,
+          description: "Shared repo for ##{channel}",
+          private: true,
+          auto_init: true,
+          default_branch: "main"
+        }, token: token)
+
+        unless resp.respond_to?(:status) && [201, 409].include?(resp.status)
+          Rails.logger.warn "channel repo: failed to create #{repo_path}: #{resp.respond_to?(:status) ? resp.status : resp}"
+          return nil
+        end
+        Rails.logger.info "channel repo: created #{repo_path}"
+      end
+
+      # Grant collaborator access
+      resp = api_put("#{base_url}/api/v1/repos/#{repo_path}/collaborators/#{instance_name}", {
+        permission: "write"
+      }, token: token)
+
+      if resp.respond_to?(:status) && [204, 200, 422].include?(resp.status)
+        Rails.logger.info "channel repo: #{instance_name} granted write on #{repo_path}"
+        { channel_repo: repo_path, channel_repo_url: "ssh://git@#{Surface.host_wg_ip}:2222/#{repo_path}.git" }
+      else
+        Rails.logger.warn "channel repo: failed to grant #{instance_name} on #{repo_path}"
+        nil
       end
     end
 
@@ -40,6 +92,8 @@ class Provisioner
         teardown_token(service, instance_name: instance_name)
       when "valley"
         teardown_valley(instance_name: instance_name)
+      when "vikunja"
+        teardown_vikunja(instance_name: instance_name)
       when "none"
         # Nothing to revoke
       end
@@ -101,7 +155,25 @@ class Provisioner
         end
       end
 
-      { forge_url: base_url, forge_user: instance_name }
+      # Create an API token so the agent can use the Forgejo REST API
+      # (create PRs, request reviews, etc.)
+      api_token = nil
+      resp = api_post("#{base_url}/api/v1/users/#{instance_name}/tokens", {
+        name: "neoclaw-session",
+        scopes: ["all"]
+      }, token: token)
+
+      if resp.respond_to?(:status) && [200, 201].include?(resp.status)
+        data = JSON.parse(resp.body, symbolize_names: true)
+        api_token = data[:sha1] || data[:token]
+        Rails.logger.info "forgejo: API token created for #{instance_name}"
+      else
+        Rails.logger.warn "forgejo: API token creation failed for #{instance_name}"
+      end
+
+      result = { forge_url: base_url, forge_user: instance_name }
+      result[:api_token] = api_token if api_token
+      result
     end
 
     def teardown_forgejo(instance_name:)
@@ -170,6 +242,36 @@ class Provisioner
       api_delete("#{Surface.valley_token_url}/token/#{valley_name}")
     rescue => e
       Rails.logger.warn "valley: token revocation failed for #{valley_name}: #{e.message}"
+    end
+
+    # ----------------------------------------------------------------
+    # Vikunja — token via the vikunja-token-service on the host
+    #
+    # Same pattern as Valley: a host-side token service creates API
+    # tokens via Vikunja's temp-password→JWT→PUT /tokens flow.
+    # The token service handles the complexity; we just POST.
+    # ----------------------------------------------------------------
+
+    def provision_vikunja(instance_name:)
+      identity = instance_name.split("-").first
+
+      resp = api_post("#{Surface.vikunja_token_url}/token/#{identity}", {})
+
+      if resp.respond_to?(:status) && resp.status == 200
+        data = JSON.parse(resp.body, symbolize_names: true)
+        Rails.logger.info "vikunja: token generated for #{identity}"
+        { token: data[:token], url: Surface.vikunja_url, project_id: data[:project_id] }
+      else
+        Rails.logger.warn "vikunja: token generation failed for #{identity}"
+        { url: Surface.vikunja_url }
+      end
+    end
+
+    def teardown_vikunja(instance_name:)
+      identity = instance_name.split("-").first
+      api_delete("#{Surface.vikunja_token_url}/token/#{identity}")
+    rescue => e
+      Rails.logger.warn "vikunja: token revocation failed for #{identity}: #{e.message}"
     end
 
     # ----------------------------------------------------------------

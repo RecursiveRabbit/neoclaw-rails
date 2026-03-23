@@ -23,6 +23,7 @@ require "uri"
 require "base64"
 
 WORKSPACE   = "/workspace"
+IDENTITY_DIR = "/identity"
 SPAWN_FILE  = "/run/secrets/spawn.json"
 RELAY_PORT  = 9300
 HEALTH_INTERVAL = 30
@@ -85,6 +86,7 @@ class Relay
   end
 
   BATON_PATH_TEMPLATE = "#{WORKSPACE}/sessions/%s/baton.json"
+  IDENTITY_BATON_PATH_TEMPLATE = "#{IDENTITY_DIR}/sessions/%s/baton.json"
 
   def boot_claude_code
     if File.exist?(File.join(WORKSPACE, ".git"))
@@ -101,15 +103,37 @@ class Relay
     else
       # Cold boot — three prompts based on boot state.
       clone_url = boot_clone_url
-      baton_path = BATON_PATH_TEMPLATE % @channel
+      baton_path = @spawn[:channel_repo] ?
+        IDENTITY_BATON_PATH_TEMPLATE % @channel :
+        BATON_PATH_TEMPLATE % @channel
 
-      preamble = [
-        "You have just been instantiated as #{@identity} in channel ##{@channel}.",
-        "Your workspace is empty. Your first act is to clone your repo:",
-        "  git clone #{clone_url} #{WORKSPACE}",
-        "Then read #{WORKSPACE}/identity.json to learn who you are.",
-        "Push your work before you go.",
-      ]
+      channel_repo = @spawn[:channel_repo]
+
+      if channel_repo
+        # Two repos: personal identity repo + shared project repo
+        preamble = [
+          "You have just been instantiated as #{@identity} in channel ##{@channel}.",
+          "",
+          "Clone your personal repo first:",
+          "  git clone #{clone_url} #{IDENTITY_DIR}",
+          "Read #{IDENTITY_DIR}/identity.json to learn who you are.",
+          "",
+          "Then clone the project repo:",
+          "  git clone #{channel_repo[:channel_repo_url]} #{WORKSPACE}",
+          "#{IDENTITY_DIR} is your personal repo — identity, baton, sessions.",
+          "#{WORKSPACE} is the shared project — all agents in ##{@channel} collaborate here.",
+          "Do your work in #{WORKSPACE}. Push both repos before you go.",
+        ]
+      else
+        # Single repo: personal workspace only
+        preamble = [
+          "You have just been instantiated as #{@identity} in channel ##{@channel}.",
+          "Your workspace is empty. Clone your repo:",
+          "  git clone #{clone_url} #{WORKSPACE}",
+          "Then read #{WORKSPACE}/identity.json to learn who you are.",
+          "Push your work before you go.",
+        ]
+      end
 
       case @boot_state
       when "fresh"
@@ -366,8 +390,8 @@ class Relay
       })
     end
 
-    trap("INT") { server.shutdown }
-    trap("TERM") { server.shutdown }
+    trap("INT") { cleanup_mcp_processes; server.shutdown }
+    trap("TERM") { cleanup_mcp_processes; server.shutdown }
 
     log "Relay listening on port #{RELAY_PORT}"
     server.start
@@ -378,7 +402,9 @@ class Relay
   # ==================================================================
 
   def handle_signal(signal)
-    baton_path = BATON_PATH_TEMPLATE % @channel
+    baton_path = @spawn[:channel_repo] ?
+      IDENTITY_BATON_PATH_TEMPLATE % @channel :
+      BATON_PATH_TEMPLATE % @channel
     case signal.to_s
     when "freeze"
       narrate "Agent entering idle status..."
@@ -414,7 +440,29 @@ class Relay
       log "Claude process #{@claude_pid} terminated"
     end
     @processing = false
+    cleanup_mcp_processes
     post_to_hub("/agent/event", { instance: @instance_name, event: "done_typing" })
+  end
+
+  # Kill orphaned MCP server processes. Claude Code spawns Python MCP
+  # servers as children, but they outlive Claude when it exits. Left
+  # alone they accumulate — one set per invocation that crashed or
+  # was stopped. Tini reaps zombies but doesn't kill orphans.
+  def cleanup_mcp_processes
+    killed = 0
+    Dir.glob("/proc/*/cmdline").each do |f|
+      begin
+        cmdline = File.read(f).tr("\0", " ")
+        next unless cmdline.include?("/opt/mcp/") || cmdline.include?("/opt/mcp-env/")
+        pid = f.split("/")[2].to_i
+        next if pid == Process.pid
+        Process.kill("TERM", pid)
+        killed += 1
+      rescue Errno::ENOENT, Errno::ESRCH, Errno::EACCES
+        # Process already gone or not ours
+      end
+    end
+    log "Cleaned up #{killed} orphaned MCP processes" if killed > 0
   end
 
   def handle_freeze(message)
@@ -423,6 +471,7 @@ class Relay
     @mutex.synchronize { invoke_claude(message) }
 
     prune_and_push_session
+    cleanup_mcp_processes
 
     post_to_manager("/containers/#{@instance_name}/freeze_ready", {})
     log "Signaled FREEZE_READY to Manager"
@@ -454,13 +503,16 @@ class Relay
         pruned = session_data
       end
 
-      sessions_dir = "#{WORKSPACE}/sessions/#{@channel}"
+      # Sessions are personal state — save in the identity repo when
+      # there's a channel repo, otherwise in the workspace.
+      save_root = @spawn[:channel_repo] && Dir.exist?(IDENTITY_DIR) ? IDENTITY_DIR : WORKSPACE
+      sessions_dir = "#{save_root}/sessions/#{@channel}"
       FileUtils.mkdir_p(sessions_dir)
       timestamp = Time.now.strftime("%Y%m%d-%H%M%S")
       session_path = "#{sessions_dir}/#{@instance_name}-#{timestamp}.json"
       File.write(session_path, JSON.pretty_generate(pruned))
 
-      Dir.chdir(WORKSPACE) do
+      Dir.chdir(save_root) do
         system("git", "add", "-A")
         system("git", "commit", "-m", "Session #{@instance_name} #{timestamp}")
         system("git", "push") or log("Push failed — session may be lost")

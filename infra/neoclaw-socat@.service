@@ -1,0 +1,14 @@
+[Unit]
+Description=NeoClaw socat forwarder (%i)
+After=network.target wg-quick@nc-host.service
+Requires=wg-quick@nc-host.service
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/neoclaw/socat/%i.conf
+ExecStart=/usr/bin/socat TCP-LISTEN:${PORT},bind=${BIND_ADDR},fork,reuseaddr TCP:${TARGET}
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """
-Vikunja Token Service — generates API tokens for Vikunja users.
+Vikunja Token Service — generates ephemeral API tokens for agent sessions.
 
 Tiny HTTP server on the host WG IP. Only the Manager can reach it.
 
-The flow: set a temp password on the user → login to get a JWT →
-create an API token via the JWT → restore the user's password.
+Tokens are created by inserting directly into Vikunja's SQLite DB with
+PBKDF2-SHA256 hashes (matching Vikunja's own HashToken function). This
+bypasses a bug in Vikunja v2's PUT /tokens endpoint where API-created
+tokens fail verification.
+
+Each token is scoped to a single agent session and purged at teardown.
 
 POST /token/<username>  → generate token, return {"token": "...", "project_id": N}
-DELETE /token/<username> → delete all tokens for user, return {"ok": true}
+DELETE /token/<username> → delete neoclaw-* tokens for user, return {"ok": true}
 GET /health             → {"status": "ok"}
 
 Usage:
@@ -16,41 +20,41 @@ Usage:
     # Listens on 10.0.0.2:8890
 """
 
+import hashlib
+import binascii
 import json
 import os
 import secrets
 import sqlite3
+import string
 import sys
-import urllib.request
-import urllib.error
 from datetime import datetime, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-import bcrypt
-
 VIKUNJA_DB = os.environ.get("VIKUNJA_DB", "/opt/vikunja/db/vikunja.db")
-VIKUNJA_API = os.environ.get("VIKUNJA_API", "http://127.0.0.1:3456/api/v1")
 LISTEN_HOST = os.environ.get("LISTEN_HOST", "10.0.0.2")
 LISTEN_PORT = int(os.environ.get("LISTEN_PORT", "8890"))
 
-# Provisioning password — used temporarily, never exposed
-PROVISION_PASSWORD = "neoclaw-provision-" + secrets.token_hex(8)
+# Full permissions matching the working tokens — agents need broad access
+# to manage their own tasks, comments, labels, and project views.
+DEFAULT_PERMISSIONS = json.dumps({
+    "tasks": ["create", "read_all", "read_one", "update", "delete", "read"],
+    "projects": ["read_all", "read_one"],
+    "tasks_comments": ["create", "read_all", "read_one", "update", "delete"],
+    "labels": ["create", "read_all", "read_one", "update", "delete"],
+    "tasks_labels": ["create", "read_all", "delete"],
+})
 
 
-def vikunja_api(method, path, body=None, token=None):
-    """Make a request to the Vikunja API."""
-    url = f"{VIKUNJA_API}{path}"
-    data = json.dumps(body).encode() if body else None
-    req = urllib.request.Request(url, data=data, method=method)
-    req.add_header("Content-Type", "application/json")
-    if token:
-        req.add_header("Authorization", f"Bearer {token}")
-    try:
-        resp = urllib.request.urlopen(req)
-        return json.loads(resp.read())
-    except urllib.error.HTTPError as e:
-        body = e.read().decode()
-        raise Exception(f"Vikunja API {method} {path}: {e.code} {body}")
+def hash_token(token: str, salt: str) -> str:
+    """Replicate Vikunja's HashToken: PBKDF2-SHA256, 10000 iterations, 50 bytes."""
+    dk = hashlib.pbkdf2_hmac("sha256", token.encode(), salt.encode(), 10000, dklen=50)
+    return binascii.hexlify(dk).decode()
+
+
+def generate_salt(length: int = 10) -> str:
+    """Generate a random alphanumeric salt (matching Vikunja's salt format)."""
+    return "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(length))
 
 
 class TokenHandler(BaseHTTPRequestHandler):
@@ -62,53 +66,47 @@ class TokenHandler(BaseHTTPRequestHandler):
         db = sqlite3.connect(VIKUNJA_DB)
         try:
             # Find the user
-            row = db.execute("SELECT id, password FROM users WHERE username=?", (username,)).fetchone()
+            row = db.execute("SELECT id FROM users WHERE username=?", (username,)).fetchone()
             if not row:
                 self._json(404, {"error": f"no Vikunja user '{username}'"})
                 return
 
-            user_id, original_hash = row
+            user_id = row[0]
 
-            # Set a temporary password so we can login via the API
-            temp_hash = bcrypt.hashpw(PROVISION_PASSWORD.encode(), bcrypt.gensalt()).decode()
-            db.execute("UPDATE users SET password=? WHERE id=?", (temp_hash, user_id))
+            # Generate token components
+            token_raw = secrets.token_hex(20)  # 40 hex chars
+            token = f"tk_{token_raw}"
+            salt = generate_salt()
+            token_hash = hash_token(token, salt)
+            last_eight = token[-8:]
+            title = f"neoclaw-{username}-{secrets.token_hex(4)}"
+            expires = (datetime.utcnow() + timedelta(days=365)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+            # Insert directly into the DB
+            db.execute(
+                """INSERT INTO api_tokens
+                   (title, token_salt, token_hash, token_last_eight, permissions, expires_at, created, owner_id)
+                   VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?)""",
+                (title, salt, token_hash, last_eight, DEFAULT_PERMISSIONS, expires, user_id),
+            )
             db.commit()
 
-            try:
-                # Login to get a JWT
-                jwt_resp = vikunja_api("POST", "/login", {
-                    "username": username,
-                    "password": PROVISION_PASSWORD
-                })
-                jwt = jwt_resp.get("token")
-                if not jwt:
-                    raise Exception(f"no token in login response: {jwt_resp}")
+            # Get the user's default project
+            project_row = db.execute(
+                "SELECT id FROM projects WHERE owner_id=? ORDER BY id LIMIT 1", (user_id,)
+            ).fetchone()
+            project_id = project_row[0] if project_row else 1
 
-                # Create an API token
-                token_resp = vikunja_api("PUT", "/tokens", {
-                    "title": f"neoclaw-{username}-{secrets.token_hex(4)}",
-                    "permissions": {"tasks": ["read", "create", "update"]},
-                    "expires_at": (datetime.utcnow() + timedelta(days=365)).strftime("%Y-%m-%dT%H:%M:%SZ")
-                }, token=jwt)
+            self._json(200, {
+                "token": token,
+                "username": username,
+                "project_id": project_id,
+            })
+            self.log_message("token generated for %s (project %s)", username, project_id)
 
-                api_token = token_resp.get("token", "")
-
-                # Get the user's default project
-                projects = vikunja_api("GET", "/projects", token=jwt)
-                project_id = projects[0]["id"] if projects else 1
-
-                self._json(200, {
-                    "token": api_token,
-                    "username": username,
-                    "project_id": project_id
-                })
-                self.log_message("token generated for %s (project %s)", username, project_id)
-
-            finally:
-                # Always restore the original password
-                db.execute("UPDATE users SET password=? WHERE id=?", (original_hash, user_id))
-                db.commit()
-
+        except Exception as e:
+            self._json(500, {"error": str(e)})
+            self.log_message("ERROR generating token for %s: %s", username, e)
         finally:
             db.close()
 
@@ -125,12 +123,13 @@ class TokenHandler(BaseHTTPRequestHandler):
                 return
 
             user_id = row[0]
-            # Delete all API tokens for this user that start with "neoclaw-"
-            db.execute("DELETE FROM api_tokens WHERE owner_id=? AND title LIKE 'neoclaw-%'", (user_id,))
+            cursor = db.execute(
+                "DELETE FROM api_tokens WHERE owner_id=? AND title LIKE 'neoclaw-%'", (user_id,)
+            )
             db.commit()
 
-            self._json(200, {"ok": True, "username": username})
-            self.log_message("tokens revoked for %s", username)
+            self._json(200, {"ok": True, "username": username, "deleted": cursor.rowcount})
+            self.log_message("tokens revoked for %s (%d deleted)", username, cursor.rowcount)
         finally:
             db.close()
 

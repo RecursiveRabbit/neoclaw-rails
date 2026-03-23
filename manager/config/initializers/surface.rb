@@ -139,6 +139,10 @@ module Surface
       ENV.fetch("VIKUNJA_URL", "http://#{host_wg_ip}:3456")
     end
 
+    def vikunja_token_url
+      ENV.fetch("VIKUNJA_TOKEN_URL", "http://#{host_wg_ip}:8890")
+    end
+
     def vikunja_admin_token
       ENV.fetch("VIKUNJA_ADMIN_TOKEN", "")
     end

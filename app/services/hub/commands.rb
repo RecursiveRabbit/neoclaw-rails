@@ -52,6 +52,7 @@ module Hub
       resolving = RouteCache.resolving_count
       manager = ManagerClient.status
       lines = ["Hub: #{route_count} routes, #{resolving} resolving"]
+      lines << "Presence: #{PresenceManager.running? ? 'active' : 'stopped'}"
       if manager
         lines << "Manager: #{manager[:pods]} pods"
       else
