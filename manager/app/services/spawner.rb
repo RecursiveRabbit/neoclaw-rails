@@ -182,7 +182,10 @@ class Spawner
 
       # New agent — allocate from pool
       # Check both Router state and local container records
-      used = Container.where.not(state: "inactive").pluck(:wg_address).compact.to_set
+      used = Container.pluck(:wg_address).compact.to_set
+      RouterClient.all_agents.each_value do |agent|
+        used << agent[:ip] if agent[:ip]
+      end
       (1..255).each do |third|
         (1..254).each do |fourth|
           ip = "10.0.#{third}.#{fourth}"

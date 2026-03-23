@@ -16,12 +16,14 @@ module Hub
           return Commands.execute(command, room_id: room_id, slug: slug)
         end
 
-        # Use Matrix m.mentions to find the target — works regardless of
+        # Use Matrix m.mentions to find targets — works regardless of
         # where in the message the @mention appears.
-        target = extract_mention(matrix_event)
+        targets = extract_mentions(matrix_event)
 
-        if target
-          deliver_to(target, room_id: room_id, slug: slug, sender: sender, content: body, attachments: attachments)
+        if targets.any?
+          targets.each do |target|
+            deliver_to(target, room_id: room_id, slug: slug, sender: sender, content: body, attachments: attachments)
+          end
         else
           route_to_listeners(room_id: room_id, slug: slug, sender: sender, content: body, attachments: attachments)
         end
@@ -168,15 +170,14 @@ module Hub
         nil
       end
 
-      # Extract mentioned identity from m.mentions.user_ids.
-      # Returns the first mentioned identity we know, or nil.
-      def extract_mention(event)
+      # Extract all mentioned identities from m.mentions.user_ids.
+      # Returns an array of known identity names (may be empty).
+      def extract_mentions(event)
         user_ids = event.dig("content", "m.mentions", "user_ids") || []
-        user_ids.each do |uid|
+        user_ids.filter_map do |uid|
           name = uid.split(":").first&.delete_prefix("@")
-          return name if name && Identities.exists?(name)
+          name if name && Identities.exists?(name)
         end
-        nil
       end
 
       def extract_sender(event)

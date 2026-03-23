@@ -71,6 +71,16 @@ class RouterClient
       nil
     end
 
+    # List all agents registered on the Router.
+    def all_agents
+      resp = get("/agents")
+      return {} unless resp.respond_to?(:status) && resp.status == 200
+      data = JSON.parse(resp.body, symbolize_names: true)
+      data[:agents] || {}
+    rescue
+      {}
+    end
+
     # Router health.
     def health
       resp = get("/health")
