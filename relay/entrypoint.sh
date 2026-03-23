@@ -55,7 +55,12 @@ ruby -rjson -e '
 ' "$SPAWN_FILE"
 
 chmod 600 /etc/wireguard/wg0.conf
-wg-quick up wg0
+if ! wg-quick up wg0 2>&1; then
+    log "FATAL: wireguard failed to start"
+    # Don't try to reach Manager without WG — it must not be reachable
+    # outside the mesh. Manager's watchdog will detect the failed pod.
+    exit 1
+fi
 log "wireguard up (${WG_ADDRESS})"
 
 # --- Claude credentials ---

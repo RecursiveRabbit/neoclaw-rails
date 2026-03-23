@@ -36,6 +36,7 @@ class Relay
     @channel = @spawn[:channel]
     @model = @spawn[:model] || "claude-opus-4-6"
     @boot_state = @spawn[:boot_state] || "fresh"
+    @context_limit = detect_context_limit
     @hub_ip = detect_hub_ip
     @manager_ip = detect_manager_ip
     @running = true
@@ -262,14 +263,14 @@ class Relay
             if event.dig(:message, :usage)
               input_t = event.dig(:message, :usage, :input_tokens) || 0
               output_t = event.dig(:message, :usage, :output_tokens) || 0
-              @context_usage = (input_t + output_t).to_f / 200_000
+              @context_usage = (input_t + output_t).to_f / @context_limit
             end
 
           when "result"
             if event[:usage]
               input_t = event.dig(:usage, :input_tokens) || 0
               output_t = event.dig(:usage, :output_tokens) || 0
-              @context_usage = (input_t + output_t).to_f / 200_000
+              @context_usage = (input_t + output_t).to_f / @context_limit
             end
           end
 
@@ -342,6 +343,7 @@ class Relay
         @message_count += 1
 
         # Save attachments to disk so Claude can read them
+        log "Message from #{sender}: #{attachments.size} attachment(s)" if attachments.any?
         saved_paths = save_attachments(attachments)
 
         # Build prompt with attachment references
@@ -623,14 +625,29 @@ class Relay
     log "POST #{url} failed: #{e.message}" unless silent
   end
 
+  # Context window size for the active model. Used to compute context_usage
+  # as a 0.0–1.0 ratio for health reports. Reads from spawn.json if set,
+  # otherwise looks up by model name.
+  MODEL_CONTEXT_LIMITS = {
+    "claude-opus-4-6"     => 200_000,
+    "claude-sonnet-4-6"   => 200_000,
+    "claude-haiku-4-5"    => 200_000,
+  }.freeze
+
+  def detect_context_limit
+    # Explicit override in spawn.json takes priority
+    limit = @spawn[:context_limit]
+    return limit if limit.is_a?(Integer) && limit > 0
+
+    MODEL_CONTEXT_LIMITS[@model] || 200_000
+  end
+
   def detect_hub_ip
-    # Hub runs on the host at 10.0.0.2 in the new topology
-    "10.0.0.2"
+    @spawn.dig(:network, :hub_ip) || "10.0.0.2"
   end
 
   def detect_manager_ip
-    # Manager is at 10.0.0.3
-    "10.0.0.3"
+    @spawn.dig(:network, :manager_ip) || "10.0.0.3"
   end
 
   # ==================================================================
