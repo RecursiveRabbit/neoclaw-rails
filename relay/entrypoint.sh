@@ -69,12 +69,12 @@ CLAUDE_DIR="${AGENT_HOME}/.claude"
 mkdir -p "$CLAUDE_DIR"
 
 if [ -f /run/secrets/claude/.credentials.json ]; then
-    # Symlink to the directory bind mount. Directory mounts reflect
-    # file changes on the host — credentials stay live as Claude Code
-    # refreshes them.
-    ln -sf /run/secrets/claude/.credentials.json "${CLAUDE_DIR}/.credentials.json"
-    chown -h agent:agent "${CLAUDE_DIR}/.credentials.json"
-    log "claude credentials linked (live mount)"
+    # Copy credentials into agent-owned home. The mounted secret may be
+    # root:root 600 and unreadable by `agent` when bind-mounted.
+    cp /run/secrets/claude/.credentials.json "${CLAUDE_DIR}/.credentials.json"
+    chmod 600 "${CLAUDE_DIR}/.credentials.json"
+    chown agent:agent "${CLAUDE_DIR}/.credentials.json"
+    log "claude credentials copied"
 fi
 
 # --- Claude settings: auto-accept all permissions ---
@@ -158,8 +158,8 @@ ruby -rjson -e '
   config = { mcpServers: {} }
   python = "/opt/mcp-env/bin/python3"
 
-  # SSH — include if agent has an SSH key
-  if File.exist?("#{agent_home}/.ssh/id_ed25519")
+  # SSH — include only if explicitly provisioned for this agent
+  if svc[:ssh] && File.exist?("#{agent_home}/.ssh/id_ed25519")
     config[:mcpServers][:ssh] = {
       command: python,
       args: ["/opt/mcp/ssh/server.py"],
@@ -172,14 +172,21 @@ ruby -rjson -e '
     }
   end
 
-  # Vikunja — include if provisioned
-  if svc[:vikunja]
+  # Vikunja — include only when token is provisioned
+  if svc[:vikunja] && !svc.dig(:vikunja, :token).to_s.empty?
+    vik_base = svc.dig(:vikunja, :url).to_s
+    vik_api = if !vik_base.empty?
+      "#{vik_base.sub(%r{/$}, "")}/api/v1"
+    else
+      "http://#{host_ip}:3456/api/v1"
+    end
+
     config[:mcpServers][:vikunja] = {
       command: python,
       args: ["/opt/mcp/vikunja/server.py"],
       env: {
-        VIKUNJA_API_URL: "http://#{host_ip}:3456/api/v1",
-        VIKUNJA_TOKEN: (svc.dig(:vikunja, :token) || "").to_s,
+        VIKUNJA_API_URL: vik_api,
+        VIKUNJA_TOKEN: svc.dig(:vikunja, :token).to_s,
         VIKUNJA_PROJECT_ID: (svc.dig(:vikunja, :project_id) || "1").to_s
       }
     }
@@ -187,11 +194,18 @@ ruby -rjson -e '
 
   # Valley — include if provisioned
   if svc[:valley]
+    valley_base = svc.dig(:valley, :url).to_s
+    valley_api = if !valley_base.empty?
+      "#{valley_base.sub(%r{/$}, "")}/api/command"
+    else
+      "http://#{host_ip}:8888/api/command"
+    end
+
     config[:mcpServers][:valley] = {
       command: python,
       args: ["/opt/mcp/valley/server.py"],
       env: {
-        VALLEY_API: "http://#{host_ip}:8888/api/command",
+        VALLEY_API: valley_api,
         VALLEY_TOKEN: (svc.dig(:valley, :token) || "").to_s
       }
     }
@@ -226,7 +240,7 @@ ruby -rjson -e '
       command: python,
       args: ["/opt/mcp/matrix/server.py"],
       env: {
-        MATRIX_HOMESERVER: "http://#{host_ip}:8008",
+        MATRIX_HOMESERVER: (svc.dig(:matrix, :homeserver).to_s.empty? ? "http://#{host_ip}:8008" : svc.dig(:matrix, :homeserver).to_s),
         MATRIX_TOKEN: svc.dig(:matrix, :token).to_s,
         MATRIX_USER_ID: svc.dig(:matrix, :user_id).to_s
       }

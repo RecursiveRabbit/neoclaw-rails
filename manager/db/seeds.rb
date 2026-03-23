@@ -15,7 +15,7 @@ BRIDGE_GATEWAY = "10.88.0.1"
     provision_config: { service_port: 3000 } },
 
   { name: "ssh",
-    provision_type: "none",     has_own_auth: true,
+    provision_type: "ssh_key",  has_own_auth: true,
     provision_config: { service_port: 22 } },
 
   { name: "valley",
@@ -72,46 +72,21 @@ end
 
 # --- Agent Configs ---
 [
-  { identity: "hopper",   repo: "hopper/workspace",   model: "claude-opus-4-6",   singleton: true,
-    base_services: %w[forgejo ssh valley vikunja] },
-  { identity: "silas",    repo: "silas/workspace",     model: "claude-opus-4-6",   singleton: false,
-    base_services: %w[forgejo ssh valley vikunja] },
-  { identity: "margaux",  repo: "margaux/workspace",   model: "claude-opus-4-6",   singleton: false,
-    base_services: %w[forgejo ssh valley vikunja],
-    channel_overrides: { "art" => %w[comfyui] } },
-  { identity: "kael",     repo: "kael/workspace",      model: "claude-opus-4-6",   singleton: false,
-    base_services: %w[forgejo ssh valley] },
-  { identity: "wren",     repo: "wren/workspace",      model: "claude-sonnet-4-6", singleton: false,
-    base_services: %w[forgejo ssh valley] },
-  { identity: "ember",    repo: "ember/workspace",     model: "claude-sonnet-4-6", singleton: false,
-    base_services: %w[forgejo ssh] },
-  { identity: "parallax", repo: "parallax/workspace",  model: "claude-opus-4-6",   singleton: false,
-    base_services: %w[forgejo ssh valley],
-    channel_overrides: { "art" => %w[comfyui] } },
-  { identity: "fletcher", repo: "fletcher/workspace",  model: "claude-sonnet-4-6", singleton: false,
-    base_services: %w[forgejo ssh] },
-  { identity: "census",   repo: "census/workspace",    model: "claude-sonnet-4-6", singleton: false,
-    base_services: %w[forgejo ssh] },
-  { identity: "voss",     repo: "voss/workspace",      model: "claude-opus-4-6",   singleton: false,
-    base_services: %w[forgejo ssh valley] },
+  { identity: "rook",     repo: "rook/workspace",      model: "claude-sonnet-4-5", singleton: true,
+    base_services: %w[forgejo ssh valley vikunja matrix] },
+  { identity: "elias",    repo: "elias/workspace",     model: "claude-opus-4-6",   singleton: false,
+    base_services: %w[forgejo ssh valley vikunja matrix] },
+  { identity: "ellis",    repo: "ellis/workspace",     model: "claude-sonnet-4-6", singleton: false,
+    base_services: %w[forgejo valley vikunja matrix] },
+  { identity: "morgan",   repo: "morgan/workspace",    model: "claude-sonnet-4-6", singleton: false,
+    base_services: %w[forgejo valley matrix] },
+  { identity: "iris",     repo: "iris/workspace",      model: "claude-opus-4-6",   singleton: false,
+    base_services: %w[forgejo valley vikunja matrix] },
 ].each do |attrs|
   AgentConfig.find_or_create_by!(identity: attrs[:identity]) do |c|
     c.assign_attributes(attrs.merge(idle_timeout: 480))
   end
   puts "  config: #{attrs[:identity]}"
-end
-
-# --- Agent Room Overrides ---
-# Margaux and Parallax get comfyui in #art
-[
-  { identity: "margaux",  channel: "art", extra_services: %w[comfyui] },
-  { identity: "parallax", channel: "art", extra_services: %w[comfyui] },
-].each do |attrs|
-  config = AgentConfig.find_by!(identity: attrs[:identity])
-  AgentRoomConfig.find_or_create_by!(agent_config: config, channel: attrs[:channel]) do |arc|
-    arc.extra_services = attrs[:extra_services]
-  end
-  puts "  override: #{attrs[:identity]} in ##{attrs[:channel]}"
 end
 
 puts "\nSeeded: #{ServiceType.count} services, #{AgentConfig.count} configs, #{RoomConfig.count} rooms."
