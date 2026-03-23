@@ -119,12 +119,20 @@ class TransactionsController < ApplicationController
     return [] unless MEDIA_MSGTYPES.include?(msgtype)
 
     mxc_url = content["url"]
-    return [] unless mxc_url
+    unless mxc_url
+      Rails.logger.warn "Attachment: #{msgtype} event has no mxc URL"
+      return []
+    end
 
+    Rails.logger.info "Attachment: downloading #{msgtype} from #{mxc_url}"
     media = Hub::Matrix.download_media(mxc_url)
-    return [] unless media
+    unless media
+      Rails.logger.error "Attachment: download_media returned nil for #{mxc_url}"
+      return []
+    end
 
     filename = content["body"] || media[:filename]
+    Rails.logger.info "Attachment: #{filename} (#{media[:content_type]}, #{media[:data]&.bytesize} bytes)"
     [{
       filename: filename,
       content_type: media[:content_type],

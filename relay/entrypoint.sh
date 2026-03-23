@@ -55,7 +55,16 @@ ruby -rjson -e '
 ' "$SPAWN_FILE"
 
 chmod 600 /etc/wireguard/wg0.conf
-wg-quick up wg0
+if ! wg-quick up wg0 2>&1; then
+    log "FATAL: wireguard failed to start"
+    # Try to report failure to Manager before dying.
+    # Manager is on the podman bridge network (not WG), so this may reach it.
+    curl -sf -X POST "http://10.88.0.20:9200/containers/${INSTANCE}/error" \
+        -H "Content-Type: application/json" \
+        -d "{\"error\": \"WireGuard failed to start\", \"instance\": \"${INSTANCE}\"}" \
+        2>/dev/null || true
+    exit 1
+fi
 log "wireguard up (${WG_ADDRESS})"
 
 # --- Claude credentials ---
