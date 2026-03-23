@@ -3,7 +3,7 @@
 # not at runtime.
 #
 # The Manager has the full config (model, repo, services).
-# The Hub needs only: name, singleton, listeners.
+# The Hub needs only: name and singleton flag.
 
 module Hub
   class Identities
@@ -21,11 +21,6 @@ module Hub
         identity = config[name]
         return nil unless identity
         identity[:singleton] ? name : "#{name}-#{channel}"
-      end
-
-      # All identities listening on a channel (unaddressed messages route here).
-      def listeners_for(channel)
-        config.select { |_, cfg| cfg[:listeners]&.include?(channel) }.keys
       end
 
       def count
@@ -49,8 +44,7 @@ module Hub
         data.each_with_object({}) do |(name, values), hash|
           v = values || {}
           hash[name.to_s] = {
-            singleton: !!v["singleton"],
-            listeners: Array(v["listeners"]).map(&:to_s)
+            singleton: !!v["singleton"]
           }
         end
       end
