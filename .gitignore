@@ -15,3 +15,5 @@ infra/wireguard/keys/*.key
 # Manager runtime artifacts
 manager/log/
 manager/tmp/
+manager/vendor/
+manager/.bundle/
