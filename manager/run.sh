@@ -18,17 +18,15 @@ HOST_SPAWN_DIR="/var/lib/neoclaw/spawn"
 HOST_SSH_KEYS_DIR="/var/lib/neoclaw/sftp-keys"
 HOST_DB_DIR="/var/lib/neoclaw/manager-db"
 HOST_CLAUDE_CREDS="/var/lib/neoclaw/secrets/claude-credentials.json"
-HOST_CLAUDE_DIR="${HOST_CLAUDE_DIR:-/home/rook/.claude}"
 HOST_WG_CONF="/var/lib/neoclaw/manager-wg/wg0.conf"
-PODMAN_SOCKET="${PODMAN_SOCKET:-/run/user/1000/podman/podman.sock}"
+PODMAN_SOCKET="/run/podman/podman.sock"
 
 FORGEJO_ADMIN_TOKEN="${FORGEJO_ADMIN_TOKEN:-1f0759db1301cd07f336c119ef0cd8287984433e}"
 MATRIX_AS_TOKEN="${MATRIX_AS_TOKEN:-}"
 MATRIX_SERVER_NAME="${MATRIX_SERVER_NAME:-localhost}"
 MATRIX_HOMESERVER_URL="${MATRIX_HOMESERVER_URL:-http://10.0.0.2:8008}"
 ROUTER_PUBKEY=$(podman exec wg-router wg show wg0 public-key 2>/dev/null) || { echo "[manager-run] FATAL: can't reach wg-router"; exit 1; }
-ROUTER_ENDPOINT="${ROUTER_ENDPOINT:-host.containers.internal:51820}"
-ROUTER_URL="${ROUTER_URL:-http://10.0.0.1:8080}"
+ROUTER_ENDPOINT="10.88.0.20:51820"
 
 log() { echo "[manager-run] $*"; }
 
@@ -54,14 +52,12 @@ podman run -d \
     -e HOST_SPAWN_DIR="$HOST_SPAWN_DIR" \
     -e HOST_SSH_KEYS_DIR="$HOST_SSH_KEYS_DIR" \
     -e HOST_CLAUDE_CREDENTIALS="$HOST_CLAUDE_CREDS" \
-    -e HOST_CLAUDE_DIR="$HOST_CLAUDE_DIR" \
     -e FORGEJO_ADMIN_TOKEN="$FORGEJO_ADMIN_TOKEN" \
     -e MATRIX_AS_TOKEN="$MATRIX_AS_TOKEN" \
     -e MATRIX_SERVER_NAME="$MATRIX_SERVER_NAME" \
     -e MATRIX_HOMESERVER_URL="$MATRIX_HOMESERVER_URL" \
     -e ROUTER_PUBKEY="$ROUTER_PUBKEY" \
     -e ROUTER_ENDPOINT="$ROUTER_ENDPOINT" \
-    -e ROUTER_URL="$ROUTER_URL" \
     "$IMAGE"
 
 log "started. checking health..."
