@@ -33,8 +33,37 @@ module Hub
       end
 
       # Identity list — who gets a /sync loop.
-      # TODO: query Manager for this instead of env var.
+      # Queries Manager at first call, caches for the process lifetime.
+      # Falls back to NEOCLAW_IDENTITIES env var if Manager is unreachable.
       def identities
+        @identities ||= fetch_identities
+      end
+
+      def reload_identities!
+        @identities = nil
+      end
+
+      private
+
+      def fetch_identities
+        response = HTTPX.with(timeout: { operation_timeout: 10 })
+          .get("#{manager_url}/identities")
+
+        if response.status == 200
+          data = JSON.parse(response.body, symbolize_names: true)
+          names = data.map { |entry| entry[:name] }
+          Rails.logger.info "Config: loaded #{names.size} identities from Manager"
+          names
+        else
+          Rails.logger.warn "Config: Manager returned #{response.status}, falling back to env var"
+          env_identities
+        end
+      rescue => e
+        Rails.logger.warn "Config: Manager unreachable (#{e.message}), falling back to env var"
+        env_identities
+      end
+
+      def env_identities
         ENV.fetch("NEOCLAW_IDENTITIES", "").split(",").map(&:strip).reject(&:empty?)
       end
     end

@@ -35,6 +35,14 @@ class ApiController < ApplicationController
     render json: { ok: true }
   end
 
+  # GET /identities
+  def identities
+    configs = AgentConfig.order(:identity).map { |c|
+      { name: c.identity, singleton: c.singleton }
+    }
+    render json: configs
+  end
+
   # GET /status
   def status
     memory_used = Podman.agent_memory_usage

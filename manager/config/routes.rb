@@ -34,9 +34,10 @@ Rails.application.routes.draw do
   # Hub → Manager API
   # =================================================================
 
-  post "/resolve", to: "api#resolve"
-  post "/release", to: "api#release"
-  get  "/status",  to: "api#status"
+  post "/resolve",    to: "api#resolve"
+  post "/release",    to: "api#release"
+  get  "/status",     to: "api#status"
+  get  "/identities", to: "api#identities"
 
   # =================================================================
   # Relay → Manager
