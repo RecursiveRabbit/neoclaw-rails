@@ -14,6 +14,16 @@ class HubClient
         detail: "#{event}: #{e.message}")
     end
 
+    def post_message(channel:, body:)
+      http.post(
+        "#{Surface.hub_url}/neobot/message",
+        json: { channel: channel, body: body }
+      )
+    rescue => e
+      Rails.logger.error "Hub post_message failed: #{e.message}"
+      AuditLog.record("NEOBOT_DELIVERY_FAILED", detail: "#{channel}: #{e.message}")
+    end
+
     private
 
     def http

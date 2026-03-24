@@ -12,6 +12,9 @@ gem "tailwindcss-rails"
 # HTTP client for Hub callbacks, service provisioning, relay signals
 gem "httpx"
 
+# Cron expression parsing for scheduled messages
+gem "fugit"
+
 gem "solid_cache"
 gem "solid_queue"
 gem "solid_cable"
