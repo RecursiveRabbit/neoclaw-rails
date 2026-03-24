@@ -42,7 +42,9 @@ class CallbacksController < ApplicationController
     Hub::Matrix.set_typing(route[:identity], route[:room_id], false)
     Hub::Matrix.set_presence(route[:identity], "unavailable")
     Hub::Matrix.notify(route[:room_id], "#{instance} session ended (#{reason}).")
-    Hub::RouteCache.delete(instance)
+    # Clear all routes sharing this IP — singletons may have multiple
+    # aliases (hopper-general, hopper-art) pointing at the same pod.
+    Hub::RouteCache.delete_by_ip(route[:ip])
   end
 
   def handle_sunset_warning(instance, data)
@@ -62,6 +64,6 @@ class CallbacksController < ApplicationController
     Hub::Matrix.set_typing(route[:identity], route[:room_id], false)
     Hub::Matrix.set_presence(route[:identity], "unavailable")
     Hub::Matrix.notify(route[:room_id], "#{instance} crashed. Session preserved.")
-    Hub::RouteCache.delete(instance)
+    Hub::RouteCache.delete_by_ip(route[:ip])
   end
 end

@@ -81,8 +81,9 @@ module Hub
       end
 
       # Fetch room name from Synapse.
-      def room_name(room_id)
-        response = room_state(room_id, "m.room.name")
+      # as_user: "@name:server" to query as a specific puppet.
+      def room_name(room_id, as_user: nil)
+        response = room_state(room_id, "m.room.name", as_user: as_user)
         return nil unless response&.status == 200
         JSON.parse(response.body)["name"]
       rescue
@@ -90,8 +91,8 @@ module Hub
       end
 
       # Fetch canonical alias for a room.
-      def room_alias(room_id)
-        response = room_state(room_id, "m.room.canonical_alias")
+      def room_alias(room_id, as_user: nil)
+        response = room_state(room_id, "m.room.canonical_alias", as_user: as_user)
         return nil unless response&.status == 200
         JSON.parse(response.body)["alias"]
       rescue
@@ -99,8 +100,8 @@ module Hub
       end
 
       # Fetch joined members of a room. Returns array of localparts.
-      def room_members(room_id)
-        response = room_query(room_id, "joined_members")
+      def room_members(room_id, as_user: nil)
+        response = room_query(room_id, "joined_members", as_user: as_user)
         return [] unless response&.status == 200
         data = JSON.parse(response.body)
         (data["joined"] || {}).keys.map { |uid|
@@ -113,16 +114,15 @@ module Hub
 
       # Fetch recent messages from a room. Returns array of
       # { sender: "name", content: "text" } in chronological order.
-      # Excludes the triggering event if exclude_event_id is given.
-      def recent_messages(room_id, limit: 10, exclude_event_id: nil)
+      def recent_messages(room_id, limit: 10, exclude_event_id: nil, as_user: nil)
         base_path = "/_matrix/client/v3/rooms/#{room_id}/messages?dir=b&limit=#{limit}"
-        response = get(base_path)
+        response = get(base_path, as_user: as_user)
 
-        # Bot not in room — try as each puppet
-        unless response&.status == 200
-          Hub::Identities.send(:config).each_key do |name|
-            user_id = "@#{name}:#{Config.server_name}"
-            response = get("#{base_path}&user_id=#{user_id}")
+        # Fallback: try as each known puppet
+        unless response&.status == 200 || as_user
+          Config.identities.each do |name|
+            uid = "@#{name}:#{Config.server_name}"
+            response = get(base_path, as_user: uid)
             break if response&.status == 200
           end
         end
@@ -155,7 +155,6 @@ module Hub
         return nil unless response&.status == 200
 
         content_type = response.headers["content-type"] || "application/octet-stream"
-        # Extract filename from content-disposition or use media_id
         disposition = response.headers["content-disposition"] || ""
         filename = if disposition =~ /filename="?([^";\s]+)"?/
           $1
@@ -183,28 +182,30 @@ module Hub
 
       private
 
-      # Query room state. If the bot isn't in the room (403), retry as
-      # each puppet identity — one of them is in the room or Synapse
-      # wouldn't have sent us the event.
-      def room_state(room_id, state_type)
-        response = get("/_matrix/client/v3/rooms/#{room_id}/state/#{state_type}")
+      # Query room state, optionally as a specific puppet.
+      def room_state(room_id, state_type, as_user: nil)
+        response = get("/_matrix/client/v3/rooms/#{room_id}/state/#{state_type}", as_user: as_user)
         return response if response&.status == 200
 
-        query_as_puppet(room_id, "state/#{state_type}")
+        return response if as_user
+
+        Config.identities.each do |name|
+          uid = "@#{name}:#{Config.server_name}"
+          response = get("/_matrix/client/v3/rooms/#{room_id}/state/#{state_type}", as_user: uid)
+          return response if response&.status == 200
+        end
+        nil
       end
 
-      # Same pattern for non-state room queries (e.g. joined_members).
-      def room_query(room_id, endpoint)
-        response = get("/_matrix/client/v3/rooms/#{room_id}/#{endpoint}")
+      def room_query(room_id, endpoint, as_user: nil)
+        response = get("/_matrix/client/v3/rooms/#{room_id}/#{endpoint}", as_user: as_user)
         return response if response&.status == 200
 
-        query_as_puppet(room_id, endpoint)
-      end
+        return response if as_user
 
-      def query_as_puppet(room_id, path)
-        Hub::Identities.send(:config).each_key do |name|
-          user_id = "@#{name}:#{Config.server_name}"
-          response = get("/_matrix/client/v3/rooms/#{room_id}/#{path}?user_id=#{user_id}")
+        Config.identities.each do |name|
+          uid = "@#{name}:#{Config.server_name}"
+          response = get("/_matrix/client/v3/rooms/#{room_id}/#{endpoint}", as_user: uid)
           return response if response&.status == 200
         end
         nil
@@ -232,11 +233,12 @@ module Hub
         nil
       end
 
-      def get(path)
-        client.get(
-          "#{Config.synapse_url}#{path}",
-          headers: auth_headers
-        )
+      def get(path, as_user: nil)
+        url = "#{Config.synapse_url}#{path}"
+        if as_user
+          url += (path.include?("?") ? "&" : "?") + "user_id=#{as_user}"
+        end
+        client.get(url, headers: auth_headers)
       rescue => e
         Rails.logger.error "Matrix GET #{path}: #{e.message}"
         nil

@@ -31,6 +31,12 @@ module Hub
       def appservice_user
         ENV.fetch("NEOCLAW_APPSERVICE_USER", "neoclaw")
       end
+
+      # Identity list — who gets a /sync loop.
+      # TODO: query Manager for this instead of env var.
+      def identities
+        ENV.fetch("NEOCLAW_IDENTITIES", "").split(",").map(&:strip).reject(&:empty?)
+      end
     end
   end
 end
