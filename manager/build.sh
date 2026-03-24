@@ -58,15 +58,20 @@ chmod 600 "$MANAGER_WG_DIR/wg0.conf"
 log "wg0.conf written to $MANAGER_WG_DIR"
 
 # =================================================================
-# Step 2: Vendor gems on the host (containers have no internet)
+# Step 2: Vendor gems (containers have no internet at runtime)
 # =================================================================
+# Run bundle install inside a matching ruby:3.3-slim container with
+# host network (has internet). Mount vendor/bundle out so the built
+# image can COPY it in without needing network access.
 
 log "vendoring gems..."
-cd "$SCRIPT_DIR"
-bundle config set --local path vendor/bundle
-bundle config set --local without 'development test'
-bundle install --quiet
-cd -
+mkdir -p "$SCRIPT_DIR/vendor/bundle"
+podman run --rm --network=host \
+    -v "$SCRIPT_DIR:/app:Z" \
+    -w /app \
+    ruby:3.3-slim \
+    bash -c 'apt-get update -qq && apt-get install -y -qq build-essential libsqlite3-dev libyaml-dev pkg-config > /dev/null 2>&1 && bundle config set --local path vendor/bundle && bundle config set --local without "development test" && bundle install --quiet'
+log "gems vendored"
 
 # =================================================================
 # Step 3: Build the image
