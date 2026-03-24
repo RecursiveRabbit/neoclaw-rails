@@ -12,8 +12,7 @@ gem "tailwindcss-rails"
 # HTTP client for Hub callbacks, service provisioning, relay signals
 gem "httpx"
 
-# Cron expression parsing for scheduled messages
-gem "fugit"
+# fugit (cron parsing for Neobot) comes in via solid_queue
 
 gem "solid_cache"
 gem "solid_queue"
