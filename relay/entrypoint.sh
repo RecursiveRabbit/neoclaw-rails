@@ -239,6 +239,73 @@ ruby -rjson -e '
 
 chown agent:agent "${CLAUDE_DIR}/mcp.json"
 
+# --- TOOLS.md ---
+# Assemble per-agent tool documentation from template snippets.
+# Only includes sections for services present in spawn.json.
+TOOLS_DOCS="/opt/tools-docs"
+ruby -rjson -e '
+  spawn = JSON.parse(File.read(ARGV[0]), symbolize_names: true)
+  host_ip = "'"${HOST_IP}"'"
+  agent_home = "'"${AGENT_HOME}"'"
+  svc = spawn[:services] || {}
+  mcp = JSON.parse(File.read(ARGV[1]), symbolize_names: true)
+  docs_dir = ARGV[2]
+  identity = spawn[:identity]
+
+  parts = [File.read(File.join(docs_dir, "header.md"))]
+
+  # SSH
+  if mcp[:mcpServers]&.key?(:ssh)
+    ssh_env = mcp[:mcpServers][:ssh][:env] || {}
+    text = File.read(File.join(docs_dir, "ssh.md"))
+    text.gsub!("{{SSH_HOST}}", ssh_env[:SSH_HOST] || host_ip)
+    text.gsub!("{{SSH_USER}}", ssh_env[:SSH_USER] || identity)
+    text.gsub!("{{SSH_KEY_PATH}}", ssh_env[:SSH_KEY_PATH] || "~/.ssh/id_ed25519")
+    text.gsub!("{{SSH_PORT}}", (ssh_env[:SSH_PORT] || "22").to_s)
+    parts << text
+  end
+
+  # Valley
+  if svc[:valley] && mcp[:mcpServers]&.key?(:valley)
+    text = File.read(File.join(docs_dir, "valley.md"))
+    text.gsub!("{{VALLEY_CHARACTER}}", identity.capitalize)
+    parts << text
+  end
+
+  # Vikunja
+  if svc[:vikunja] && mcp[:mcpServers]&.key?(:vikunja)
+    parts << File.read(File.join(docs_dir, "vikunja.md"))
+  end
+
+  # ComfyUI
+  if svc[:comfyui] && mcp[:mcpServers]&.key?(:comfyui)
+    parts << File.read(File.join(docs_dir, "comfyui.md"))
+  end
+
+  # Zigbee
+  if svc[:zigbee] && mcp[:mcpServers]&.key?(:zigbee)
+    parts << File.read(File.join(docs_dir, "zigbee.md"))
+  end
+
+  # Matrix
+  if svc[:matrix] && mcp[:mcpServers]&.key?(:matrix)
+    parts << File.read(File.join(docs_dir, "matrix.md"))
+  end
+
+  # Forgejo (not MCP, but a provisioned service)
+  if svc[:forgejo] || File.exist?("#{agent_home}/.forgejo-token")
+    forge_url = spawn.dig(:git, :forge_url) || "http://10.0.0.3:3000"
+    text = File.read(File.join(docs_dir, "forgejo.md"))
+    text.gsub!("{{FORGE_URL}}", forge_url)
+    parts << text
+  end
+
+  File.write(ARGV[3], parts.join("\n"))
+  $stderr.puts "#{parts.length - 1} sections"
+' "$SPAWN_FILE" "${CLAUDE_DIR}/mcp.json" "$TOOLS_DOCS" "${AGENT_HOME}/TOOLS.md" 2>&1 | while read -r line; do log "tools.md: $line"; done
+
+chown agent:agent "${AGENT_HOME}/TOOLS.md"
+
 # --- Service health probes ---
 # Probe each provisioned service. Write results to service-status.md so the
 # agent knows what's working before it wastes context retrying broken tools.
