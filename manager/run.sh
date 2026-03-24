@@ -22,6 +22,7 @@ HOST_WG_CONF="/var/lib/neoclaw/manager-wg/wg0.conf"
 PODMAN_SOCKET="/run/podman/podman.sock"
 
 FORGEJO_ADMIN_TOKEN="${FORGEJO_ADMIN_TOKEN:-1f0759db1301cd07f336c119ef0cd8287984433e}"
+ADMIN_TOKEN="$(openssl rand -hex 24)"
 ROUTER_PUBKEY=$(podman exec wg-router wg show wg0 public-key 2>/dev/null) || { echo "[manager-run] FATAL: can't reach wg-router"; exit 1; }
 ROUTER_ENDPOINT="10.88.0.20:51820"
 
@@ -39,7 +40,6 @@ podman run -d \
     --name "$CONTAINER_NAME" \
     --hostname "$CONTAINER_NAME" \
     --cap-add NET_ADMIN \
-    -p 9201:9200 \
     -v "${PODMAN_SOCKET}:/run/podman/podman.sock" \
     -v "${HOST_SPAWN_DIR}:/spawn" \
     -v "${HOST_SSH_KEYS_DIR}:/ssh-keys" \
@@ -50,6 +50,7 @@ podman run -d \
     -e HOST_SSH_KEYS_DIR="$HOST_SSH_KEYS_DIR" \
     -e HOST_CLAUDE_CREDENTIALS="$HOST_CLAUDE_CREDS" \
     -e FORGEJO_ADMIN_TOKEN="$FORGEJO_ADMIN_TOKEN" \
+    -e ADMIN_TOKEN="$ADMIN_TOKEN" \
     -e ROUTER_PUBKEY="$ROUTER_PUBKEY" \
     -e ROUTER_ENDPOINT="$ROUTER_ENDPOINT" \
     "$IMAGE"
@@ -66,9 +67,9 @@ for i in $(seq 1 20); do
         podman exec "$CONTAINER_NAME" wg show wg0 2>/dev/null | head -8
 
         log ""
-        log "Manager running at 10.0.0.2:9200 (over WireGuard)"
-        log "Admin UI:  http://10.0.0.2:9200/"
-        log "Health:    http://10.0.0.2:9200/health"
+        log "Manager running at 10.0.0.3:9200 (over WireGuard)"
+        log "Admin UI:  http://127.0.0.1:9201/auth/$ADMIN_TOKEN"
+        log "Health:    http://10.0.0.3:9200/health"
         log "Logs:      podman logs -f $CONTAINER_NAME"
         exit 0
     fi

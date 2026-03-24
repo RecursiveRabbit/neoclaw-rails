@@ -23,8 +23,11 @@
         <%= link_to "audit", audit_logs_path, class: nav_link_class("audit_logs") %>
         <%= link_to "crons", cron_messages_path, class: nav_link_class("cron_messages") %>
       </div>
-      <div class="text-stone-500 text-sm">
-        manager
+      <div class="flex items-center gap-3 text-stone-500 text-sm">
+        <span>manager</span>
+        <% if session[:authenticated] %>
+          <%= button_to "logout", logout_path, method: :post, class: "text-stone-600 hover:text-stone-400 transition-colors" %>
+        <% end %>
       </div>
     </div>
   </nav>

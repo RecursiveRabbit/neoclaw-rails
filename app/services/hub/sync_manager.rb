@@ -109,6 +109,14 @@ module Hub
 
         data = JSON.parse(response.body, symbolize_names: false)
         @since = data["next_batch"]
+
+        # Accept any pending invites before learning rooms
+        rooms = data["rooms"] || {}
+        (rooms["invite"] || {}).each do |room_id, _|
+          Matrix.join_room(@user_id, room_id)
+          Rails.logger.info "SyncLoop[#{@identity}]: accepted pending invite to #{room_id}"
+        end
+
         learn_rooms(data)
         Rails.logger.info "SyncLoop[#{@identity}]: synced, #{@room_count} rooms"
       end

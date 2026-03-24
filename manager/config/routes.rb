@@ -1,5 +1,12 @@
 Rails.application.routes.draw do
   # =================================================================
+  # Auth — click the link from run.sh to authenticate
+  # =================================================================
+
+  get  "/auth/:token", to: "sessions#create", as: :auth
+  post "/logout",      to: "sessions#destroy", as: :logout
+
+  # =================================================================
   # Admin UI
   # =================================================================
 
