@@ -25,6 +25,11 @@ fi
 wg-quick up wg0 || { log "FATAL: wg-quick failed"; exit 1; }
 log "wireguard up"
 
+# Route all traffic through the Router — podman bridge has no internet
+ip route del default 2>/dev/null || true
+ip route add default via 10.0.0.1 dev wg0
+log "default route via Router (10.0.0.1)"
+
 # --- Secrets ---
 export SECRET_KEY_BASE="${SECRET_KEY_BASE:-$(ruby -rsecurerandom -e 'puts SecureRandom.hex(64)')}"
 
