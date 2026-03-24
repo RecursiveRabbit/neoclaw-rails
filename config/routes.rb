@@ -17,6 +17,9 @@ Rails.application.routes.draw do
   # Manager → Hub callbacks (released, sunset_warning, crash)
   post "/callback", to: "callbacks#create"
 
+  # Manager → Hub (Neobot scheduled messages)
+  post "/neobot/message", to: "neobot#message"
+
   # ================================================================
   # Health
   # ================================================================

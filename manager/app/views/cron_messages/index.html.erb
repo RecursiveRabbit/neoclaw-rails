@@ -1,0 +1,28 @@
+<div class="flex items-center justify-between mb-6">
+  <h1 class="text-amber-500 text-sm font-bold uppercase tracking-wider">cron messages</h1>
+  <%= link_to "new message", new_cron_message_path, class: "text-sm px-3 py-1.5 rounded bg-amber-900/30 border border-amber-700/30 text-amber-500 hover:bg-amber-900/50 transition-colors" %>
+</div>
+
+<div class="space-y-3">
+  <% @messages.each do |msg| %>
+    <%= link_to cron_message_path(msg), class: "block bg-stone-900 border border-stone-800 rounded-lg p-4 hover:border-stone-700 transition-colors" do %>
+      <div class="flex items-center justify-between">
+        <div class="flex items-center gap-3">
+          <span class="<%= msg.enabled? ? 'text-green-500' : 'text-stone-600' %>">●</span>
+          <span class="text-stone-200 font-medium">#<%= msg.channel %></span>
+          <span class="text-stone-500 text-sm"><%= msg.schedule %></span>
+        </div>
+        <% if msg.next_fire_at %>
+          <span class="text-stone-500 text-xs">next: <%= msg.next_fire_at.strftime("%b %d %H:%M") %></span>
+        <% end %>
+      </div>
+      <div class="mt-2 text-stone-400 text-sm truncate"><%= msg.body %></div>
+    <% end %>
+  <% end %>
+
+  <% if @messages.empty? %>
+    <div class="bg-stone-900 border border-stone-800 rounded-lg p-8 text-center text-stone-600">
+      No scheduled messages. Create one to post recurring messages in Matrix channels.
+    </div>
+  <% end %>
+</div>

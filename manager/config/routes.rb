@@ -28,6 +28,12 @@ Rails.application.routes.draw do
     end
   end
 
+  resources :cron_messages, path: "crons" do
+    member do
+      post :toggle
+    end
+  end
+
   resources :audit_logs, only: [:index], path: "audit"
 
   # =================================================================

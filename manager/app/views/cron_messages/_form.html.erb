@@ -1,0 +1,43 @@
+<%= form_with(model: @message, class: "space-y-6") do |f| %>
+  <% if @message.errors.any? %>
+    <div class="bg-red-900/20 border border-red-700/30 rounded-lg p-4">
+      <ul class="text-red-400 text-sm space-y-1">
+        <% @message.errors.full_messages.each do |msg| %>
+          <li><%= msg %></li>
+        <% end %>
+      </ul>
+    </div>
+  <% end %>
+
+  <div class="grid md:grid-cols-2 gap-6">
+    <div>
+      <label class="block text-stone-500 text-xs uppercase tracking-wider mb-1">Channel</label>
+      <%= f.text_field :channel, class: "w-full bg-stone-900 border border-stone-700 rounded px-3 py-2 text-stone-200 focus:border-amber-500 focus:outline-none", placeholder: "infra" %>
+    </div>
+    <div>
+      <label class="block text-stone-500 text-xs uppercase tracking-wider mb-1">Schedule (cron)</label>
+      <%= f.text_field :schedule, class: "w-full bg-stone-900 border border-stone-700 rounded px-3 py-2 text-stone-200 focus:border-amber-500 focus:outline-none", placeholder: "0 8 * * *" %>
+      <p class="text-stone-600 text-xs mt-1">min hour dom month dow</p>
+    </div>
+  </div>
+
+  <div>
+    <label class="block text-stone-500 text-xs uppercase tracking-wider mb-1">Message</label>
+    <%= f.text_area :body, rows: 4, class: "w-full bg-stone-900 border border-stone-700 rounded px-3 py-2 text-stone-200 focus:border-amber-500 focus:outline-none font-mono", placeholder: "@silas it's time for your daily review" %>
+  </div>
+
+  <div>
+    <label class="block text-stone-500 text-xs uppercase tracking-wider mb-1">Notes</label>
+    <%= f.text_area :notes, rows: 2, class: "w-full bg-stone-900 border border-stone-700 rounded px-3 py-2 text-stone-200 focus:border-amber-500 focus:outline-none", placeholder: "Optional notes" %>
+  </div>
+
+  <div class="flex items-center gap-2">
+    <%= f.check_box :enabled, class: "rounded bg-stone-900 border-stone-700 text-amber-500 focus:ring-amber-500" %>
+    <label class="text-stone-400 text-sm">Enabled</label>
+  </div>
+
+  <div class="flex gap-3">
+    <%= f.submit(@message.persisted? ? "Update" : "Create"), class: "px-4 py-2 rounded bg-amber-900/30 border border-amber-700/30 text-amber-500 hover:bg-amber-900/50 transition-colors cursor-pointer" %>
+    <%= link_to "Cancel", (@message.persisted? ? cron_message_path(@message) : cron_messages_path), class: "px-4 py-2 rounded border border-stone-700 text-stone-400 hover:text-stone-300 transition-colors" %>
+  </div>
+<% end %>

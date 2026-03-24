@@ -1,0 +1,46 @@
+<div class="flex items-center justify-between mb-6">
+  <h1 class="text-amber-500 text-sm font-bold uppercase tracking-wider">
+    cron: #<%= @message.channel %>
+  </h1>
+  <div class="flex gap-2">
+    <%= button_to(@message.enabled? ? "disable" : "enable", toggle_cron_message_path(@message), method: :post, class: "text-sm px-3 py-1.5 rounded bg-stone-800 border border-stone-700 text-stone-400 hover:text-stone-300 transition-colors") %>
+    <%= link_to "edit", edit_cron_message_path(@message), class: "text-sm px-3 py-1.5 rounded bg-stone-800 border border-stone-700 text-stone-400 hover:text-stone-300 transition-colors" %>
+    <%= button_to "delete", cron_message_path(@message), method: :delete, class: "text-sm px-3 py-1.5 rounded bg-red-900/30 border border-red-700/30 text-red-400 hover:bg-red-900/50 transition-colors", data: { turbo_confirm: "Delete this cron message?" } %>
+  </div>
+</div>
+
+<div class="bg-stone-900 border border-stone-800 rounded-lg p-6 space-y-4">
+  <div class="grid md:grid-cols-2 gap-4">
+    <div>
+      <span class="text-stone-500 text-xs uppercase tracking-wider">status</span>
+      <div class="mt-1">
+        <span class="<%= @message.enabled? ? 'text-green-500' : 'text-stone-600' %>">●</span>
+        <span class="text-stone-300"><%= @message.enabled? ? 'enabled' : 'disabled' %></span>
+      </div>
+    </div>
+    <div>
+      <span class="text-stone-500 text-xs uppercase tracking-wider">schedule</span>
+      <div class="mt-1 text-stone-300"><%= @message.schedule %></div>
+    </div>
+    <div>
+      <span class="text-stone-500 text-xs uppercase tracking-wider">next fire</span>
+      <div class="mt-1 text-stone-300"><%= @message.next_fire_at&.strftime("%Y-%m-%d %H:%M") || "—" %></div>
+    </div>
+    <div>
+      <span class="text-stone-500 text-xs uppercase tracking-wider">last fired</span>
+      <div class="mt-1 text-stone-300"><%= @message.last_fired_at&.strftime("%Y-%m-%d %H:%M") || "never" %></div>
+    </div>
+  </div>
+
+  <div>
+    <span class="text-stone-500 text-xs uppercase tracking-wider">message</span>
+    <div class="mt-1 text-stone-200 bg-stone-800 rounded p-3 font-mono text-sm whitespace-pre-wrap"><%= @message.body %></div>
+  </div>
+
+  <% if @message.notes.present? %>
+    <div>
+      <span class="text-stone-500 text-xs uppercase tracking-wider">notes</span>
+      <div class="mt-1 text-stone-400 text-sm whitespace-pre-wrap"><%= @message.notes %></div>
+    </div>
+  <% end %>
+</div>
