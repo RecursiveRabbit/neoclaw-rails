@@ -63,6 +63,12 @@ if ! wg-quick up wg0 2>&1; then
 fi
 log "wireguard up (${WG_ADDRESS})"
 
+# --- Route all traffic through the Router ---
+# The podman bridge no longer has internet. All egress goes through WG.
+ip route del default 2>/dev/null || true
+ip route add default via 10.0.0.1 dev wg0
+log "default route via Router (10.0.0.1)"
+
 # --- Claude credentials ---
 AGENT_HOME="/home/agent"
 CLAUDE_DIR="${AGENT_HOME}/.claude"
