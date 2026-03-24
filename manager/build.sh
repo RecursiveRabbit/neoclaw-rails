@@ -58,7 +58,18 @@ chmod 600 "$MANAGER_WG_DIR/wg0.conf"
 log "wg0.conf written to $MANAGER_WG_DIR"
 
 # =================================================================
-# Step 2: Build the image
+# Step 2: Vendor gems on the host (containers have no internet)
+# =================================================================
+
+log "vendoring gems..."
+cd "$SCRIPT_DIR"
+bundle config set --local path vendor/bundle
+bundle config set --local without 'development test'
+bundle install --quiet
+cd -
+
+# =================================================================
+# Step 3: Build the image
 # =================================================================
 
 log "building image..."
@@ -75,7 +86,7 @@ fi
 log "image built: $IMAGE_NAME"
 
 # =================================================================
-# Step 3: Register Manager's new pubkey on the Router
+# Step 4: Register Manager's new pubkey on the Router
 # =================================================================
 
 if [ "${1:-}" = "build-only" ]; then
@@ -90,7 +101,7 @@ podman exec wg-router wg set wg0 peer "$PUBKEY" allowed-ips "${MANAGER_WG_IP}/32
     || { log "FATAL: failed to peer with Router"; exit 1; }
 
 # =================================================================
-# Step 4: Restart Manager
+# Step 5: Restart Manager
 # =================================================================
 
 log "restarting Manager..."
