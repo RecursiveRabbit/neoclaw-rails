@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_03_17_300002) do
+ActiveRecord::Schema[8.1].define(version: 2026_03_24_000001) do
   create_table "agent_configs", force: :cascade do |t|
     t.json "base_services", default: []
     t.json "channel_overrides", default: {}
@@ -92,6 +92,17 @@ ActiveRecord::Schema[8.1].define(version: 2026_03_17_300002) do
     t.integer "wg_listen_port"
     t.string "wg_public_key"
     t.index ["name"], name: "index_service_types_on_name", unique: true
+  end
+
+  create_table "settings", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.text "description"
+    t.string "group", null: false
+    t.string "key", null: false
+    t.datetime "updated_at", null: false
+    t.text "value"
+    t.string "value_type", default: "string"
+    t.index ["key"], name: "index_settings_on_key", unique: true
   end
 
   add_foreign_key "agent_room_configs", "agent_configs"

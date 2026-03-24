@@ -37,6 +37,9 @@ Rails.application.routes.draw do
 
   resources :audit_logs, only: [:index], path: "audit"
 
+  get  "settings", to: "settings#index", as: :settings
+  patch "settings", to: "settings#update"
+
   # =================================================================
   # Hub → Manager API
   # =================================================================

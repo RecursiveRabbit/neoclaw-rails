@@ -114,4 +114,12 @@ end
   puts "  override: #{attrs[:identity]} in ##{attrs[:channel]}"
 end
 
-puts "\nSeeded: #{ServiceType.count} services, #{AgentConfig.count} configs, #{RoomConfig.count} rooms."
+# --- Settings defaults ---
+# Only seed settings that don't already exist. Preserves manual edits.
+Setting::DEFAULTS.each do |key, meta|
+  next if Setting.exists?(key: key)
+  Setting.set(key, meta[:value])
+end
+puts "  settings: #{Setting.count} entries"
+
+puts "\nSeeded: #{ServiceType.count} services, #{AgentConfig.count} configs, #{RoomConfig.count} rooms, #{Setting.count} settings."

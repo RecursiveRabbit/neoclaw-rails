@@ -32,8 +32,8 @@ class Podman
         "--network", Surface.agent_network,
         "-v", "#{host_spawn_path}:/run/secrets/spawn.json:ro",
         "-v", "#{Surface.host_claude_dir}:/run/secrets/claude:ro",
-        "--memory", "2g",
-        "--cpus", "2",
+        "--memory", Setting.get("resources.container_memory"),
+        "--cpus", Setting.get("resources.container_cpus").to_s,
         "--cap-add", "NET_ADMIN",
         Surface.agent_image
       ]
@@ -74,8 +74,8 @@ class Podman
         "-v", "#{host_spawn_path}:/run/secrets/spawn.json:ro",
         "-v", "#{Surface.host_claude_dir}:/run/secrets/claude:ro",
         "-e", "SWAP_HOLD=1",
-        "--memory", "2g",
-        "--cpus", "2",
+        "--memory", Setting.get("resources.container_memory"),
+        "--cpus", Setting.get("resources.container_cpus").to_s,
         "--cap-add", "NET_ADMIN",
         Surface.agent_image
       ]
