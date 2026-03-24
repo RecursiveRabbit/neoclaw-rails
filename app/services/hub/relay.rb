@@ -24,6 +24,18 @@ module Hub
         false
       end
 
+      # Send stop signal to Claude process via relay sidecar.
+      def stop(ip:)
+        response = client.post(
+          "http://#{ip}:#{RELAY_PORT}/signal",
+          json: { signal: "stop" }
+        )
+        response.status == 200
+      rescue => e
+        Rails.logger.error "Relay stop on #{ip} failed: #{e.message}"
+        false
+      end
+
       # Check relay health.
       def health(ip:)
         response = client.get("http://#{ip}:#{RELAY_PORT}/health")

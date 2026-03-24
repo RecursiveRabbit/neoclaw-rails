@@ -194,7 +194,7 @@ module Hub
 
         # Operator commands
         if command = Commands.parse(body, sender: sender)
-          Commands.execute(command, room_id: room_id, slug: slug)
+          Commands.execute(command, room_id: room_id, slug: slug, identity: @identity)
           return
         end
 
