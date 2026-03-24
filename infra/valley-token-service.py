@@ -5,9 +5,10 @@ Valley Token Service — generates and revokes API tokens for Evennia accounts.
 Tiny HTTP server on the host WG IP. Only the Manager can reach it.
 The Manager calls this during agent provisioning to get Valley tokens.
 
-POST /token/<username>  → generate token, return {"token": "..."}
-DELETE /token/<username> → revoke token, return {"ok": true}
-GET /health             → {"status": "ok"}
+GET /token/<username>    → return existing token, or 404 if none
+POST /token/<username>   → generate new token, return {"token": "..."}
+DELETE /token/<username>  → revoke token, return {"ok": true}
+GET /health              → {"status": "ok"}
 
 Usage:
     ./valley-token-service.py
@@ -81,8 +82,23 @@ class TokenHandler(BaseHTTPRequestHandler):
         if self.path == "/health":
             count = AccountDB.objects.count()
             self._json(200, {"status": "ok", "accounts": count})
+        elif self.path.startswith("/token/"):
+            username = self.path.strip("/").split("/")[-1]
+            if not username:
+                self._json(400, {"error": "GET /token/<username>"})
+                return
+            try:
+                account = AccountDB.objects.get(username__iexact=username)
+            except AccountDB.DoesNotExist:
+                self._json(404, {"error": f"no Valley account '{username}'"})
+                return
+            token = account.attributes.get("api_token", default=None)
+            if not token:
+                self._json(404, {"error": f"no token for '{account.username}'"})
+                return
+            self._json(200, {"token": str(token), "username": account.username})
         else:
-            self._json(404, {"error": "GET /health"})
+            self._json(404, {"error": "GET /health or GET /token/<username>"})
 
     def _json(self, status, body):
         self.send_response(status)

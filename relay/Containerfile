@@ -59,6 +59,9 @@ RUN chmod +x relay.rb entrypoint.sh
 # MCP servers — available to all agents
 COPY mcp/ /opt/mcp/
 
+# Tool documentation templates — assembled per-agent at boot
+COPY tools-docs/ /opt/tools-docs/
+
 # spawn.json is mounted at /run/secrets/spawn.json by the Manager
 # claude-credentials is mounted at /run/secrets/claude-credentials
 
