@@ -10,16 +10,12 @@
 # Runs every 60 seconds inside the Manager.
 
 class Watchdog
-  HEALTH_STALE_THRESHOLD = 120  # seconds — 4 missed health reports
-  CHECK_INTERVAL = 60           # seconds
-  BOOT_GRACE_PERIOD = 300       # seconds — don't check pods still booting
-
   class << self
     def start
       return if @running
       @running = true
       @thread = Thread.new { run_loop }
-      Rails.logger.info "Watchdog: started (#{CHECK_INTERVAL}s interval)"
+      Rails.logger.info "Watchdog: started (#{check_interval}s interval)"
     end
 
     def stop
@@ -34,9 +30,14 @@ class Watchdog
 
     private
 
+    # Re-read from DB each cycle so changes take effect without restart.
+    def health_stale_threshold = Setting.get("watchdog.health_stale_threshold")
+    def check_interval         = Setting.get("watchdog.check_interval")
+    def boot_grace_period      = Setting.get("watchdog.boot_grace_period")
+
     def run_loop
       # Let the system settle before the first check
-      sleep CHECK_INTERVAL
+      sleep check_interval
 
       while @running
         begin
@@ -44,18 +45,18 @@ class Watchdog
         rescue => e
           Rails.logger.error "Watchdog: #{e.message}"
         end
-        sleep CHECK_INTERVAL
+        sleep check_interval
       end
     end
 
     # Detect pods where the relay has crashed.
     # Only rescue if the relay is confirmed unreachable.
     def check_silent_pods
-      stale_threshold = HEALTH_STALE_THRESHOLD.seconds.ago
+      stale_threshold = health_stale_threshold.seconds.ago
 
       Container.alive.where("last_health_at < ?", stale_threshold).each do |container|
         # Skip recently spawned pods — they might still be booting
-        next if container.created_at > BOOT_GRACE_PERIOD.seconds.ago
+        next if container.created_at > boot_grace_period.seconds.ago
 
         # Confirm: try to reach the relay directly
         if relay_reachable?(container)

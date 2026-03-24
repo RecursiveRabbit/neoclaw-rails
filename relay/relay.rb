@@ -26,7 +26,6 @@ WORKSPACE   = "/workspace"
 IDENTITY_DIR = "/identity"
 SPAWN_FILE  = "/run/secrets/spawn.json"
 RELAY_PORT  = 9300
-HEALTH_INTERVAL = 30
 
 class Relay
   def initialize
@@ -36,6 +35,9 @@ class Relay
     @channel = @spawn[:channel]
     @model = @spawn[:model] || "claude-opus-4-6"
     @boot_state = @spawn[:boot_state] || "fresh"
+    @health_interval = @spawn.dig(:relay, :health_interval) || 30
+    @typing_interval = @spawn.dig(:relay, :typing_interval) || 20
+    @http_timeout = @spawn.dig(:relay, :http_timeout) || 5
     @context_limit = detect_context_limit
     @hub_ip = detect_hub_ip
     @manager_ip = detect_manager_ip
@@ -297,7 +299,7 @@ class Relay
   def start_typing_keepalive
     Thread.new do
       loop do
-        sleep 20
+        sleep @typing_interval
         if claude_running?
           post_to_hub("/agent/event", { instance: @instance_name, event: "typing" })
         else
@@ -534,7 +536,7 @@ class Relay
     Thread.new do
       while @running
         begin
-          sleep HEALTH_INTERVAL
+          sleep @health_interval
           post_to_manager("/containers/#{@instance_name}/health", {
             context_usage: @context_usage,
             last_message_at: @last_message_at.iso8601,
@@ -615,8 +617,8 @@ class Relay
   def post_json(url, body, raw: false, silent: false)
     uri = URI.parse(url)
     http = Net::HTTP.new(uri.host, uri.port)
-    http.open_timeout = 5
-    http.read_timeout = 5
+    http.open_timeout = @http_timeout
+    http.read_timeout = @http_timeout
     req = Net::HTTP::Post.new(uri.path)
     req["Content-Type"] = "application/json"
     req.body = raw ? body : JSON.generate(body)
@@ -639,7 +641,9 @@ class Relay
     limit = @spawn[:context_limit]
     return limit if limit.is_a?(Integer) && limit > 0
 
-    MODEL_CONTEXT_LIMITS[@model] || 200_000
+    # Settings-driven limits from Manager, fall back to built-in
+    limits = @spawn[:model_context_limits] || MODEL_CONTEXT_LIMITS
+    limits[@model] || limits[@model.to_s] || 200_000
   end
 
   def detect_hub_ip

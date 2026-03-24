@@ -307,6 +307,24 @@ class Spawner
         data[:channel_repo] = channel_repo
       end
 
+      # Settings — relay reads these from spawn.json
+      data[:relay] = {
+        health_interval: Setting.get("relay.health_interval"),
+        typing_interval: Setting.get("relay.typing_interval"),
+        http_timeout:    Setting.get("relay.http_timeout"),
+      }
+
+      # System prompts — only include non-empty overrides
+      prompts = {}
+      %w[fresh_boot resume_boot baton_boot hot_swap].each do |key|
+        val = Setting.get("prompts.#{key}")
+        prompts[key.to_sym] = val if val.present?
+      end
+      data[:prompts] = prompts if prompts.any?
+
+      # Model context limits
+      data[:model_context_limits] = Setting.get("models.context_limits")
+
       data
     end
   end

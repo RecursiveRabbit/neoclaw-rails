@@ -57,8 +57,7 @@ module Surface
     # =================================================================
 
     def memory_budget
-      # Default 15GB in bytes
-      ENV.fetch("MANAGER_MEMORY_BUDGET", (15 * 1024 * 1024 * 1024).to_s).to_i
+      Setting.get("resources.memory_budget")
     end
 
     # =================================================================

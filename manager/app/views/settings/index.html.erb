@@ -1,0 +1,58 @@
+<div class="space-y-8">
+  <h1 class="text-amber-500 text-sm font-bold uppercase tracking-wider">system settings</h1>
+
+  <%= form_with url: settings_path, method: :patch, class: "space-y-8" do |f| %>
+
+    <% @groups.each do |group_name, entries| %>
+      <div class="bg-stone-900 border border-stone-800 rounded-lg p-6">
+        <h2 class="text-amber-500 text-xs font-bold uppercase tracking-wider mb-4">
+          <%= group_name %>
+        </h2>
+
+        <div class="space-y-4">
+          <% entries.each do |key, meta| %>
+            <div>
+              <label class="block text-stone-400 text-xs uppercase tracking-wider mb-1" for="settings_<%= key.tr('.', '_') %>">
+                <%= key.split('.').last.humanize %>
+              </label>
+
+              <% current = Setting.get(key) %>
+
+              <% case meta[:type] %>
+              <% when "text" %>
+                <%= text_area_tag "settings[#{key}]", current,
+                  id: "settings_#{key.tr('.', '_')}",
+                  rows: 8,
+                  placeholder: "Empty = use built-in default",
+                  class: "w-full bg-stone-800 border border-stone-700 rounded px-3 py-2 text-stone-200 text-sm focus:border-amber-600 focus:outline-none font-mono" %>
+              <% when "json" %>
+                <%= text_area_tag "settings[#{key}]", (current.is_a?(Hash) ? JSON.pretty_generate(current) : current),
+                  id: "settings_#{key.tr('.', '_')}",
+                  rows: 6,
+                  class: "w-full bg-stone-800 border border-stone-700 rounded px-3 py-2 text-stone-200 text-sm focus:border-amber-600 focus:outline-none font-mono" %>
+              <% when "integer", "float" %>
+                <%= number_field_tag "settings[#{key}]", current,
+                  id: "settings_#{key.tr('.', '_')}",
+                  step: (meta[:type] == "float" ? "0.1" : "1"),
+                  class: "w-full bg-stone-800 border border-stone-700 rounded px-3 py-2 text-stone-200 text-sm focus:border-amber-600 focus:outline-none" %>
+              <% else %>
+                <%= text_field_tag "settings[#{key}]", current,
+                  id: "settings_#{key.tr('.', '_')}",
+                  class: "w-full bg-stone-800 border border-stone-700 rounded px-3 py-2 text-stone-200 text-sm focus:border-amber-600 focus:outline-none" %>
+              <% end %>
+
+              <% if meta[:desc].present? %>
+                <p class="text-stone-600 text-xs mt-1"><%= meta[:desc] %></p>
+              <% end %>
+            </div>
+          <% end %>
+        </div>
+      </div>
+    <% end %>
+
+    <div class="flex gap-3">
+      <%= f.submit "Save all",
+        class: "px-4 py-2 rounded bg-amber-900/30 border border-amber-700/30 text-amber-500 hover:bg-amber-900/50 transition-colors cursor-pointer text-sm" %>
+    </div>
+  <% end %>
+</div>
