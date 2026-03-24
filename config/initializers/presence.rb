@@ -1,10 +1,9 @@
-# Start the PresenceManager after Rails finishes loading.
-# Runs a background thread that refreshes Matrix presence for running agents.
-#
-# Only start in server mode — skip during rake tasks, console, tests.
+# Start background services after Rails initializes.
+# Skip during rake tasks, console, and tests.
 
 Rails.application.config.after_initialize do
-  if defined?(Rails::Server) || defined?(Puma)
+  if defined?(Rails::Server) || ENV["RAILS_SERVE_STATIC_FILES"]
+    Hub::SyncManager.start
     Hub::PresenceManager.start
   end
 end

@@ -8,8 +8,7 @@ class HealthControllerTest < ActionDispatch::IntegrationTest
     assert_equal "ok", body["status"]
     assert body.key?("hub")
     assert body.key?("manager")
-    assert body["hub"].key?("agents_alive")
-    assert body["hub"].key?("identities")
-    assert body["manager"].key?("containers")
+    assert body["hub"].key?("routes")
+    assert body["hub"].key?("sync")
   end
 end

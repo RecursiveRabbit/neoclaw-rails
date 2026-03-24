@@ -27,6 +27,20 @@ module Hub
         end
       end
 
+      # Delete all routes pointing at this IP. Used when a singleton pod
+      # dies — multiple instance names (hopper-general, hopper-art) may
+      # alias the same address.
+      def delete_by_ip(ip)
+        @mutex.synchronize do
+          stale = @routes.select { |_, r| r[:ip] == ip }.keys
+          stale.each do |name|
+            @routes.delete(name)
+            @resolving.delete(name)
+          end
+          stale
+        end
+      end
+
       # Find the route for an identity in a specific room.
       def find_by_identity_and_room(identity_name, room_id)
         @mutex.synchronize do

@@ -8,7 +8,7 @@ class HealthController < ApplicationController
         routes: Hub::RouteCache.count,
         resolving: Hub::RouteCache.resolving_count,
         rooms: Hub::Rooms.count,
-        identities: Hub::Identities.count
+        sync: Hub::SyncManager.status
       },
       manager: manager_status || "unreachable"
     }

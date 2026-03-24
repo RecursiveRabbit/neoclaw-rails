@@ -1,10 +1,11 @@
 Rails.application.routes.draw do
   # ================================================================
-  # Hub — Matrix appservice + agent routing
+  # Hub — per-puppet /sync + agent routing
   # ================================================================
 
-  # Synapse sends events here
-  put "/_matrix/app/v1/transactions/:txn_id", to: "transactions#create"
+  # Appservice stubs — Synapse expects these. We ack but don't process.
+  # Inbound events come via /sync now, not transactions.
+  put "/_matrix/app/v1/transactions/:txn_id", to: proc { [200, { "Content-Type" => "application/json" }, ["{}"]] }
   get "/rooms/*path", to: proc { [200, { "Content-Type" => "application/json" }, ["{}"]] }
   get "/users/*path", to: proc { [200, { "Content-Type" => "application/json" }, ["{}"]] }
 
