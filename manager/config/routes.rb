@@ -24,6 +24,7 @@ Rails.application.routes.draw do
       post :rescue
       post :refresh
       post :stop
+      post :send_message
       get :stream
     end
   end

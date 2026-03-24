@@ -17,7 +17,7 @@
 
   <%# The terminal %>
   <div id="stream-output"
-       class="bg-stone-950 border border-stone-800 rounded-lg p-4 font-mono text-sm h-[calc(100vh-12rem)] overflow-y-auto"
+       class="bg-stone-950 border border-stone-800 rounded-lg p-4 font-mono text-sm h-[calc(100vh-16rem)] overflow-y-auto"
        data-controller="stream"
        data-stream-instance-value="<%= @container.instance_name %>">
 
@@ -31,6 +31,19 @@
     <%# Auto-scroll anchor %>
     <div data-stream-target="anchor"></div>
   </div>
+
+  <%# Chat input %>
+  <form action="<%= send_message_container_path(@container) %>" method="post" class="flex gap-2 mt-2"
+        id="chat-form">
+    <input type="hidden" name="authenticity_token" value="<%= form_authenticity_token %>">
+    <input type="text" name="content" autocomplete="off" placeholder="Send a message to <%= @container.instance_name %>..."
+           class="flex-1 bg-stone-900 border border-stone-700 rounded px-3 py-2 text-stone-200 font-mono text-sm focus:border-amber-500 focus:outline-none"
+           id="chat-input">
+    <button type="submit"
+            class="px-4 py-2 rounded bg-amber-900/30 border border-amber-700/30 text-amber-500 hover:bg-amber-900/50 transition-colors text-sm">
+      send
+    </button>
+  </form>
 </div>
 
 <script type="module">
@@ -155,4 +168,26 @@
     linesEl.appendChild(el)
     if (wasAtBottom) anchorEl.scrollIntoView({ behavior: "smooth" })
   }
+
+  // Chat input — submit via fetch, stay on page
+  const chatForm = document.getElementById("chat-form")
+  const chatInput = document.getElementById("chat-input")
+
+  chatForm.addEventListener("submit", async (e) => {
+    e.preventDefault()
+    const content = chatInput.value.trim()
+    if (!content) return
+
+    appendLine(`▸ ${content}`, "text-amber-400")
+    chatInput.value = ""
+
+    const formData = new FormData(chatForm)
+    formData.set("content", content)
+
+    try {
+      await fetch(chatForm.action, { method: "POST", body: formData })
+    } catch (err) {
+      appendLine(`✗ send failed: ${err.message}`, "text-red-500")
+    }
+  })
 </script>

@@ -49,4 +49,26 @@ class ContainersController < AdminController
   def stream
     @container = Container.find(params[:id])
   end
+
+  # POST /containers/:id/send_message — inject a message into the agent's relay
+  def send_message
+    container = Container.find(params[:id])
+    content = params[:content]&.strip
+
+    unless content.present?
+      head :bad_request
+      return
+    end
+
+    sender = params[:sender] || "operator"
+
+    HTTPX.post(
+      "http://#{container.wg_address}:9300/message",
+      json: { from: sender, channel: container.channel, content: content }
+    )
+
+    head :ok
+  rescue => e
+    render json: { error: e.message }, status: :service_unavailable
+  end
 end
