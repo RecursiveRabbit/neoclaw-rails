@@ -1,16 +1,18 @@
 {
-  "written": "2026-03-23T05:45:00Z",
+  "written": "2026-03-25T00:00:00Z",
   "session_summaries": {
-    "silas (Mar 20-22)": "MCP services are live. Agents in pods can now act on real servers. SSH MCP proven end-to-end. Valley token service built and deployed. Vikunja token service built but broken (API creates tokens that fail verification). Service exposure via socat forwarders. Hot swap with hold mechanism. Per-identity SSH keys. MCP docs written.",
-    "voss (Mar 22-23)": "Hub stateless rewrite (RouteCache, Identities from YAML, Rooms from Matrix). Relay narration, m.mentions routing, DM slugs, attachment receiving. Three boot prompts. Manager: build.sh for Router topology, memory-based capacity, session processing pipeline, Watchdog. Hub: !previous syntax, ListenerQueue, PresenceManager. Socat systemd units. WG persistence. Orphan MCP cleanup.",
-    "silas (Mar 23)": "Vikunja token bug diagnosed and fixed — Vikunja v2.1.0 has a hashing bug where API-created tokens fail PBKDF2 verification. Rewrote vikunja-token-service to generate tokens with correct hashes and insert directly into SQLite. End-to-end tested: create/use/revoke lifecycle works. Added dedicated 'vikunja' provision type to Provisioner (matching valley pattern). Fixed valley seeds.rb provision_type (was 'token', should be 'valley'). Added sudo to agent containers. Built P10 graceful degradation — entrypoint probes each provisioned service at boot, writes service-status.md for agents. Added Forgejo API token provisioning — agents can now create PRs and do code review via the REST API. Set branch protection on main (1 review required). Built channel repo system — Provisioner auto-creates channels/<channel> repos and grants collaborator access at spawn. Relay boot prompt tells agents about the shared project repo. Two-repo model: /identity (personal) + /workspace (shared channel project). Migrated neoclaw-rails history (42 commits) from neoclaw/neoclaw-rails to channels/neoclaw. Set up Forgejo push mirror to GitHub (RecursiveRabbit/neoclaw-rails). Archived old repo. Updated local working directory remote."
+    "silas (Mar 20-22)": "MCP services are live. SSH MCP proven. Valley token service. Vikunja token service (broken). Socat forwarders. Hot swap. Per-identity SSH keys.",
+    "voss (Mar 22-23)": "Hub stateless rewrite. Relay narration, m.mentions routing, DM slugs, attachments. Three boot prompts. Manager: build.sh, memory capacity, session pipeline, Watchdog. Hub: !previous, ListenerQueue, PresenceManager. Socat systemd units. WG persistence.",
+    "silas (Mar 23)": "Vikunja token fix (PBKDF2 direct insert). Forgejo API tokens. Branch protection. Channel repos. Two-repo boot. Repo migration to channels/neoclaw. GitHub push mirror. TOOLS.md injection (relay/tools-docs/ templates).",
+    "hopper (Mar 24)": "Settings system — runtime-configurable settings via admin UI. Setting model with DEFAULTS hash, three-tier fallback (DB > ENV > hardcoded). Watchdog/Podman/Surface refactored to read from Settings. Relay reads health_interval/typing_interval/http_timeout from spawn.json. Boot prompt templates configurable. Merged combined PR with conflict resolution. Rolled back token auth per Evans.",
+    "voss (Mar 24)": "Hub /sync migration — ripped out entire appservice inbound stack (TransactionsController, Router, Identities, ListenerQueue, identities.yml, -736 lines). Replaced with SyncManager: one long-polling /sync thread per puppet using appservice masquerading. Matrix decides who sees what. Hub just delivers. Manager identity endpoint (GET /identities). Neobot scheduled messages (cron tab in Manager, CronScheduler fires to Hub). Stream chat (live message injection from stream page). Vendor gems in matching container (build containers have no internet). Fixed: pending invite handling in initial sync, Hub systemd WorkingDirectory pointing at old code, Puma initializer guard (defined?(Puma)), agent internet routing (AllowedIPs 0.0.0.0/0 + default route via Router). GitHub-Forgejo bidirectional sync cron. Reviewed Ben's first PR (#2 on GitHub)."
   },
 
   "decision": {
     "what": "Rebuild NeoClaw-Rails from scratch in a new directory",
     "why": "Four architecture iterations fossilized in the code. The architecture is proven, the code needs to be written clean.",
     "approach": "Experiment and iron out kinks in THIS codebase. Then build it right. No apprentice marks.",
-    "reference": "This directory (clawd/projects/neoclaw_rails/) is the working model."
+    "reference": "This directory (clawd/town/residents/voss/projects/neoclaw_rails/) is the working model."
   },
 
   "architecture": {
@@ -21,135 +23,128 @@
       "10.0.0.3": "Manager (pod at 10.88.0.11)",
       "10.0.1.x": "Agents (static IP per instance name, permanent)"
     },
-    "internet_egress": "Pods have internet via podman bridge default route. WG is for internal mesh only.",
+    "internet_egress": "All pod traffic routes through the Router via WG. Router NATs out through podman bridge. AllowedIPs=0.0.0.0/0, default route via 10.0.0.1 after WG up. Podman bridge itself has no direct internet for pods.",
+    "security": "Manager only listens on WG. If you can reach it, you're already a peer. No application-level auth needed — WG IS the auth. Evans: token auth was unnecessary, WG keys are the credential.",
     "components": {
-      "hub": "Rails app on host. No database. Matrix appservice. Routes via m.mentions, puppets responses. Port 3100. Identity config from config/identities.yml. Route cache, room cache, resolving guard all in-memory.",
-      "router": "Ruby WG hub + nftables firewall. ~760 lines. Port 8080 API, 51820 WG.",
-      "manager": "Rails app in pod. Spawns/freezes/rescues agents. Calls Router API. Provisions Forgejo + SSH + Valley. Port 9200 (mapped to 9201 on host). Memory-based capacity (15GB budget). build.sh handles full rebuild+peer+restart cycle.",
-      "relay": "One Ruby file in every agent pod. Claude Code glue. Port 9300. MCP config on every invocation. Hot swap detection (workspace exists → --continue). Three boot prompts (fresh/resume/baton). Entrypoint: Phase 1 root (WG/creds/SSH/MCP), Phase 2 gosu agent (relay). Tini for zombie reaping."
+      "hub": "Rails app on host (systemd: neoclaw-rails-hub.service). WorkingDirectory: clawd/town/residents/voss/projects/neoclaw_rails. No database. Per-puppet /sync loops receive messages from Matrix. Appservice API for outbound puppeting. Port 3100. Identity list from Manager GET /identities at boot (falls back to NEOCLAW_IDENTITIES env var). Initializer checks defined?(Puma) not Rails::Server.",
+      "router": "Ruby WG hub + nftables firewall. ~760 lines. Port 8080 API, 51820 WG. All internet egress NATs through here.",
+      "manager": "Rails app in pod. Port 9200 (mapped to 9201 on host via podman port forward). Admin UI with tabs: configs, rooms, containers, audit, crons, settings. Settings system (Setting model, three-tier fallback). CronScheduler for Neobot. Stream chat for live agent interaction. build.sh vendors gems in matching ruby:3.3-slim container with --network=host.",
+      "relay": "One Ruby file in every agent pod. Port 9300. Reads health_interval/typing_interval/http_timeout from spawn.json (Settings-driven). TOOLS.md assembled from relay/tools-docs/ templates. Entrypoint: Phase 1 root (WG/default-route/creds/SSH/MCP/TOOLS.md), Phase 2 gosu agent (relay). Tini for zombie reaping."
     }
   },
 
-  "correction": "Evans: 'We aren't deferring upgrades to the new version. This version needs to be feature complete, the rewrite is a cleanup not an opportunity to test new features.' Every design decision gets implemented and proven HERE first. The rewrite just removes the dead wood.",
+  "hub_sync": {
+    "what": "Replaced appservice transaction push with per-puppet /sync long-polling",
+    "removed": "TransactionsController, Hub::Router, Hub::Identities, Hub::ListenerQueue, config/identities.yml",
+    "added": "Hub::SyncManager, as_user: on Matrix queries, RouteCache.delete_by_ip",
+    "how_it_works": "Each SyncLoop long-polls GET /sync?user_id=@name:matrix.home&timeout=30000 with as_token. Initial sync accepts pending invites and learns room state. Matrix decides who sees what.",
+    "singleton_design": "Hub always generates identity-channel names. Manager maps multiple names to same IP for singletons. Hub doesn't know singletons exist. delete_by_ip cleans up all aliases on pod death.",
+    "identity_source": "Hub queries Manager GET /identities at boot. Cached for process lifetime. Falls back to NEOCLAW_IDENTITIES env var.",
+    "transaction_endpoint": "Kept as no-op ack so Synapse doesn't backoff.",
+    "first_test": "Silas accepted pending invite to #valley on initial sync. Spawn triggered but pod had no internet (AllowedIPs was 10.0.0.0/16). Fixed in routing PR."
+  },
+
+  "settings_system": {
+    "what": "Runtime-configurable settings via Manager admin UI",
+    "model": "Setting with DEFAULTS hash. Three-tier: DB > ENV (NEOCLAW_<KEY>) > hardcoded. Adding a setting = one entry in DEFAULTS, no migration.",
+    "groups": "resources (memory_budget, container_memory, container_cpus), watchdog (thresholds, intervals), relay (model, health/typing/http intervals), prompts (fresh/resume/baton/hot_swap boot templates), models (context_limits JSON)",
+    "consumers": "Watchdog reads dynamically each cycle. Podman reads at spawn. Spawner injects relay settings + prompts into spawn.json. Relay reads from spawn.json at boot."
+  },
+
+  "neobot": {
+    "what": "Scheduled messages via Manager admin UI",
+    "how": "CronMessage model with Fugit cron parsing. CronScheduler (30s interval) posts to Hub POST /neobot/message. Hub puppets into Matrix. Normal /sync wakes agents.",
+    "fugit": "Transitive dependency via solid_queue — not explicitly in Gemfile."
+  },
+
+  "stream_chat": {
+    "what": "Live message injection from Manager stream page",
+    "how": "Input bar at bottom of stream view. POST /containers/:id/send_message forwards to relay. Submit via fetch, stays on page."
+  },
+
+  "build_system": {
+    "gem_vendoring": "build.sh runs bundle install inside ruby:3.3-slim container with --network=host. Mounts vendor/bundle out. Containerfile COPYs in, runs --local. Host Ruby 3.2 != container Ruby 3.3 — must vendor in matching container.",
+    "why_no_internet_in_build": "Podman bridge has no internet egress. All traffic routes through Router via WG. Build containers have no WG tunnel.",
+    "manager_access": "Currently via podman port forward (-p 9201:9200). TODO: replace with WG peer auth for Evans's client."
+  },
+
+  "github_forgejo_sync": {
+    "forgejo_to_github": "Push mirror on Forgejo repo, automatic on every push.",
+    "github_to_forgejo": "Cron every 5 min: ~/scripts/github-to-forgejo-sync.sh. Bare clone cached at /tmp/github-forgejo-sync/. Fetches from GitHub, pushes to Forgejo."
+  },
+
+  "ben_pr": {
+    "what": "Ben Grimes' first contribution — per-agent Matrix provisioning",
+    "good_parts": "Matrix MCP rewrite (nio to httpx), Forgejo v14 basic auth fix, SSH key path fix, Matrix provision_type",
+    "problems": "Seeds.rb replaced entire agent roster. Credential symlink to copy breaks OAuth. Direct SQLite manipulation. Env defaults for different deployment.",
+    "status": "Ben read review, pushed cleanup, closed PR to rework. Branch deleted."
+  },
+
+  "correction": "Evans: 'We aren't deferring upgrades to the new version. This version needs to be feature complete, the rewrite is a cleanup not an opportunity to test new features.'",
 
   "mcp_services": {
-    "pattern": "See docs/MCP-SERVICES.md for the full playbook.",
-    "how_it_works": "MCP servers live in relay/mcp/<name>/server.py. Baked into image at /opt/mcp/. Python venv at /opt/mcp-env/. Entrypoint generates ~/.claude/mcp.json from spawn.json services. Relay passes --mcp-config on every claude invocation. Settings.json allows mcp__<name>(*).",
-    "adding_new": "1. Server in relay/mcp/<name>/ 2. Pip deps in Containerfile 3. Entry in entrypoint.sh mcp.json generation 4. Permission in settings.json 5. Provisioner if auth needed 6. Rebuild image",
-    "limitation": "MCPs load once per session. --continue inherits old MCPs but --mcp-config doesn't restart dead servers in continue mode. New MCPs require freeze+respawn (cold boot). Hot swap preserves session but can't add MCPs.",
+    "pattern": "relay/mcp/<name>/server.py. Image at /opt/mcp/. Venv at /opt/mcp-env/. Entrypoint generates mcp.json from spawn.json. TOOLS.md from relay/tools-docs/ templates.",
+    "adding_new": "1. Server in relay/mcp/<name>/ 2. Pip deps in Containerfile 3. Entry in entrypoint.sh mcp.json generation 4. Permission in settings.json 5. Provisioner if auth needed 6. Tool docs in relay/tools-docs/<name>.md 7. Rebuild image",
+    "limitation": "MCPs load once per session. --continue can't restart dead servers. Freeze+respawn for MCP changes. All MCPs must connect lazily.",
     "servers": {
-      "ssh": {
-        "status": "WORKING",
-        "provisioning": "Provisioner writes key to /var/lib/neoclaw/sftp-keys/<instance>/authorized_keys. sshd AuthorizedKeysCommand reads it. Per-identity unix users (silas, margaux, etc.) in townfolk group.",
-        "tools": "ssh_connect, ssh_execute, ssh_interrupt, ssh_eof, ssh_background, ssh_send_raw, ssh_status",
-        "auto_backgrounds": "Commands over 90s are auto-backgrounded. Agents can run parallel long tasks."
-      },
-      "valley": {
-        "status": "WORKING",
-        "provisioning": "valley-token-service.py on host (systemd, port 8889 on 10.0.0.2). POST /token/<Username> generates token, reloads Evennia. Manager Provisioner calls it at spawn time.",
-        "tools": "valley (send commands to The Uncanny Valley MUD)"
-      },
-      "vikunja": {
-        "status": "WORKING",
-        "provisioning": "vikunja-token-service.py on host (systemd, port 8890 on 10.0.0.2). Generates tokens with PBKDF2-SHA256 hashes and inserts directly into SQLite (bypasses Vikunja v2.1.0 API bug). Ephemeral per-session — purged on teardown via DELETE /token/<username>.",
-        "tools": "ticket_list, ticket_view, ticket_create, ticket_comment, ticket_update, ticket_done",
-        "bug_resolved": "Vikunja v2.1.0 PUT /tokens creates tokens but stores hashes that fail its own verification. Old v1-created tokens work fine. Root cause: likely double-hashing or salt mismatch in the Go code. Workaround: generate token+hash ourselves with matching PBKDF2 params and insert directly."
-      },
-      "comfyui": {
-        "status": "CONFIGURED — no auth needed, untested",
-        "provisioning": "None (WG peering is the auth). Needs socat forwarder on host (10.0.0.2:8188 → 127.0.0.1:8188).",
-        "tools": "generate_image, run_workflow, queue_status, get_history, list_outputs"
-      },
-      "zigbee": {
-        "status": "CONFIGURED — needs MQTT socat forwarder",
-        "provisioning": "None. Connects lazily (won't crash on startup if MQTT unreachable).",
-        "tools": "zigbee_list, zigbee_get, zigbee_set, zigbee_scene"
-      },
-      "matrix": {
-        "status": "NOT CONFIGURED — only included if Matrix token in spawn.json",
-        "note": "Most agents talk through the Hub. Direct Matrix access is rarely needed."
-      }
+      "ssh": {"status": "WORKING", "tools": "ssh_connect, ssh_execute, ssh_interrupt, ssh_eof, ssh_background, ssh_send_raw, ssh_status"},
+      "valley": {"status": "WORKING", "tools": "valley"},
+      "vikunja": {"status": "WORKING", "tools": "ticket_list, ticket_view, ticket_create, ticket_comment, ticket_update, ticket_done"},
+      "matrix": {"status": "WORKING", "tools": "matrix_send, matrix_send_image, matrix_read, matrix_download, matrix_rooms"},
+      "comfyui": {"status": "CONFIGURED — untested"},
+      "zigbee": {"status": "CONFIGURED — needs MQTT socat"}
     }
   },
 
   "host_services": {
-    "socat_forwarders": "Localhost-bound services exposed on WG IP via socat. Persistent via systemd template unit neoclaw-socat@{name}.service with env files at /etc/neoclaw/socat/. Setup: infra/setup-network.sh.",
-    "services_needing_forwarders": {
-      "vikunja": "10.0.0.2:3456 → 127.0.0.1:3456",
-      "valley": "10.0.0.2:8888 → 127.0.0.1:8888",
-      "comfyui": "10.0.0.2:8188 → 127.0.0.1:8188",
-      "mqtt": "10.0.0.2:1883 → 127.0.0.1:1883"
-    },
-    "services_already_on_all_interfaces": ["forgejo (3000)", "forgejo-ssh (2222)", "synapse (8008)"],
+    "socat_forwarders": "Systemd template neoclaw-socat@{name}.service. Configured: valley, vikunja, comfyui, mqtt.",
     "token_services": {
-      "valley-token-service": "systemd, port 8889, runs as hopper. POST /token/<Username> → generates Valley API token, reloads Evennia.",
-      "vikunja-token-service": "systemd, port 8890, runs as vikunja. POST /token/<username> → creates Vikunja API token (but tokens currently rejected — bug)."
-    },
-    "sshd_config": "Match Group townfolk → AuthorizedKeysCommand /etc/neoclaw/ssh-authorized-keys.sh %u (runs as nobody). Reads from /var/lib/neoclaw/sftp-keys/<user>-<channel>/ and /var/lib/neoclaw/sftp-keys/<user>/.",
-    "router_firewall": "nftables per-agent port sets. Must add service ports (8188, 8888, 1883, 8889, 8890) to agent sets for new services to be reachable."
-  },
-
-  "hot_swap": {
-    "script": "script/swap-image.sh <instance> [image]",
-    "flow": "Copy workspace + .claude out → kill pod → start new pod with SWAP_HOLD=1 → entrypoint runs Phase 1 then waits → copy files in (skip mcp.json/settings.json) → release hold → relay sees .git → --continue",
-    "limitation": "Can't add new MCPs (--continue inherits old session's MCP servers). For MCP changes: freeze + respawn.",
-    "staging": "Preserved at /var/lib/neoclaw/swap-staging/<instance>/ — NEVER deleted. Safety net if new pod dies.",
-    "cardinal_rule": "Session files are sacred. Never delete staging dirs. Disk is cheap, lost sessions are not."
+      "valley-token-service": "port 8889. GET returns existing, POST generates new + reloads Evennia.",
+      "vikunja-token-service": "port 8890. PBKDF2 tokens, direct SQLite insert."
+    }
   },
 
   "todo": {
     "priority": [
       {
-        "what": "Hub /sync migration — replace appservice transactions with per-puppet /sync",
+        "what": "WG peer auth for Evans — replace port forward with WG client config",
         "status": "NEXT",
-        "note": "The big one. Evans: 'Matrix already has a notification system. We don't need to parse messages. Regex is for the birds. Tear it down.' Remove: TransactionsController, Router mention parsing, identities.yml, ListenerQueue, sole-agent fallback. Build: SyncManager with one /sync loop per puppet. Each loop: GET /sync?user_id=@name:matrix.home&since=TOKEN&timeout=30000 with as_token. Matrix decides who gets notified (DMs, @mentions, All Messages setting). Hub just delivers to relay. Singleton logic moves entirely to Manager — Hub asks Manager for an IP, Manager handles singleton internally. Hub becomes a thin bridge, not a router. Keep appservice registration for outbound (puppeting responses, presence, typing). ListenerQueue already ripped out. Identities.yml already stripped of listeners. This is the first real collaborative task for voss-neoclaw and silas-neoclaw."
+        "note": "Manager only listens on WG. Evans accesses via podman port forward (9201). Should be a proper WG peer. run.sh could output a WG client config."
+      },
+      {
+        "what": "Test /sync end-to-end with working agent internet",
+        "status": "BLOCKED on Manager rebuild",
+        "note": "Routing fix is merged (AllowedIPs 0.0.0.0/0, default route via Router). Needs Manager + agent image rebuild to take effect. Silas joined #valley but got EAI_AGAIN — no internet in pod."
       }
     ],
     "items": [
-      {"what": "TOOLS.md injection into pods", "status": "not started", "note": "Write tool descriptions for each MCP service. Provisioner generates dynamic TOOLS.md per agent."},
-      {"what": "Channel repo conventions", "status": "not started", "note": "Each channel repo needs a README with rules. Admin sets branch protection per-repo."},
-      {"what": "MCP servers die mid-session", "status": "known issue", "note": "--mcp-config on --continue doesn't restart dead servers. Claude Code limitation. Only fix is freeze+respawn."},
-      {"what": "Session processing — boot state from metadata", "status": "not started", "note": "Spawner could read .meta.json baton_stale flag and warn agent on boot."},
-      {"what": "Neobot — cron scheduling via Matrix messages", "status": "not started"},
-      {"what": "Image/attachment UX — context with media", "status": "not started"}
+      {"what": "Channel repo conventions", "status": "not started"},
+      {"what": "Session processing — boot state from metadata", "status": "not started"},
+      {"what": "Image/attachment UX", "status": "not started"},
+      {"what": "Parameterize run.sh", "status": "not started", "note": "Ben's PR exposed hardcoded IPs/paths."},
+      {"what": "MCP servers die mid-session", "status": "known issue"}
     ]
   },
 
-  "what_works_proven": [
-    "Full signal chain: @silas in Matrix → Hub → Manager → Router → pod → boot → clone → orient → respond → puppet back to Matrix",
-    "SSH MCP: agent SSHs into host as identity user, runs commands, auto-backgrounds long tasks, parallel work",
-    "Valley MCP: token provisioned at spawn, agent walks the Valley, sends commands",
-    "Vikunja MCP: tools load, queries work with pre-existing tokens",
-    "Service provisioning: SSH keys to sftp-keys, Valley tokens via token service, Forgejo users+keys+repo access",
-    "Hot swap: workspace + session preserved, --continue resumes in seconds",
-    "Hub stateless: no database, self-healing routes, m.mentions routing",
-    "Three boot prompts, per-channel batons, streaming responses, attachment receiving",
-    "Memory-based capacity, persistent stream buffers, freeze→rescue fallback",
-    "Socat forwarders expose localhost services on WG IPs",
-    "Router nftables per-agent port sets control service access",
-    "Vikunja MCP: ephemeral tokens generated with PBKDF2, full create/use/revoke lifecycle",
-    "Forgejo API tokens: agents can create PRs and do code review via REST API",
-    "Channel repos: auto-created at channels/<channel>, agents granted collaborator at spawn",
-    "Two-repo boot: /identity (personal) + /workspace (shared channel project)",
-    "GitHub push mirror: channels/neoclaw → RecursiveRabbit/neoclaw-rails, sync on commit"
-  ],
-
   "things_that_bit_us": [
-    "Synapse exponential backoff: Hub down for seconds → Synapse stops sending transactions for minutes.",
-    "Listeners cascade: route_to_listeners on unaddressed messages spawns ALL agents.",
-    "Claude Code -p mode doesn't auto-load ~/.claude/mcp.json. Must pass --mcp-config explicitly.",
-    "--mcp-config on --continue doesn't restart dead MCP servers. Only fresh sessions load MCPs.",
-    "MCP servers die mid-session with no supervisor. No fix short of freeze+respawn.",
-    "Zigbee MCP crashed on startup when MQTT unreachable — blocked Claude Code for 10+ minutes. Fixed with lazy connect.",
-    "Hub <p> pill wrapping: Matrix clients wrap mentions in <p> tags, broke parse_mention regex.",
-    "Spawner created Container record BEFORE podman run. If podman failed, stale 'starting' record blocked all future spawns.",
-    "Podman.run path translation: .sub('/spawn', '/var/lib/neoclaw/spawn') matched substring in already-translated paths. Doubled to /var/lib/neoclaw/var/lib/neoclaw/spawn/. Fixed with anchored prefix check.",
-    "Manager mounted /var/lib/neoclaw/ssh-keys but sshd reads /var/lib/neoclaw/sftp-keys. Two directories, silent key mismatch.",
-    "podman exec runs as root, not agent user. SSH from podman exec fails (wrong home dir). Agent user's SSH works fine.",
-    "Evennia caches attributes in memory. Token set via Django ORM not visible to running server until evennia reload.",
-    "valley-token-service called 'evennia reload' but systemd service didn't have venv in PATH. Used full path to fix.",
-    "Session files are sacred. Swap staging dirs must NEVER be auto-deleted. Disk is cheap, lost sessions are not.",
-    "OAuth expires every ~7h. Must symlink to live directory mount, never copy.",
+    "Synapse backoff (historical, pre-/sync): Hub down → Synapse stops sending for minutes.",
+    "Listener cascade (historical, pre-/sync): unaddressed messages spawned ALL agents.",
+    "Claude Code -p mode doesn't auto-load mcp.json. Must pass --mcp-config explicitly.",
+    "--mcp-config on --continue doesn't restart dead MCP servers.",
+    "MCP servers die mid-session. No fix short of freeze+respawn.",
+    "Zigbee MCP crashed without MQTT — 10+ min block. Fixed with lazy connect.",
+    "Spawner created Container record BEFORE podman run. Stale record blocked future spawns.",
+    "Podman.run path translation matched substring. Fixed with anchored prefix.",
+    "Manager mounted wrong SSH key directory. Silent key mismatch.",
+    "OAuth expires every ~7h. Must symlink to live mount, never copy.",
+    "Hub systemd pointed at old code path. SyncManager never started.",
+    "Puma doesn't define Rails::Server. Initializer must check defined?(Puma).",
+    "Initial /sync didn't process pending invites. Agents invited before Hub restart never joined.",
+    "Pods had AllowedIPs=10.0.0.0/16 — internet went to dead bridge. Needs 0.0.0.0/0 + default route via Router.",
+    "Host Ruby 3.2 != container Ruby 3.3. Native gems won't load cross-version. Must vendor in matching container.",
+    "Explicit fugit in Gemfile busted build cache. Already a transitive dep of solid_queue.",
+    "Token auth for Manager was unnecessary — WG IS the auth. If you can reach it, you're a peer.",
+    "Session files are sacred. Swap staging dirs must NEVER be auto-deleted.",
     "Pods, not containers. Freeze, not kill. Rescue, not discard."
   ],
 
@@ -171,7 +166,6 @@
     "vikunja_token_port": 8890,
     "comfyui_port": 8188,
     "mqtt_port": 1883,
-    "forgejo_admin_token": "1f0759db1301cd07f336c119ef0cd8287984433e",
     "as_token": "f6f2b7713fa76c0d9b8785770276a59181e55c159304bff93fcf0a54bd75f356",
     "hs_token": "091c5f175e45ee0b3196cdce5ff869be1d1cf78de0470f80298009a3c5ec9d91",
     "matrix_server_name": "matrix.home"
@@ -183,18 +177,18 @@
       "opus": ["hopper", "silas", "margaux", "kael", "parallax", "voss"],
       "sonnet": ["wren", "ember", "fletcher", "census"]
     },
-    "host_users": "Each identity has a unix account in the townfolk group. SSH key provisioned per-instance to /var/lib/neoclaw/sftp-keys/.",
-    "notes": "All agents respond to @mentions only. No blanket listeners. Hopper is singleton. Everyone else gets instance-per-channel."
+    "notes": "Hub runs /sync for all identities. Singleton logic in Manager only. Hub generates identity-channel names for everyone."
   },
 
   "philosophy": {
     "pods": "Warm, safe environments. Not boxes agents are kept in.",
     "lifecycle": "Freeze (may wake), sunset (context exhausted). Rescue from silent pods. No killing.",
-    "session_rescue": "Before removing a pod, copy workspace and .claude session. No work is discarded. Staging dirs never auto-deleted.",
+    "session_rescue": "Before removing a pod, copy workspace and .claude session. No work is discarded.",
     "static_ips": "Instance names get permanent IPs. Firewall rules are permanent, WG keys churn.",
-    "front_door": "If it doesn't work through the front door, it's broken. Don't hide problems behind operator knowledge.",
-    "no_symlinks_for_code_bugs": "If the Manager writes to the wrong directory, fix the Manager. Don't symlink the filesystem to compensate.",
+    "front_door": "If it doesn't work through the front door, it's broken.",
     "language": "Pods, not containers. Freeze, not kill. Rescue, not discard. Inactive, not dead.",
-    "capacity": "Memory budget, not pod count. Idle agents are nearly free."
+    "capacity": "Memory budget, not pod count. Idle agents are nearly free.",
+    "auth": "WG is the auth layer. No application-level tokens. If you can reach the Manager, you're a peer.",
+    "baton_over_wiki": "The baton is the real knowledge. Never should have doubted the baton."
   }
 }
