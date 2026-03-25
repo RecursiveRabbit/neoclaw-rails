@@ -26,6 +26,7 @@ WORKSPACE   = "/workspace"
 IDENTITY_DIR = "/identity"
 SPAWN_FILE  = "/run/secrets/spawn.json"
 RELAY_PORT  = 9300
+HEALTH_INTERVAL = 30
 
 class Relay
   def initialize
@@ -35,9 +36,6 @@ class Relay
     @channel = @spawn[:channel]
     @model = @spawn[:model] || "claude-opus-4-6"
     @boot_state = @spawn[:boot_state] || "fresh"
-    @health_interval = @spawn.dig(:relay, :health_interval) || 30
-    @typing_interval = @spawn.dig(:relay, :typing_interval) || 20
-    @http_timeout = @spawn.dig(:relay, :http_timeout) || 5
     @context_limit = detect_context_limit
     @hub_ip = detect_hub_ip
     @manager_ip = detect_manager_ip
@@ -81,11 +79,23 @@ class Relay
 
   def boot_clone_url
     git_conf = @spawn[:git] || {}
-    repo = git_conf[:repo] || "#{@identity}/workspace"
+    forge = @spawn.dig(:services, :forgejo) || {}
+    repo = forge[:workspace_repo] || git_conf[:repo] || "#{@identity}/workspace"
 
-    # SSH clone via the host (10.0.0.2:2222). All services are on the
-    # host, reached through the Router. Forgejo SSH is port 2222.
-    "ssh://git@#{detect_hub_ip}:2222/#{repo}.git"
+    # Preferred path: explicit SSH clone URL for context repo.
+    explicit = forge[:workspace_clone_url].to_s
+    return explicit unless explicit.empty?
+
+    # Fallback: HTTP clone URL
+    forge_url = git_conf[:forge_url] || forge[:forge_url] || "http://#{detect_hub_ip}:3000"
+    forge_user = forge[:forge_user]
+    if forge_user && !forge_user.empty?
+      uri = URI.parse(forge_url)
+      uri.user = forge_user
+      "#{uri}/#{repo}.git"
+    else
+      "#{forge_url}/#{repo}.git"
+    end
   end
 
   BATON_PATH_TEMPLATE = "#{WORKSPACE}/sessions/%s/baton.json"
@@ -299,7 +309,7 @@ class Relay
   def start_typing_keepalive
     Thread.new do
       loop do
-        sleep @typing_interval
+        sleep 20
         if claude_running?
           post_to_hub("/agent/event", { instance: @instance_name, event: "typing" })
         else
@@ -536,7 +546,7 @@ class Relay
     Thread.new do
       while @running
         begin
-          sleep @health_interval
+          sleep HEALTH_INTERVAL
           post_to_manager("/containers/#{@instance_name}/health", {
             context_usage: @context_usage,
             last_message_at: @last_message_at.iso8601,
@@ -617,8 +627,8 @@ class Relay
   def post_json(url, body, raw: false, silent: false)
     uri = URI.parse(url)
     http = Net::HTTP.new(uri.host, uri.port)
-    http.open_timeout = @http_timeout
-    http.read_timeout = @http_timeout
+    http.open_timeout = 5
+    http.read_timeout = 5
     req = Net::HTTP::Post.new(uri.path)
     req["Content-Type"] = "application/json"
     req.body = raw ? body : JSON.generate(body)
@@ -641,9 +651,7 @@ class Relay
     limit = @spawn[:context_limit]
     return limit if limit.is_a?(Integer) && limit > 0
 
-    # Settings-driven limits from Manager, fall back to built-in
-    limits = @spawn[:model_context_limits] || MODEL_CONTEXT_LIMITS
-    limits[@model] || limits[@model.to_s] || 200_000
+    MODEL_CONTEXT_LIMITS[@model] || 200_000
   end
 
   def detect_hub_ip
