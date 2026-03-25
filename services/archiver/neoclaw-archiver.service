@@ -1,0 +1,20 @@
+[Unit]
+Description=NeoClaw Archiver Service (vector index + semantic search)
+After=network.target
+
+[Service]
+Type=simple
+User=rook
+WorkingDirectory=/home/rook/.openclaw/workspace/neoclaw-rails-upstream-2026-03-23/services/archiver
+Environment=ARCHIVER_HOST=10.0.0.2
+Environment=ARCHIVER_PORT=4010
+Environment=ARCHIVER_DATA_DIR=/var/lib/neoclaw/archiver
+Environment=ARCHIVER_WORKSPACES_GLOB=/var/lib/neoclaw/workspaces/*
+Environment=ARCHIVER_MAX_K=25
+# Set ARCHIVER_API_KEY in override if needed.
+ExecStart=/home/rook/.venvs/neoclaw-archiver/bin/python /home/rook/.openclaw/workspace/neoclaw-rails-upstream-2026-03-23/services/archiver/server.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

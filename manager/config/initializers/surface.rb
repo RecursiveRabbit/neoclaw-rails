@@ -57,7 +57,8 @@ module Surface
     # =================================================================
 
     def memory_budget
-      Setting.get("resources.memory_budget")
+      # Default 15GB in bytes
+      ENV.fetch("MANAGER_MEMORY_BUDGET", (15 * 1024 * 1024 * 1024).to_s).to_i
     end
 
     # =================================================================
@@ -127,11 +128,11 @@ module Surface
     end
 
     def valley_url
-      ENV.fetch("VALLEY_URL", "http://#{host_wg_ip}:8888")
+      ENV.fetch("VALLEY_URL", "http://#{host_wg_ip}:4006")
     end
 
     def valley_token_url
-      ENV.fetch("VALLEY_TOKEN_URL", "http://#{host_wg_ip}:8889")
+      ENV.fetch("VALLEY_TOKEN_URL", "http://#{host_wg_ip}:8890")
     end
 
     def vikunja_url
@@ -139,7 +140,8 @@ module Surface
     end
 
     def vikunja_token_url
-      ENV.fetch("VIKUNJA_TOKEN_URL", "http://#{host_wg_ip}:8890")
+      # Optional. If unset, Vikunja relies on WG-only reachability.
+      ENV["VIKUNJA_TOKEN_URL"].to_s
     end
 
     def vikunja_admin_token
@@ -148,6 +150,27 @@ module Surface
 
     def hub_url
       ENV.fetch("HUB_URL", "http://#{host_wg_ip}:3100")
+    end
+
+    def archiver_url
+      ENV.fetch("ARCHIVER_URL", "http://#{host_wg_ip}:4010")
+    end
+
+    def archiver_api_key
+      ENV.fetch("ARCHIVER_API_KEY", "")
+    end
+
+    # Matrix MCP provisioning (optional)
+    def matrix_homeserver_url
+      ENV.fetch("MATRIX_HOMESERVER_URL", "http://10.7.7.62:8008")
+    end
+
+    def matrix_server_name
+      ENV.fetch("MATRIX_SERVER_NAME", "localhost")
+    end
+
+    def matrix_as_token
+      ENV.fetch("MATRIX_AS_TOKEN", "")
     end
 end
 
