@@ -116,6 +116,7 @@ class Relay
         # Two repos: personal identity repo + shared project repo
         preamble = [
           "You have just been instantiated as #{@identity} in channel ##{@channel}.",
+          "Your text output IS your voice in the channel — when you write text, it appears as a message from you. Do not use Matrix, SSH, or any other tool to reply. Just speak.",
           "",
           "Clone your personal repo first:",
           "  git clone #{clone_url} #{IDENTITY_DIR}",
@@ -131,6 +132,7 @@ class Relay
         # Single repo: personal workspace only
         preamble = [
           "You have just been instantiated as #{@identity} in channel ##{@channel}.",
+          "Your text output IS your voice in the channel — when you write text, it appears as a message from you. Do not use Matrix, SSH, or any other tool to reply. Just speak.",
           "Your workspace is empty. Clone your repo:",
           "  git clone #{clone_url} #{WORKSPACE}",
           "Then read #{WORKSPACE}/identity.json to learn who you are.",

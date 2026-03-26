@@ -99,11 +99,9 @@
 
   "todo": {
     "priority": [
-      {
-        "what": "Hub /sync migration — replace appservice transactions with per-puppet /sync",
-        "status": "NEXT",
-        "note": "The big one. Evans: 'Matrix already has a notification system. We don't need to parse messages. Regex is for the birds. Tear it down.' Remove: TransactionsController, Router mention parsing, identities.yml, ListenerQueue, sole-agent fallback. Build: SyncManager with one /sync loop per puppet. Each loop: GET /sync?user_id=@name:matrix.home&since=TOKEN&timeout=30000 with as_token. Matrix decides who gets notified (DMs, @mentions, All Messages setting). Hub just delivers to relay. Singleton logic moves entirely to Manager — Hub asks Manager for an IP, Manager handles singleton internally. Hub becomes a thin bridge, not a router. Keep appservice registration for outbound (puppeting responses, presence, typing). ListenerQueue already ripped out. Identities.yml already stripped of listeners. This is the first real collaborative task for voss-neoclaw and silas-neoclaw."
-      }
+      {"what": "!previous not working", "status": "needs investigation"},
+      {"what": "Manager rebuild — deploy WebSocket stop button and CSRF fix", "status": "ready to build"},
+      {"what": "Agents use SSH/Matrix to reply instead of stdout", "status": "boot prompt updated, needs testing"}
     ],
     "items": [
       {"what": "TOOLS.md injection into pods", "status": "not started", "note": "Write tool descriptions for each MCP service. Provisioner generates dynamic TOOLS.md per agent."},
