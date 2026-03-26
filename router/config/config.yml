@@ -33,6 +33,8 @@ services:
     tcp: [4006]
   semantic-search:
     tcp: [8100]
+  archiver:
+    tcp: [4010]
   matrix:
     tcp: [8008]
   ssh:

@@ -218,15 +218,38 @@ class Spawner
     end
 
     # Translate service names to Router access list format.
-    # Adds "default" (Hub access) and "internet:full" for all agents.
+    #
+    # Default: service-plane only via named services.
+    # Optional internet tiers are opt-in via synthetic service names:
+    # - internet-full -> internet:full
+    # - internet-web  -> internet:web
+    # - internet-none -> internet:none
+    #
+    # Host network access is also opt-in via named service:
+    # - host-network
     def build_access_list(services, config)
       access = ["default"]
+
       services.each do |svc|
-        # Skip services that don't map to Router service names
-        next if svc == "hub"
-        access << svc
+        case svc
+        when "hub"
+          next
+        when "internet-full"
+          access << "internet:full"
+        when "internet-web"
+          access << "internet:web"
+        when "internet-none"
+          access << "internet:none"
+        else
+          access << svc
+        end
       end
-      access << "internet:full"
+
+      # If no explicit internet tier is set, enforce none.
+      unless access.any? { |x| x.start_with?("internet:") }
+        access << "internet:none"
+      end
+
       access.uniq
     end
 
@@ -296,7 +319,7 @@ class Spawner
             {
               public_key: Surface.router_pubkey,
               endpoint: Surface.router_endpoint,
-              allowed_ips: "0.0.0.0/0"
+              allowed_ips: "10.0.0.0/16"
             }
           ]
         },
@@ -306,24 +329,6 @@ class Spawner
       if channel_repo
         data[:channel_repo] = channel_repo
       end
-
-      # Settings — relay reads these from spawn.json
-      data[:relay] = {
-        health_interval: Setting.get("relay.health_interval"),
-        typing_interval: Setting.get("relay.typing_interval"),
-        http_timeout:    Setting.get("relay.http_timeout"),
-      }
-
-      # System prompts — only include non-empty overrides
-      prompts = {}
-      %w[fresh_boot resume_boot baton_boot hot_swap].each do |key|
-        val = Setting.get("prompts.#{key}")
-        prompts[key.to_sym] = val if val.present?
-      end
-      data[:prompts] = prompts if prompts.any?
-
-      # Model context limits
-      data[:model_context_limits] = Setting.get("models.context_limits")
 
       data
     end
