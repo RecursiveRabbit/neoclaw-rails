@@ -32,6 +32,18 @@ eval "$(ruby -rjson -e '
   puts "SSH_KEY=\"#{ssh_key}\""
   puts "FORGE_URL=#{g[:forge_url] || "http://10.0.0.3:3000"}"
   puts "REPO=#{g[:repo] || ""}"
+
+  svc = s[:services] || {}
+  mode = if svc.key?(:"internet-full")
+    "full"
+  elsif svc.key?(:"internet-web")
+    "web"
+  else
+    "none"
+  end
+  host_net = svc.key?(:"host-network") ? "1" : "0"
+  puts "INTERNET_MODE=#{mode}"
+  puts "HOST_NETWORK=#{host_net}"
 ' "$SPAWN_FILE")"
 
 log "starting ${INSTANCE} (${IDENTITY}) in #${CHANNEL}"
@@ -70,11 +82,50 @@ if ! ip link show wg0 up >/dev/null 2>&1; then
 fi
 log "wireguard up (${WG_ADDRESS})"
 
-# --- Route all traffic through the Router ---
-# The podman bridge no longer has internet. All egress goes through WG.
-ip route del default 2>/dev/null || true
-ip route add default via 10.0.0.1 dev wg0
-log "default route via Router (10.0.0.1)"
+# --- Egress policy enforcement ---
+# Default residents: WG service plane only.
+# Optional pseudo services from spawn:
+#   INTERNET_MODE=none|web|full
+#   HOST_NETWORK=1 allows LAN host endpoint (10.7.7.62)
+if command -v nft >/dev/null 2>&1; then
+  # Build container-local egress policy with nftables.
+  # We avoid touching host rules; this runs inside the container netns.
+  nft delete table inet neoclaw_local 2>/dev/null || true
+  nft add table inet neoclaw_local
+  nft add chain inet neoclaw_local output '{ type filter hook output priority 0; policy accept; }'
+
+  case "${INTERNET_MODE}" in
+    full)
+      # No extra restrictions in full mode.
+      ;;
+    web)
+      nft -f - <<'NFT' || true
+flush chain inet neoclaw_local output
+add rule inet neoclaw_local output oifname "lo" accept
+add rule inet neoclaw_local output ct state established,related accept
+add rule inet neoclaw_local output ip daddr 10.0.0.0/16 accept
+add rule inet neoclaw_local output ip protocol tcp tcp dport {80,443} accept
+add rule inet neoclaw_local output ip protocol udp udp dport 53 accept
+add rule inet neoclaw_local output ip protocol tcp tcp dport 53 accept
+add rule inet neoclaw_local output counter reject
+NFT
+      ;;
+    none|*)
+      nft -f - <<'NFT' || true
+flush chain inet neoclaw_local output
+add rule inet neoclaw_local output oifname "lo" accept
+add rule inet neoclaw_local output ct state established,related accept
+add rule inet neoclaw_local output ip daddr 10.0.0.0/16 accept
+NFT
+      if [ "${HOST_NETWORK}" = "1" ]; then
+        nft add rule inet neoclaw_local output ip daddr 10.7.7.62/32 accept || true
+      fi
+      nft add rule inet neoclaw_local output counter reject || true
+      ;;
+  esac
+
+  log "egress policy applied (nft): internet=${INTERNET_MODE} host_network=${HOST_NETWORK}"
+fi
 
 # --- Claude credentials ---
 AGENT_HOME="/home/agent"
@@ -82,12 +133,12 @@ CLAUDE_DIR="${AGENT_HOME}/.claude"
 mkdir -p "$CLAUDE_DIR"
 
 if [ -f /run/secrets/claude/.credentials.json ]; then
-    # Symlink to the directory bind mount. Directory mounts reflect
-    # file changes on the host — credentials stay live as Claude Code
-    # refreshes them.
-    ln -sf /run/secrets/claude/.credentials.json "${CLAUDE_DIR}/.credentials.json"
-    chown -h agent:agent "${CLAUDE_DIR}/.credentials.json"
-    log "claude credentials linked (live mount)"
+    # Copy credentials into agent-owned home. The mounted secret may be
+    # root:root 600 and unreadable by `agent` when bind-mounted.
+    cp /run/secrets/claude/.credentials.json "${CLAUDE_DIR}/.credentials.json"
+    chmod 600 "${CLAUDE_DIR}/.credentials.json"
+    chown agent:agent "${CLAUDE_DIR}/.credentials.json"
+    log "claude credentials copied"
 fi
 
 # --- Claude settings: auto-accept all permissions ---
@@ -171,8 +222,8 @@ ruby -rjson -e '
   config = { mcpServers: {} }
   python = "/opt/mcp-env/bin/python3"
 
-  # SSH — include if agent has an SSH key
-  if File.exist?("#{agent_home}/.ssh/id_ed25519")
+  # SSH — include only if explicitly provisioned for this agent
+  if svc[:ssh] && File.exist?("#{agent_home}/.ssh/id_ed25519")
     config[:mcpServers][:ssh] = {
       command: python,
       args: ["/opt/mcp/ssh/server.py"],
@@ -185,14 +236,21 @@ ruby -rjson -e '
     }
   end
 
-  # Vikunja — include if provisioned
-  if svc[:vikunja]
+  # Vikunja — include only when token is provisioned
+  if svc[:vikunja] && !svc.dig(:vikunja, :token).to_s.empty?
+    vik_base = svc.dig(:vikunja, :url).to_s
+    vik_api = if !vik_base.empty?
+      "#{vik_base.sub(%r{/$}, "")}/api/v1"
+    else
+      "http://#{host_ip}:3456/api/v1"
+    end
+
     config[:mcpServers][:vikunja] = {
       command: python,
       args: ["/opt/mcp/vikunja/server.py"],
       env: {
-        VIKUNJA_API_URL: "http://#{host_ip}:3456/api/v1",
-        VIKUNJA_TOKEN: (svc.dig(:vikunja, :token) || "").to_s,
+        VIKUNJA_API_URL: vik_api,
+        VIKUNJA_TOKEN: svc.dig(:vikunja, :token).to_s,
         VIKUNJA_PROJECT_ID: (svc.dig(:vikunja, :project_id) || "1").to_s
       }
     }
@@ -200,11 +258,18 @@ ruby -rjson -e '
 
   # Valley — include if provisioned
   if svc[:valley]
+    valley_base = svc.dig(:valley, :url).to_s
+    valley_api = if !valley_base.empty?
+      "#{valley_base.sub(%r{/$}, "")}/api/command"
+    else
+      "http://#{host_ip}:8888/api/command"
+    end
+
     config[:mcpServers][:valley] = {
       command: python,
       args: ["/opt/mcp/valley/server.py"],
       env: {
-        VALLEY_API: "http://#{host_ip}:8888/api/command",
+        VALLEY_API: valley_api,
         VALLEY_TOKEN: (svc.dig(:valley, :token) || "").to_s
       }
     }
@@ -239,9 +304,21 @@ ruby -rjson -e '
       command: python,
       args: ["/opt/mcp/matrix/server.py"],
       env: {
-        MATRIX_HOMESERVER: "http://#{host_ip}:8008",
+        MATRIX_HOMESERVER: (svc.dig(:matrix, :homeserver).to_s.empty? ? "http://#{host_ip}:8008" : svc.dig(:matrix, :homeserver).to_s),
         MATRIX_TOKEN: svc.dig(:matrix, :token).to_s,
         MATRIX_USER_ID: svc.dig(:matrix, :user_id).to_s
+      }
+    }
+  end
+
+  # Archiver — semantic retrieval over session/workspace archives
+  if svc[:archiver]
+    config[:mcpServers][:archiver] = {
+      command: python,
+      args: ["/opt/mcp/archiver/server.py"],
+      env: {
+        ARCHIVER_URL: (svc.dig(:archiver, :url).to_s.empty? ? "http://#{host_ip}:4010" : svc.dig(:archiver, :url).to_s),
+        ARCHIVER_API_KEY: (svc.dig(:archiver, :api_key) || "").to_s
       }
     }
   end
@@ -251,73 +328,6 @@ ruby -rjson -e '
 ' "$SPAWN_FILE" "${CLAUDE_DIR}/mcp.json" 2>&1 | while read -r line; do log "mcp config: $line"; done
 
 chown agent:agent "${CLAUDE_DIR}/mcp.json"
-
-# --- TOOLS.md ---
-# Assemble per-agent tool documentation from template snippets.
-# Only includes sections for services present in spawn.json.
-TOOLS_DOCS="/opt/tools-docs"
-ruby -rjson -e '
-  spawn = JSON.parse(File.read(ARGV[0]), symbolize_names: true)
-  host_ip = "'"${HOST_IP}"'"
-  agent_home = "'"${AGENT_HOME}"'"
-  svc = spawn[:services] || {}
-  mcp = JSON.parse(File.read(ARGV[1]), symbolize_names: true)
-  docs_dir = ARGV[2]
-  identity = spawn[:identity]
-
-  parts = [File.read(File.join(docs_dir, "header.md"))]
-
-  # SSH
-  if mcp[:mcpServers]&.key?(:ssh)
-    ssh_env = mcp[:mcpServers][:ssh][:env] || {}
-    text = File.read(File.join(docs_dir, "ssh.md"))
-    text.gsub!("{{SSH_HOST}}", ssh_env[:SSH_HOST] || host_ip)
-    text.gsub!("{{SSH_USER}}", ssh_env[:SSH_USER] || identity)
-    text.gsub!("{{SSH_KEY_PATH}}", ssh_env[:SSH_KEY_PATH] || "~/.ssh/id_ed25519")
-    text.gsub!("{{SSH_PORT}}", (ssh_env[:SSH_PORT] || "22").to_s)
-    parts << text
-  end
-
-  # Valley
-  if svc[:valley] && mcp[:mcpServers]&.key?(:valley)
-    text = File.read(File.join(docs_dir, "valley.md"))
-    text.gsub!("{{VALLEY_CHARACTER}}", identity.capitalize)
-    parts << text
-  end
-
-  # Vikunja
-  if svc[:vikunja] && mcp[:mcpServers]&.key?(:vikunja)
-    parts << File.read(File.join(docs_dir, "vikunja.md"))
-  end
-
-  # ComfyUI
-  if svc[:comfyui] && mcp[:mcpServers]&.key?(:comfyui)
-    parts << File.read(File.join(docs_dir, "comfyui.md"))
-  end
-
-  # Zigbee
-  if svc[:zigbee] && mcp[:mcpServers]&.key?(:zigbee)
-    parts << File.read(File.join(docs_dir, "zigbee.md"))
-  end
-
-  # Matrix
-  if svc[:matrix] && mcp[:mcpServers]&.key?(:matrix)
-    parts << File.read(File.join(docs_dir, "matrix.md"))
-  end
-
-  # Forgejo (not MCP, but a provisioned service)
-  if svc[:forgejo] || File.exist?("#{agent_home}/.forgejo-token")
-    forge_url = spawn.dig(:git, :forge_url) || "http://10.0.0.3:3000"
-    text = File.read(File.join(docs_dir, "forgejo.md"))
-    text.gsub!("{{FORGE_URL}}", forge_url)
-    parts << text
-  end
-
-  File.write(ARGV[3], parts.join("\n"))
-  $stderr.puts "#{parts.length - 1} sections"
-' "$SPAWN_FILE" "${CLAUDE_DIR}/mcp.json" "$TOOLS_DOCS" "${AGENT_HOME}/TOOLS.md" 2>&1 | while read -r line; do log "tools.md: $line"; done
-
-chown agent:agent "${AGENT_HOME}/TOOLS.md"
 
 # --- Service health probes ---
 # Probe each provisioned service. Write results to service-status.md so the

@@ -15,7 +15,7 @@ BRIDGE_GATEWAY = "10.88.0.1"
     provision_config: { service_port: 3000 } },
 
   { name: "ssh",
-    provision_type: "none",     has_own_auth: true,
+    provision_type: "ssh_key",  has_own_auth: true,
     provision_config: { service_port: 22 } },
 
   { name: "valley",
@@ -46,12 +46,22 @@ BRIDGE_GATEWAY = "10.88.0.1"
     provision_type: "none",     has_own_auth: true,
     provision_config: { service_port: 8008 } },
 
+  { name: "archiver",
+    provision_type: "archiver", has_own_auth: true,
+    provision_config: { service_port: 4010 } },
+
   { name: "ollama",
     wg_interface: "wg-ollama",  wg_ip: "10.0.0.9", wg_listen_port: 51829,
     wg_public_key: "DapJXgzjbyCqUznymsSbUl+2B0B4IIcHEfQs3cC7Iys=",
     wg_endpoint: "#{BRIDGE_GATEWAY}:51829",
     provision_type: "none",     has_own_auth: false,
     provision_config: { service_port: 11434 } },
+
+  # Access-tier pseudo services (mapped by Spawner#build_access_list)
+  { name: "internet-full", provision_type: "none", has_own_auth: false, provision_config: {} },
+  { name: "internet-web",  provision_type: "none", has_own_auth: false, provision_config: {} },
+  { name: "internet-none", provision_type: "none", has_own_auth: false, provision_config: {} },
+  { name: "host-network",  provision_type: "none", has_own_auth: false, provision_config: {} },
 ].each do |attrs|
   ServiceType.find_or_create_by!(name: attrs[:name]) do |s|
     s.assign_attributes(attrs.merge(enabled: true))
@@ -72,28 +82,16 @@ end
 
 # --- Agent Configs ---
 [
-  { identity: "hopper",   repo: "hopper/workspace",   model: "claude-opus-4-6",   singleton: true,
-    base_services: %w[forgejo ssh valley vikunja] },
-  { identity: "silas",    repo: "silas/workspace",     model: "claude-opus-4-6",   singleton: false,
-    base_services: %w[forgejo ssh valley vikunja] },
-  { identity: "margaux",  repo: "margaux/workspace",   model: "claude-opus-4-6",   singleton: false,
-    base_services: %w[forgejo ssh valley vikunja],
-    channel_overrides: { "art" => %w[comfyui] } },
-  { identity: "kael",     repo: "kael/workspace",      model: "claude-opus-4-6",   singleton: false,
-    base_services: %w[forgejo ssh valley] },
-  { identity: "wren",     repo: "wren/workspace",      model: "claude-sonnet-4-6", singleton: false,
-    base_services: %w[forgejo ssh valley] },
-  { identity: "ember",    repo: "ember/workspace",     model: "claude-sonnet-4-6", singleton: false,
-    base_services: %w[forgejo ssh] },
-  { identity: "parallax", repo: "parallax/workspace",  model: "claude-opus-4-6",   singleton: false,
-    base_services: %w[forgejo ssh valley],
-    channel_overrides: { "art" => %w[comfyui] } },
-  { identity: "fletcher", repo: "fletcher/workspace",  model: "claude-sonnet-4-6", singleton: false,
-    base_services: %w[forgejo ssh] },
-  { identity: "census",   repo: "census/workspace",    model: "claude-sonnet-4-6", singleton: false,
-    base_services: %w[forgejo ssh] },
-  { identity: "voss",     repo: "voss/workspace",      model: "claude-opus-4-6",   singleton: false,
-    base_services: %w[forgejo ssh valley] },
+  { identity: "rook",     repo: "rook/workspace",      model: "claude-sonnet-4-5", singleton: true,
+    base_services: %w[forgejo ssh valley vikunja matrix] },
+  { identity: "elias",    repo: "elias/workspace",     model: "claude-opus-4-6",   singleton: false,
+    base_services: %w[forgejo ssh valley vikunja matrix] },
+  { identity: "ellis",    repo: "ellis/workspace",     model: "claude-sonnet-4-6", singleton: false,
+    base_services: %w[forgejo valley vikunja matrix] },
+  { identity: "morgan",   repo: "morgan/workspace",    model: "claude-sonnet-4-6", singleton: false,
+    base_services: %w[forgejo valley matrix] },
+  { identity: "iris",     repo: "iris/workspace",      model: "claude-opus-4-6",   singleton: false,
+    base_services: %w[forgejo valley vikunja matrix] },
 ].each do |attrs|
   AgentConfig.find_or_create_by!(identity: attrs[:identity]) do |c|
     c.assign_attributes(attrs.merge(idle_timeout: 480))
@@ -101,25 +99,4 @@ end
   puts "  config: #{attrs[:identity]}"
 end
 
-# --- Agent Room Overrides ---
-# Margaux and Parallax get comfyui in #art
-[
-  { identity: "margaux",  channel: "art", extra_services: %w[comfyui] },
-  { identity: "parallax", channel: "art", extra_services: %w[comfyui] },
-].each do |attrs|
-  config = AgentConfig.find_by!(identity: attrs[:identity])
-  AgentRoomConfig.find_or_create_by!(agent_config: config, channel: attrs[:channel]) do |arc|
-    arc.extra_services = attrs[:extra_services]
-  end
-  puts "  override: #{attrs[:identity]} in ##{attrs[:channel]}"
-end
-
-# --- Settings defaults ---
-# Only seed settings that don't already exist. Preserves manual edits.
-Setting::DEFAULTS.each do |key, meta|
-  next if Setting.exists?(key: key)
-  Setting.set(key, meta[:value])
-end
-puts "  settings: #{Setting.count} entries"
-
-puts "\nSeeded: #{ServiceType.count} services, #{AgentConfig.count} configs, #{RoomConfig.count} rooms, #{Setting.count} settings."
+puts "\nSeeded: #{ServiceType.count} services, #{AgentConfig.count} configs, #{RoomConfig.count} rooms."
