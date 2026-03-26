@@ -17,6 +17,7 @@ RUN apt-get update && apt-get install -y \
     nodejs \
     npm \
     iproute2 \
+    procps \
     iputils-ping \
     gosu \
     tini \

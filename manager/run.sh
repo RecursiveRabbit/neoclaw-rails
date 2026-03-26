@@ -39,7 +39,6 @@ podman run -d \
     --name "$CONTAINER_NAME" \
     --hostname "$CONTAINER_NAME" \
     --cap-add NET_ADMIN \
-    -p 9201:9200 \
     -v "${PODMAN_SOCKET}:/run/podman/podman.sock" \
     -v "${HOST_SPAWN_DIR}:/spawn" \
     -v "${HOST_SSH_KEYS_DIR}:/ssh-keys" \

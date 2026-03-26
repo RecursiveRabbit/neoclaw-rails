@@ -50,7 +50,7 @@ Address = ${MANAGER_WG_IP}/32
 [Peer]
 PublicKey = $ROUTER_PUBKEY
 Endpoint = ${ROUTER_BRIDGE_IP}:${ROUTER_WG_PORT}
-AllowedIPs = 0.0.0.0/0
+AllowedIPs = 10.0.0.0/16
 PersistentKeepalive = 25
 EOF
 

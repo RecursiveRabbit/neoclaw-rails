@@ -46,7 +46,7 @@ mkdir -p /etc/wireguard
 ruby -rjson -e '
   s = JSON.parse(File.read(ARGV[0]), symbolize_names: true)
   n = s[:network]
-  conf = "[Interface]\nPrivateKey = #{n[:wg_private_key]}\nAddress = #{n[:wg_address]}/32\n"
+  conf = "[Interface]\nPrivateKey = #{n[:wg_private_key]}\n"
   (n[:peers] || []).each do |p|
     conf += "\n[Peer]\nPublicKey = #{p[:public_key]}\nEndpoint = #{p[:endpoint]}\n"
     conf += "AllowedIPs = #{p[:allowed_ips]}\nPersistentKeepalive = 25\n"
@@ -55,10 +55,17 @@ ruby -rjson -e '
 ' "$SPAWN_FILE"
 
 chmod 600 /etc/wireguard/wg0.conf
-if ! wg-quick up wg0 2>&1; then
+
+# Manual WG setup — wg-quick's AllowedIPs=0.0.0.0/0 handling needs
+# sysctl privileges containers don't have. We just need the interface
+# up and a default route through the Router.
+ip link add wg0 type wireguard
+wg setconf wg0 /etc/wireguard/wg0.conf
+ip addr add "${WG_ADDRESS}/32" dev wg0
+ip link set wg0 up
+ip route add 10.0.0.0/16 dev wg0
+if ! ip link show wg0 up >/dev/null 2>&1; then
     log "FATAL: wireguard failed to start"
-    # Don't try to reach Manager without WG — it must not be reachable
-    # outside the mesh. Manager's watchdog will detect the failed pod.
     exit 1
 fi
 log "wireguard up (${WG_ADDRESS})"
