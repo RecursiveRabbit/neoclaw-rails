@@ -184,6 +184,12 @@ module Hub
       def process_message(event, room_id:)
         return unless event["type"] == "m.room.message"
 
+        # Self-echo filter: Synapse sets unsigned.transaction_id on events
+        # sent by the same access token. Since all puppets share our
+        # appservice token, this only appears on the SENDING puppet's
+        # /sync — not on other identities. Authoritative self-echo guard.
+        return if event.dig("unsigned", "transaction_id")
+
         sender = extract_sender(event)
         return if sender == @identity
         return if sender == Config.appservice_user
@@ -191,6 +197,14 @@ module Hub
         body = event.dig("content", "body") || ""
         slug = resolve_slug(room_id)
         return unless slug
+
+        # In shared rooms, only deliver if this identity is mentioned.
+        # Matrix sets m.mentions.user_ids on events with explicit mentions.
+        # DMs always deliver (two-person rooms don't need @-mentions).
+        mentioned_ids = event.dig("content", "m.mentions", "user_ids") || []
+        unless slug.start_with?("dm-")
+          return unless mentioned_ids.include?(@user_id)
+        end
 
         # Operator commands
         if command = Commands.parse(body, sender: sender)

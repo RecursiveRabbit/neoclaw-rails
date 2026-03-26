@@ -21,6 +21,20 @@ class ContainerStreamChannel < ApplicationCable::Channel
     end
   end
 
+  # Browser sends { action: "stop" } over the WebSocket.
+  # No CSRF, no HTTP round-trip — uses the connection that's already open.
+  def receive(data)
+    case data["action"]
+    when "stop"
+      instance = params[:instance]
+      container = Container.find_by(instance_name: instance)
+      return unless container
+
+      HTTPX.post("http://#{container.wg_address}:9300/signal", json: { signal: "stop" })
+      transmit({ type: "system", message: "Stop signal sent." })
+    end
+  end
+
   def unsubscribed
     stop_all_streams
   end
