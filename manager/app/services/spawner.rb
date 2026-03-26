@@ -102,21 +102,20 @@ class Spawner
       ssh_keypair = generate_ssh_keypair
 
       # Register or activate on the Router.
-      # The Router handles all WireGuard peering and firewall rules.
+      # The Router is the sole source of truth for IP allocation.
       if RouterClient.registered?(instance_name)
         # Already registered — just swap the WG key (hot path)
         result = RouterClient.activate(name: instance_name, pubkey: wg_keypair[:public])
         agent_ip = result[:ip]
       else
-        # First time — register with access list
-        agent_ip = allocate_ip(instance_name)
+        # First time — register. Router allocates the IP.
         access = build_access_list(services, config)
-        RouterClient.register(
+        result = RouterClient.register(
           name: instance_name,
           pubkey: wg_keypair[:public],
-          address: agent_ip,
           access: access
         )
+        agent_ip = result[:ip]
       end
 
       # Provision service auth (Forgejo users, SSH keys, etc.)
@@ -195,26 +194,6 @@ class Spawner
     def build_instance_name(identity, channel)
       config = AgentConfig.find_by(identity: identity)
       config&.singleton? ? identity : "#{identity}-#{channel}"
-    end
-
-    # Static IP per instance name. Once assigned, never changes.
-    # Check the Router first (it's the source of truth for existing agents).
-    # If new, allocate from the pool.
-    def allocate_ip(instance_name)
-      # Check if Router already has an IP for this name
-      info = RouterClient.agent_info(instance_name)
-      return info[:ip] if info
-
-      # New agent — allocate from pool
-      # Check both Router state and local container records
-      used = Container.where.not(state: "inactive").pluck(:wg_address).compact.to_set
-      (1..255).each do |third|
-        (1..254).each do |fourth|
-          ip = "10.0.#{third}.#{fourth}"
-          return ip unless used.include?(ip)
-        end
-      end
-      raise "IP pool exhausted"
     end
 
     # Translate service names to Router access list format.

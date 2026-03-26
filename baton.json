@@ -118,6 +118,7 @@
       }
     ],
     "items": [
+      {"what": "Hub rewrite — remove all mention-parsing regex, use Matrix notification routing (/sync handles it)", "status": "assigned to Voss", "note": "Evans directive Mar 26: no regex, no parsing. Matrix decides who gets notified. Appservice dismantled in favor of /sync."},
       {"what": "Channel repo conventions", "status": "not started"},
       {"what": "Session processing — boot state from metadata", "status": "not started"},
       {"what": "Image/attachment UX", "status": "not started"},
@@ -144,6 +145,7 @@
     "Host Ruby 3.2 != container Ruby 3.3. Native gems won't load cross-version. Must vendor in matching container.",
     "Explicit fugit in Gemfile busted build cache. Already a transitive dep of solid_queue.",
     "Token auth for Manager was unnecessary — WG IS the auth. If you can reach it, you're a peer.",
+    "Manager allocate_ip only checked local Container records. Frozen agent IP looked free → collision. Router is now sole source of truth for IP allocation.",
     "Session files are sacred. Swap staging dirs must NEVER be auto-deleted.",
     "Pods, not containers. Freeze, not kill. Rescue, not discard."
   ],

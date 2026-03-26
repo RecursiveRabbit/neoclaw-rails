@@ -87,6 +87,19 @@ def sub_path(path)
   path.sub(%r{^/agents/[^/]+}, "")
 end
 
+# Allocate the next available IP from the agent subnet.
+# The Router is the sole source of truth for IP assignments.
+AGENT_SUBNET_PREFIX = "10.0.1"
+
+def allocate_ip
+  used = $state.all.values.map { |a| a["ip"] }.compact.to_set
+  (1..254).each do |fourth|
+    ip = "#{AGENT_SUBNET_PREFIX}.#{fourth}"
+    return ip unless used.include?(ip)
+  end
+  nil
+end
+
 # --- Boot Sequence ---
 
 log "=== WG-Router starting ==="
@@ -167,6 +180,8 @@ class RouterServlet < WEBrick::HTTPServlet::AbstractServlet
   end
 
   # --- POST /agents — register new agent ---
+  # The Router is the sole source of truth for IP allocation.
+  # If no address is provided, the Router assigns the next available IP.
   if method == "POST" && path == "/agents"
     data = json_body(req)
     unless data
@@ -176,16 +191,28 @@ class RouterServlet < WEBrick::HTTPServlet::AbstractServlet
 
     name = data["name"]
     address = data["address"]
-    ip = address&.sub(/\/32$/, "")
     pubkey = data["peer_pubkey"]
     access = data["access"] || ["default"]
 
     errors = []
     errors << "invalid name" unless name&.match?(NAME_RE)
-    errors << "invalid address (need x.x.x.x/32)" unless address&.match?(IP_CIDR_RE)
     errors << "invalid pubkey" unless pubkey&.match?(PUBKEY_RE)
     errors << "invalid access list" unless valid_access?(access)
     errors << "already registered: #{name}" if name && $state.registered?(name)
+
+    # Allocate IP: use provided address or let the Router assign one
+    if address
+      errors << "invalid address (need x.x.x.x/32)" unless address.match?(IP_CIDR_RE)
+      ip = address.sub(/\/32$/, "")
+      # Reject if IP is already in use by another agent
+      used = $state.all.values.map { |a| a["ip"] }.compact
+      if used.include?(ip)
+        errors << "IP #{ip} already in use"
+      end
+    else
+      ip = allocate_ip
+      errors << "IP pool exhausted" unless ip
+    end
 
     if errors.any?
       json_err(res, errors.join("; "))

@@ -12,14 +12,11 @@ class RouterClient
 
   class << self
     # Register a new agent (first spawn ever for this instance name).
-    # Creates firewall rules + WG peer.
-    def register(name:, pubkey:, address:, access:)
-      resp = post("/agents", {
-        name: name,
-        peer_pubkey: pubkey,
-        address: "#{address}/32",
-        access: access
-      })
+    # Creates firewall rules + WG peer. Router allocates IP if none provided.
+    def register(name:, pubkey:, access:, address: nil)
+      body = { name: name, peer_pubkey: pubkey, access: access }
+      body[:address] = "#{address}/32" if address
+      resp = post("/agents", body)
       handle(resp, "register #{name}")
     end
 
@@ -69,6 +66,16 @@ class RouterClient
       JSON.parse(resp.body, symbolize_names: true)
     rescue
       nil
+    end
+
+    # List all registered agents (for IP inventory, etc.)
+    def all_agents
+      resp = get("/agents")
+      return {} unless resp.respond_to?(:status) && resp.status == 200
+      data = JSON.parse(resp.body, symbolize_names: true)
+      data[:agents] || {}
+    rescue
+      {}
     end
 
     # Router health.
