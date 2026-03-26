@@ -1,0 +1,11 @@
+[Unit]
+Description=Run NeoClaw WG drift check every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Unit=neoclaw-wg-drift-check.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target
