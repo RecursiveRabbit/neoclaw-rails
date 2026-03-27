@@ -125,8 +125,11 @@ class RouterClient
       "#{Surface.router_url}#{path}"
     end
 
+    # Fresh client per request. The performance cost is negligible
+    # for these low-frequency API calls, and it avoids stale connections
+    # after Router rebuilds (new WG key = dead socket).
     def http
-      @http ||= HTTPX.with(timeout: { operation_timeout: 30 })
+      HTTPX.with(timeout: { operation_timeout: 30 })
     end
   end
 end

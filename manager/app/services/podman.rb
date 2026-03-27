@@ -181,6 +181,33 @@ class Podman
       }
     end
 
+    # Execute a command inside a running container by name.
+    # Used by the Orchestrator to configure Router, check health, etc.
+    def exec(container_name, *cmd)
+      run_cmd(["podman", "--remote", "--url", "unix://#{Surface.podman_socket}",
+               "exec", container_name, *cmd.map(&:to_s)])
+    end
+
+    # Read a file from inside a running container.
+    # Uses exec+cat to avoid path mismatch between Manager container
+    # and host filesystem (podman --remote cp writes to host paths,
+    # but File.read sees container paths).
+    def read_file(container_name, path)
+      output = exec(container_name, "cat", path)
+      output.strip.empty? ? nil : output
+    rescue => e
+      Rails.logger.error "read_file #{container_name}:#{path} failed: #{e.message}"
+      nil
+    end
+
+    # Force-remove a container by name. Swallows errors (container may not exist).
+    def stop_container(name)
+      run_cmd(["podman", "--remote", "--url", "unix://#{Surface.podman_socket}",
+               "rm", "-f", name])
+    rescue => e
+      Rails.logger.warn "stop_container #{name}: #{e.message}"
+    end
+
     private
 
     RESCUE_DIR = "/rescued"

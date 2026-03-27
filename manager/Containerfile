@@ -1,16 +1,14 @@
-# NeoClaw Manager — runs inside a container, nowhere else.
+# NeoClaw Manager — the orchestrator. Runs inside a container.
+#
+# Launches the Router and Hub on boot, reconciles orphaned agent pods.
+# WG config and Router pubkey baked at build time by build.sh.
 #
 # Runtime mounts:
-#   /etc/wireguard/wg0.conf        — WG config (one peer: the Router)
-#   /run/podman/podman.sock        — podman socket (create/destroy agents)
+#   /run/podman/podman.sock        — podman socket (create/destroy pods)
 #   /spawn                         — spawn.json staging
+#   /ssh-keys                      — agent SSH keys
 #   /data                          — persistent SQLite database
 #   /run/secrets/claude-credentials — Claude OAuth creds (refreshes hourly)
-#
-# Environment:
-#   FORGEJO_ADMIN_TOKEN            — Forgejo admin API token
-#   ROUTER_PUBKEY                  — Router's WG public key
-#   ROUTER_ENDPOINT                — Router's bridge IP:port (e.g. 10.88.0.20:51820)
 
 FROM ruby:3.3-slim
 
@@ -36,6 +34,13 @@ COPY vendor/bundle vendor/bundle
 RUN bundle config set --local path vendor/bundle \
     && bundle config set --local without 'development test' \
     && bundle install --local
+
+# WG config and Router pubkey baked at build time.
+# No runtime mount needed for these.
+RUN mkdir -p /etc/wireguard /etc/neoclaw
+COPY wg0.conf /etc/wireguard/wg0.conf
+COPY router_pubkey /etc/neoclaw/router_pubkey
+RUN chmod 600 /etc/wireguard/wg0.conf
 
 COPY . .
 

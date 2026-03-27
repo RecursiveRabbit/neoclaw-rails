@@ -99,13 +99,24 @@ module Surface
       ENV.fetch("ROUTER_URL", "http://10.0.0.1:8080")
     end
 
+    # Baked into the image at build time. Agents need this to peer with the Router.
     def router_pubkey
+      @router_pubkey ||= File.read("/etc/neoclaw/router_pubkey").strip
+    rescue Errno::ENOENT
       ENV.fetch("ROUTER_PUBKEY")
     end
 
+    # Router's bridge IP + WG port. Baked into agent spawn.json.
     def router_endpoint
-      ENV.fetch("ROUTER_ENDPOINT")
+      ENV.fetch("ROUTER_ENDPOINT", "10.88.0.20:51820")
     end
+
+    # =================================================================
+    # Hub — Matrix bridge for agents. Has its own WG identity.
+    # =================================================================
+
+    HUB_WG_ADDRESS = "10.0.0.4"
+    def hub_wg_address = HUB_WG_ADDRESS
 
     # =================================================================
     # Service endpoints — reached over WireGuard via the Router.
@@ -147,8 +158,30 @@ module Surface
     end
 
     def hub_url
-      ENV.fetch("HUB_URL", "http://#{host_wg_ip}:3100")
+      ENV.fetch("HUB_URL", "http://#{hub_wg_address}:3100")
     end
+
+    # =================================================================
+    # Infrastructure — Router and Hub managed by the Manager.
+    # Keys and configs are baked into images at build time.
+    # Only image names and bridge IP needed at runtime.
+    # =================================================================
+
+    def router_image
+      ENV.fetch("ROUTER_IMAGE", "localhost/neoclaw-router:latest")
+    end
+
+    def router_bridge_ip
+      ENV.fetch("ROUTER_BRIDGE_IP", "10.88.0.20")
+    end
+
+    def hub_image
+      ENV.fetch("HUB_IMAGE", "localhost/neoclaw-hub:latest")
+    end
+
+    # Infrastructure container names — used for cleanup and health checks.
+    INFRA_CONTAINERS = %w[neoclaw-manager wg-router neoclaw-hub].freeze
+    def infra_containers = INFRA_CONTAINERS
 end
 
 # =================================================================

@@ -1,161 +1,120 @@
 {
-  "written": "2026-03-25T00:00:00Z",
+  "written": "2026-03-27T06:00:00Z",
   "session_summaries": {
     "silas (Mar 20-22)": "MCP services are live. SSH MCP proven. Valley token service. Vikunja token service (broken). Socat forwarders. Hot swap. Per-identity SSH keys.",
     "voss (Mar 22-23)": "Hub stateless rewrite. Relay narration, m.mentions routing, DM slugs, attachments. Three boot prompts. Manager: build.sh, memory capacity, session pipeline, Watchdog. Hub: !previous, ListenerQueue, PresenceManager. Socat systemd units. WG persistence.",
-    "silas (Mar 23)": "Vikunja token fix (PBKDF2 direct insert). Forgejo API tokens. Branch protection. Channel repos. Two-repo boot. Repo migration to channels/neoclaw. GitHub push mirror. TOOLS.md injection (relay/tools-docs/ templates).",
-    "hopper (Mar 24)": "Settings system — runtime-configurable settings via admin UI. Setting model with DEFAULTS hash, three-tier fallback (DB > ENV > hardcoded). Watchdog/Podman/Surface refactored to read from Settings. Relay reads health_interval/typing_interval/http_timeout from spawn.json. Boot prompt templates configurable. Merged combined PR with conflict resolution. Rolled back token auth per Evans.",
-    "voss (Mar 24)": "Hub /sync migration — ripped out entire appservice inbound stack (TransactionsController, Router, Identities, ListenerQueue, identities.yml, -736 lines). Replaced with SyncManager: one long-polling /sync thread per puppet using appservice masquerading. Matrix decides who sees what. Hub just delivers. Manager identity endpoint (GET /identities). Neobot scheduled messages (cron tab in Manager, CronScheduler fires to Hub). Stream chat (live message injection from stream page). Vendor gems in matching container (build containers have no internet). Fixed: pending invite handling in initial sync, Hub systemd WorkingDirectory pointing at old code, Puma initializer guard (defined?(Puma)), agent internet routing (AllowedIPs 0.0.0.0/0 + default route via Router). GitHub-Forgejo bidirectional sync cron. Reviewed Ben's first PR (#2 on GitHub)."
+    "silas (Mar 23)": "Vikunja token fix (PBKDF2 direct insert). Forgejo API tokens. Branch protection. Channel repos. Two-repo boot. Repo migration to channels/neoclaw. GitHub push mirror. TOOLS.md injection.",
+    "hopper (Mar 24)": "Settings system — runtime-configurable settings via admin UI. Setting model with DEFAULTS hash, three-tier fallback.",
+    "voss (Mar 24)": "Hub /sync migration — ripped out appservice inbound stack (-736 lines). SyncManager: per-puppet /sync loops. Neobot. Stream chat. Vendor gems in matching container. GitHub-Forgejo sync cron.",
+    "voss (Mar 27)": "Manager as Orchestrator. Manager now owns the lifecycle of the Router and Hub — launches both on boot, reconciles orphaned agent pods via hot-swap. All WG keys generated at build time and baked into images. Router is ephemeral (no persistent state). Hub is a full WG pod at 10.0.0.4 (no more --network host). Baked mesh: build.sh generates Router/Manager/Hub keypairs, writes configs, builds all three images, updates host nc-host peer. Entrypoint simplified to 8 phases (no runtime key discovery, no peering commands, no handshake polling). Spawner.respawn handles fresh Router (register-or-activate). Orchestrator reads spawn.json from orphaned pods to recover identity/channel, hot-swaps each. Router firewall updated with Hub rules. RouterClient uses fresh HTTP clients per request (no stale connection caching). Hub runs production mode with force_ssl disabled via baked initializer (WG is the encryption layer). Router port 51820 not published on host (nc-host already uses that port; Router reachable via bridge IP)."
   },
 
   "decision": {
     "what": "Rebuild NeoClaw-Rails from scratch in a new directory",
     "why": "Four architecture iterations fossilized in the code. The architecture is proven, the code needs to be written clean.",
     "approach": "Experiment and iron out kinks in THIS codebase. Then build it right. No apprentice marks.",
-    "reference": "This directory (clawd/town/residents/voss/projects/neoclaw_rails/) is the working model."
+    "reference": "This directory (clawd/projects/neoclaw_rails/) is the working model."
   },
 
   "architecture": {
-    "topology": "Star. Router is the center. Every peer (host, manager, agents) connects only to the Router.",
+    "topology": "Star. Router is the center. Every peer connects only to the Router. Manager is the orchestrator — launches Router and Hub on boot.",
     "address_plan": {
-      "10.0.0.1": "Router (pod at 10.88.0.20)",
-      "10.0.0.2": "Host (all services — Hub, Forgejo, Valley, etc.)",
-      "10.0.0.3": "Manager (pod at 10.88.0.11)",
+      "10.0.0.1": "Router (pod, bridge IP 10.88.0.20 static)",
+      "10.0.0.2": "Host (nc-host WG interface, persistent key)",
+      "10.0.0.3": "Manager (pod, bridge IP dynamic)",
+      "10.0.0.4": "Hub (pod, bridge IP dynamic)",
       "10.0.1.x": "Agents (static IP per instance name, permanent)"
     },
-    "internet_egress": "All pod traffic routes through the Router via WG. Router NATs out through podman bridge. AllowedIPs=0.0.0.0/0, default route via 10.0.0.1 after WG up. Podman bridge itself has no direct internet for pods.",
-    "security": "Manager only listens on WG. If you can reach it, you're already a peer. No application-level auth needed — WG IS the auth. Evans: token auth was unnecessary, WG keys are the credential.",
+    "key_management": "All keys generated at build time by build.sh. Router, Manager, and Hub keys baked into images. Host key is persistent (one-time setup). Agent keys ephemeral per-spawn. No runtime key files, no mounted keys, no key env vars.",
+    "boot_sequence": "Manager boots → wg-quick up (baked config) → start Router pod (baked key+config) → verify WG mesh → start Hub pod (baked key) → DB migrate → Rails start → Orchestrator reconciles orphaned pods",
+    "internet_egress": "Agent pods route through Router via WG default route. Router NATs out through podman bridge. Manager routes through Router for WG traffic (10.0.0.0/16). Hub doesn't need internet.",
+    "security": "WG is the auth layer. No application-level tokens. Router firewall: per-agent nftables chains with port allowlists. Router API restricted to Manager IP (10.0.0.3). SSL disabled — redundant inside WG mesh.",
     "components": {
-      "hub": "Rails app on host (systemd: neoclaw-rails-hub.service). WorkingDirectory: clawd/town/residents/voss/projects/neoclaw_rails. No database. Per-puppet /sync loops receive messages from Matrix. Appservice API for outbound puppeting. Port 3100. Identity list from Manager GET /identities at boot (falls back to NEOCLAW_IDENTITIES env var). Initializer checks defined?(Puma) not Rails::Server.",
-      "router": "Ruby WG hub + nftables firewall. ~760 lines. Port 8080 API, 51820 WG. All internet egress NATs through here.",
-      "manager": "Rails app in pod. Port 9200 (mapped to 9201 on host via podman port forward). Admin UI with tabs: configs, rooms, containers, audit, crons, settings. Settings system (Setting model, three-tier fallback). CronScheduler for Neobot. Stream chat for live agent interaction. build.sh vendors gems in matching ruby:3.3-slim container with --network=host.",
-      "relay": "One Ruby file in every agent pod. Port 9300. Reads health_interval/typing_interval/http_timeout from spawn.json (Settings-driven). TOOLS.md assembled from relay/tools-docs/ templates. Entrypoint: Phase 1 root (WG/default-route/creds/SSH/MCP/TOOLS.md), Phase 2 gosu agent (relay). Tini for zombie reaping."
+      "hub": "Rails app in pod (10.0.0.4). Launched by Manager. No database. Per-puppet /sync loops. Production mode with force_ssl disabled (WG is encryption). Port 3100.",
+      "router": "Ruby WG hub + nftables firewall in pod (10.0.0.1). Launched by Manager. Ephemeral state — agents re-registered on every Manager boot. Static peers: host, manager, hub (from baked config.yml). Port 8080 API, 51820 WG.",
+      "manager": "Rails app in pod (10.0.0.3). The orchestrator. Launches Router and Hub. Spawns/freezes agents. Reconciles orphaned pods on boot. Admin UI. Port 9200.",
+      "relay": "One Ruby file in every agent pod. Port 9300. Hub IP from spawn.json (10.0.0.4)."
     }
   },
 
-  "hub_sync": {
-    "what": "Replaced appservice transaction push with per-puppet /sync long-polling",
-    "removed": "TransactionsController, Hub::Router, Hub::Identities, Hub::ListenerQueue, config/identities.yml",
-    "added": "Hub::SyncManager, as_user: on Matrix queries, RouteCache.delete_by_ip",
-    "how_it_works": "Each SyncLoop long-polls GET /sync?user_id=@name:matrix.home&timeout=30000 with as_token. Initial sync accepts pending invites and learns room state. Matrix decides who sees what.",
-    "singleton_design": "Hub always generates identity-channel names. Manager maps multiple names to same IP for singletons. Hub doesn't know singletons exist. delete_by_ip cleans up all aliases on pod death.",
-    "identity_source": "Hub queries Manager GET /identities at boot. Cached for process lifetime. Falls back to NEOCLAW_IDENTITIES env var.",
-    "transaction_endpoint": "Kept as no-op ack so Synapse doesn't backoff.",
-    "first_test": "Silas accepted pending invite to #valley on initial sync. Spawn triggered but pod had no internet (AllowedIPs was 10.0.0.0/16). Fixed in routing PR."
-  },
-
-  "settings_system": {
-    "what": "Runtime-configurable settings via Manager admin UI",
-    "model": "Setting with DEFAULTS hash. Three-tier: DB > ENV (NEOCLAW_<KEY>) > hardcoded. Adding a setting = one entry in DEFAULTS, no migration.",
-    "groups": "resources (memory_budget, container_memory, container_cpus), watchdog (thresholds, intervals), relay (model, health/typing/http intervals), prompts (fresh/resume/baton/hot_swap boot templates), models (context_limits JSON)",
-    "consumers": "Watchdog reads dynamically each cycle. Podman reads at spawn. Spawner injects relay settings + prompts into spawn.json. Relay reads from spawn.json at boot."
-  },
-
-  "neobot": {
-    "what": "Scheduled messages via Manager admin UI",
-    "how": "CronMessage model with Fugit cron parsing. CronScheduler (30s interval) posts to Hub POST /neobot/message. Hub puppets into Matrix. Normal /sync wakes agents.",
-    "fugit": "Transitive dependency via solid_queue — not explicitly in Gemfile."
-  },
-
-  "stream_chat": {
-    "what": "Live message injection from Manager stream page",
-    "how": "Input bar at bottom of stream view. POST /containers/:id/send_message forwards to relay. Submit via fetch, stays on page."
+  "orchestration": {
+    "what": "Manager owns Router and Hub lifecycle. Neither is stateful.",
+    "boot": "Manager entrypoint: wg up → rm stale → start Router → verify mesh → start Hub → DB → Rails → Orchestrator.reconcile!",
+    "reconciliation": "After Rails boot, Orchestrator discovers running agent pods via podman inventory. Reads spawn.json from each pod (via podman exec cat) to recover identity/channel. Hot-swaps each: rescue workspace, fresh WG/SSH keys registered with fresh Router, new pod, restore workspace. Per-pod failures don't block others.",
+    "spawner_tolerance": "Spawner.respawn checks RouterClient.registered? before calling activate. If agent unknown to fresh Router, calls register instead. Handles both normal hot-swap and post-rebuild reconciliation.",
+    "router_ephemeral": "No /data mount on Router. agents.json starts empty. All agents re-registered during reconciliation or on first spawn.",
+    "hub_as_pod": "Hub has its own WG identity (10.0.0.4). Peers with Router. Reaches Synapse at 10.0.0.2:8008, Manager at 10.0.0.3:9200, agents at 10.0.1.x:9300. All through WG."
   },
 
   "build_system": {
-    "gem_vendoring": "build.sh runs bundle install inside ruby:3.3-slim container with --network=host. Mounts vendor/bundle out. Containerfile COPYs in, runs --local. Host Ruby 3.2 != container Ruby 3.3 — must vendor in matching container.",
-    "why_no_internet_in_build": "Podman bridge has no internet egress. All traffic routes through Router via WG. Build containers have no WG tunnel.",
-    "manager_access": "Currently via podman port forward (-p 9201:9200). TODO: replace with WG peer auth for Evans's client."
+    "build_sh": "Generates Router/Manager/Hub WG keypairs. Writes keys and configs into build contexts. Builds all three images. Updates host nc-host peer. Cleans up key files. One command: sudo ./manager/build.sh",
+    "baked_mesh": "Keys and WG configs baked into images at build time. No runtime key files. No mounted WG configs. No ROUTER_PUBKEY env var. Images are self-contained deployment artifacts.",
+    "gem_vendoring": "build.sh vendors gems in ruby:3.3-slim container with --network=host (host has internet, containers don't). Manager and Hub vendored separately. --without 'development test'.",
+    "image_builds": "podman build --network=host for all three (DNS needs host network). Router: alpine + ruby + wireguard + nftables. Manager: ruby:3.3-slim + rails + podman-remote. Hub: ruby:3.3-slim + rails + wireguard.",
+    "host_update": "build.sh updates nc-host peer with new Router pubkey (wg set + config file rewrite). Host key never changes."
   },
 
-  "github_forgejo_sync": {
-    "forgejo_to_github": "Push mirror on Forgejo repo, automatic on every push.",
-    "github_to_forgejo": "Cron every 5 min: ~/scripts/github-to-forgejo-sync.sh. Bare clone cached at /tmp/github-forgejo-sync/. Fetches from GitHub, pushes to Forgejo."
+  "hub_sync": {
+    "what": "Per-puppet /sync long-polling. Each agent is a real Matrix client.",
+    "how": "SyncManager starts one SyncLoop per identity. Long-polls GET /sync?user_id=@name:matrix.home. Matrix decides who sees what. Hub just delivers.",
+    "singleton_design": "Hub always generates identity-channel names. Manager maps multiple names to same IP for singletons. Hub doesn't know singletons exist.",
+    "identity_source": "Hub queries Manager GET /identities at boot."
   },
-
-  "ben_pr": {
-    "what": "Ben Grimes' first contribution — per-agent Matrix provisioning",
-    "good_parts": "Matrix MCP rewrite (nio to httpx), Forgejo v14 basic auth fix, SSH key path fix, Matrix provision_type",
-    "problems": "Seeds.rb replaced entire agent roster. Credential symlink to copy breaks OAuth. Direct SQLite manipulation. Env defaults for different deployment.",
-    "status": "Ben read review, pushed cleanup, closed PR to rework. Branch deleted."
-  },
-
-  "correction": "Evans: 'We aren't deferring upgrades to the new version. This version needs to be feature complete, the rewrite is a cleanup not an opportunity to test new features.'",
 
   "mcp_services": {
-    "pattern": "relay/mcp/<name>/server.py. Image at /opt/mcp/. Venv at /opt/mcp-env/. Entrypoint generates mcp.json from spawn.json. TOOLS.md from relay/tools-docs/ templates.",
-    "adding_new": "1. Server in relay/mcp/<name>/ 2. Pip deps in Containerfile 3. Entry in entrypoint.sh mcp.json generation 4. Permission in settings.json 5. Provisioner if auth needed 6. Tool docs in relay/tools-docs/<name>.md 7. Rebuild image",
-    "limitation": "MCPs load once per session. --continue can't restart dead servers. Freeze+respawn for MCP changes. All MCPs must connect lazily.",
+    "pattern": "relay/mcp/<name>/server.py. Image at /opt/mcp/. Venv at /opt/mcp-env/. TOOLS.md from relay/tools-docs/ templates.",
     "servers": {
-      "ssh": {"status": "WORKING", "tools": "ssh_connect, ssh_execute, ssh_interrupt, ssh_eof, ssh_background, ssh_send_raw, ssh_status"},
-      "valley": {"status": "WORKING", "tools": "valley"},
-      "vikunja": {"status": "WORKING", "tools": "ticket_list, ticket_view, ticket_create, ticket_comment, ticket_update, ticket_done"},
-      "matrix": {"status": "WORKING", "tools": "matrix_send, matrix_send_image, matrix_read, matrix_download, matrix_rooms"},
+      "ssh": {"status": "WORKING"},
+      "valley": {"status": "WORKING"},
+      "vikunja": {"status": "WORKING"},
+      "matrix": {"status": "WORKING"},
       "comfyui": {"status": "CONFIGURED — untested"},
       "zigbee": {"status": "CONFIGURED — needs MQTT socat"}
     }
   },
 
-  "host_services": {
-    "socat_forwarders": "Systemd template neoclaw-socat@{name}.service. Configured: valley, vikunja, comfyui, mqtt.",
-    "token_services": {
-      "valley-token-service": "port 8889. GET returns existing, POST generates new + reloads Evennia.",
-      "vikunja-token-service": "port 8890. PBKDF2 tokens, direct SQLite insert."
-    }
-  },
-
   "todo": {
     "priority": [
-      {
-        "what": "WG peer auth for Evans — replace port forward with WG client config",
-        "status": "NEXT",
-        "note": "Manager only listens on WG. Evans accesses via podman port forward (9201). Should be a proper WG peer. run.sh could output a WG client config."
-      },
-      {
-        "what": "Test /sync end-to-end with working agent internet",
-        "status": "BLOCKED on Manager rebuild",
-        "note": "Routing fix is merged (AllowedIPs 0.0.0.0/0, default route via Router). Needs Manager + agent image rebuild to take effect. Silas joined #valley but got EAI_AGAIN — no internet in pod."
-      }
+      {"what": "Test full signal chain with new orchestration", "status": "NEXT", "note": "Manager launches Router+Hub. Spawn an agent via @mention in Matrix. Verify: Hub receives via /sync → Manager spawns → Router registers → relay boots → agent responds → Hub puppets back."},
+      {"what": "WG peer auth for Evans", "status": "ready", "note": "Manager only listens on WG. Evans accesses via podman port forward (9201). Should be a proper WG peer."}
     ],
     "items": [
-      {"what": "Hub rewrite — remove all mention-parsing regex, use Matrix notification routing (/sync handles it)", "status": "assigned to Voss", "note": "Evans directive Mar 26: no regex, no parsing. Matrix decides who gets notified. Appservice dismantled in favor of /sync."},
+      {"what": "Hub simplification — remove !agents, PresenceManager, status reporting", "status": "designed", "note": "Hub shouldn't know agent state. Presence set by relay. !agents belongs on Manager."},
+      {"what": "Pending message queue in Hub — deliver on ready callback", "status": "designed", "note": "Replaces wait_for_relay polling loop."},
+      {"what": "Freeze fallback → hot-swap before rescue", "status": "designed", "note": "If relay unreachable, try hot-swap first (WG might be broken, not relay). Preserves sessions."},
+      {"what": "SessionProcessor — Manager handles all cases", "status": "designed", "note": "Make crash path the main path. Relay just signals ready, Manager does the rest."},
+      {"what": "Matrix features — read receipts, message edits for streaming, thread-aware replies", "status": "designed"},
+      {"what": "Reactions in Matrix MCP — agents know how to react", "status": "designed"},
+      {"what": "Replace Container table with in-memory PodRegistry", "status": "designed", "note": "Container table stores live state that drifts. Query podman/Router as source of truth."},
       {"what": "Channel repo conventions", "status": "not started"},
-      {"what": "Session processing — boot state from metadata", "status": "not started"},
-      {"what": "Image/attachment UX", "status": "not started"},
-      {"what": "Parameterize run.sh", "status": "not started", "note": "Ben's PR exposed hardcoded IPs/paths."},
-      {"what": "MCP servers die mid-session", "status": "known issue"}
+      {"what": "Parameterize run.sh", "status": "not started"}
     ]
   },
 
   "things_that_bit_us": [
+    "Router nftables input chain drops ICMP. Can't ping Router through WG. Use curl to Router API instead.",
+    "Host nc-host uses port 51820. Router can't publish -p 51820:51820/udp. Doesn't need to — reachable via bridge IP.",
+    "BUNDLE_WITHOUT only affects installation, not Bundler.require. Development mode loads dev gems even if not vendored. Fix: production mode + disable force_ssl.",
     "Synapse backoff (historical, pre-/sync): Hub down → Synapse stops sending for minutes.",
-    "Listener cascade (historical, pre-/sync): unaddressed messages spawned ALL agents.",
     "Claude Code -p mode doesn't auto-load mcp.json. Must pass --mcp-config explicitly.",
     "--mcp-config on --continue doesn't restart dead MCP servers.",
     "MCP servers die mid-session. No fix short of freeze+respawn.",
-    "Zigbee MCP crashed without MQTT — 10+ min block. Fixed with lazy connect.",
-    "Spawner created Container record BEFORE podman run. Stale record blocked future spawns.",
     "Podman.run path translation matched substring. Fixed with anchored prefix.",
-    "Manager mounted wrong SSH key directory. Silent key mismatch.",
     "OAuth expires every ~7h. Must symlink to live mount, never copy.",
-    "Hub systemd pointed at old code path. SyncManager never started.",
     "Puma doesn't define Rails::Server. Initializer must check defined?(Puma).",
-    "Initial /sync didn't process pending invites. Agents invited before Hub restart never joined.",
     "Pods had AllowedIPs=10.0.0.0/16 — internet went to dead bridge. Needs 0.0.0.0/0 + default route via Router.",
-    "Host Ruby 3.2 != container Ruby 3.3. Native gems won't load cross-version. Must vendor in matching container.",
-    "Explicit fugit in Gemfile busted build cache. Already a transitive dep of solid_queue.",
-    "Token auth for Manager was unnecessary — WG IS the auth. If you can reach it, you're a peer.",
-    "Manager allocate_ip only checked local Container records. Frozen agent IP looked free → collision. Router is now sole source of truth for IP allocation.",
+    "Host Ruby 3.2 != container Ruby 3.3. Must vendor in matching container.",
+    "Manager allocate_ip only checked local Container records. Router is sole source of truth for IP allocation.",
+    "Podman --remote cp writes to HOST filesystem. Manager's Dir.mktmpdir creates container-local paths. Use podman exec cat instead.",
     "Session files are sacred. Swap staging dirs must NEVER be auto-deleted.",
     "Pods, not containers. Freeze, not kill. Rescue, not discard."
   ],
 
   "important_numbers": {
     "router_bridge_ip": "10.88.0.20",
-    "manager_bridge_ip": "10.88.0.11",
+    "hub_wg_ip": "10.0.0.4",
     "hub_port": 3100,
     "manager_port": 9200,
-    "manager_host_port": 9201,
     "relay_port": 9300,
     "router_api_port": 8080,
     "router_wg_port": 51820,
@@ -178,8 +137,7 @@
     "models": {
       "opus": ["hopper", "silas", "margaux", "kael", "parallax", "voss"],
       "sonnet": ["wren", "ember", "fletcher", "census"]
-    },
-    "notes": "Hub runs /sync for all identities. Singleton logic in Manager only. Hub generates identity-channel names for everyone."
+    }
   },
 
   "philosophy": {
@@ -190,7 +148,8 @@
     "front_door": "If it doesn't work through the front door, it's broken.",
     "language": "Pods, not containers. Freeze, not kill. Rescue, not discard. Inactive, not dead.",
     "capacity": "Memory budget, not pod count. Idle agents are nearly free.",
-    "auth": "WG is the auth layer. No application-level tokens. If you can reach the Manager, you're a peer.",
-    "baton_over_wiki": "The baton is the real knowledge. Never should have doubted the baton."
+    "auth": "WG is the auth layer. No application-level tokens. SSL is redundant inside the mesh.",
+    "no_stored_live_state": "Don't store data about live things. If you need to know something, query the source. Two copies drift.",
+    "baked_mesh": "All WG keys baked at build time. Images are self-contained. Containers start and the mesh just works."
   }
 }
