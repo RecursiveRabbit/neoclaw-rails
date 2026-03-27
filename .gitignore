@@ -17,3 +17,9 @@ manager/log/
 manager/tmp/
 manager/vendor/
 manager/.bundle/
+config/master.key
+config/credentials.yml.enc
+
+# Ignore key files for decrypting credentials and more.
+/config/*.key
+
