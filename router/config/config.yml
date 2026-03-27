@@ -9,6 +9,7 @@ router:
 network:
   host_ip: "10.0.0.2"
   manager_ip: "10.0.0.3"
+  hub_ip: "10.0.0.4"
   agent_subnet: "10.0.1.0/24"
 
 peers:
@@ -16,8 +17,11 @@ peers:
     pubkey: "HChDOdgMD2G7P42kDdhPpiUqy26OPPVoK3lg8RLxXBo="
     allowed_ips: "10.0.0.2/32"
   manager:
-    pubkey: "6Tlz45akIRFyj/8B8vLb89gzodvGkDMBxsZRoNa/k2g="
+    pubkey: "TvaM2uGYRcWewNm+Ci7oVnxrRzTdKiliKKac6+EmXE4="
     allowed_ips: "10.0.0.3/32"
+  hub:
+    pubkey: "J1EWcZ2afBvY+0EtcJuT9NmneNJAax17Qv7EcEExD0A="
+    allowed_ips: "10.0.0.4/32"
 
 services:
   default:

@@ -43,8 +43,16 @@ class Spawner
       wg_keypair = generate_wg_keypair
       ssh_keypair = generate_ssh_keypair
 
-      # Activate with new WG key (agent is already registered)
-      result = RouterClient.activate(name: instance_name, pubkey: wg_keypair[:public])
+      # Register or activate — agent may not exist on a fresh Router
+      # (e.g., after Manager restart where Router was rebuilt ephemeral).
+      if RouterClient.registered?(instance_name)
+        result = RouterClient.activate(name: instance_name, pubkey: wg_keypair[:public])
+      else
+        access = build_access_list(services, config)
+        result = RouterClient.register(
+          name: instance_name, pubkey: wg_keypair[:public], access: access
+        )
+      end
       agent_ip = result[:ip]
 
       # Re-provision service auth
@@ -271,6 +279,7 @@ class Spawner
         network: {
           wg_private_key: wg_keypair[:private],
           wg_address: agent_ip,
+          hub_ip: Surface.hub_wg_address,
           peers: [
             {
               public_key: Surface.router_pubkey,

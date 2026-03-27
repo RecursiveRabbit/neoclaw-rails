@@ -12,13 +12,16 @@ COPY src/ /opt/router/src/
 COPY entrypoint.sh /opt/router/entrypoint.sh
 RUN chmod +x /opt/router/entrypoint.sh
 
+# Config and WG key baked at build time by build.sh.
+# No runtime mounts needed for these.
+COPY config/ /etc/router/
+COPY wg-private.key /etc/wireguard/private.key
+RUN chmod 600 /etc/wireguard/private.key
+
 WORKDIR /opt/router
 
-# Volumes:
-#   /data              — persistent state (agents.json)
-#   /etc/router        — config (config.yml)
-#   /etc/wireguard     — WG private key
-VOLUME ["/data"]
+# /data is NOT mounted. State is ephemeral — the Manager
+# re-registers agents on every boot.
 
 EXPOSE 51820/udp 8080/tcp
 
@@ -27,13 +30,12 @@ HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
 
 ENTRYPOINT ["/opt/router/entrypoint.sh"]
 
-# Run with:
+# Launched by the Manager's entrypoint. All keys baked in.
+# Manual run (for testing):
 #   podman run \
 #     --cap-add=NET_ADMIN \
 #     --cap-add=NET_RAW \
 #     --sysctl net.ipv4.ip_forward=1 \
-#     -v ./config:/etc/router:ro \
-#     -v ./data:/data \
-#     -v ./keys/router.key:/etc/wireguard/private.key:ro \
-#     -p 51820:51820/udp \
-#     wg-router
+#     --ip 10.88.0.20 \
+#     --name wg-router \
+#     localhost/neoclaw-router:latest

@@ -1,0 +1,67 @@
+# NeoClaw Hub — Matrix bridge for agents.
+#
+# Each agent is a real Matrix user. The Hub logs in as each one via
+# /sync, receives their messages, delivers to relays, and puppets
+# responses back into Matrix.
+#
+# No database. All state is in-memory. Restarts are safe.
+# WG config baked at build time — Hub is 10.0.0.4 on the mesh.
+#
+# Environment (required at runtime):
+#   NEOCLAW_AS_TOKEN, NEOCLAW_HS_TOKEN
+#   NEOCLAW_SYNAPSE_URL, NEOCLAW_SERVER_NAME
+#   NEOCLAW_MANAGER_URL, NEOCLAW_OPERATORS
+#   NEOCLAW_APPSERVICE_USER
+
+FROM ruby:3.3-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    wireguard-tools \
+    iproute2 \
+    curl \
+    tini \
+    build-essential \
+    libyaml-dev \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Exclude dev/test gems (debug, capybara, etc.) — not vendored.
+ENV BUNDLE_WITHOUT="development:test"
+
+# Gemfile first for layer caching
+COPY Gemfile Gemfile.lock ./
+COPY vendor vendor
+RUN bundle config set --local path vendor/bundle \
+    && bundle config set --local without 'development test' \
+    && bundle install --local
+
+# WG config baked at build time. Hub is 10.0.0.4 on the mesh.
+RUN mkdir -p /etc/wireguard
+COPY wg0.conf /etc/wireguard/wg0.conf
+RUN chmod 600 /etc/wireguard/wg0.conf
+
+# Hub application code (not manager/, router/, relay/, etc.)
+COPY app/ app/
+COPY config/ config/
+COPY lib/ lib/
+COPY bin/ bin/
+COPY public/ public/
+COPY Rakefile config.ru ./
+COPY hub-entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
+RUN mkdir -p tmp log storage
+
+# Hub runs in production mode (excludes dev/test gems) but doesn't
+# need SSL — it's behind WireGuard. Disable force_ssl via initializer.
+RUN echo 'Rails.application.config.force_ssl = false' > config/initializers/neoclaw_no_ssl.rb \
+    && echo 'Rails.application.config.assume_ssl = false' >> config/initializers/neoclaw_no_ssl.rb
+
+EXPOSE 3100
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s \
+  CMD curl -sf http://localhost:3100/health || exit 1
+
+ENTRYPOINT ["tini", "--", "/app/entrypoint.sh"]
