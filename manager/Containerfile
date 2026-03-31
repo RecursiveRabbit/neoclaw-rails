@@ -40,6 +40,7 @@ RUN bundle config set --local path vendor/bundle \
 RUN mkdir -p /etc/wireguard /etc/neoclaw
 COPY wg0.conf /etc/wireguard/wg0.conf
 COPY router_pubkey /etc/neoclaw/router_pubkey
+COPY build_config.sh /etc/neoclaw/build_config.sh
 RUN chmod 600 /etc/wireguard/wg0.conf
 
 COPY . .

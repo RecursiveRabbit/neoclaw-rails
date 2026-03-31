@@ -29,6 +29,9 @@ die() { log "FATAL: $*"; exit 1; }
 
 PODMAN="podman --remote --url unix:///run/podman/podman.sock"
 
+# Build config — baked at build time. Contains ROUTER_PUBLISH_WG if users configured.
+source /etc/neoclaw/build_config.sh 2>/dev/null || true
+
 # =====================================================================
 # Phase 1: WireGuard up
 # =====================================================================
@@ -54,6 +57,12 @@ $PODMAN rm -f neoclaw-hub 2>/dev/null || true
 
 ROUTER_IMAGE="${ROUTER_IMAGE:-localhost/neoclaw-router:latest}"
 
+ROUTER_PUBLISH_ARGS=""
+if [ -n "${ROUTER_PUBLISH_WG:-}" ]; then
+    ROUTER_PUBLISH_ARGS="-p ${ROUTER_PUBLISH_WG}:51820/udp"
+    log "Router WG published on host port ${ROUTER_PUBLISH_WG}/udp"
+fi
+
 log "starting Router..."
 ROUTER_ID=$($PODMAN run -d \
     --name wg-router \
@@ -62,6 +71,7 @@ ROUTER_ID=$($PODMAN run -d \
     --cap-add NET_RAW \
     --sysctl net.ipv4.ip_forward=1 \
     --ip "${ROUTER_BRIDGE_IP:-10.88.0.20}" \
+    $ROUTER_PUBLISH_ARGS \
     "$ROUTER_IMAGE" 2>&1) || die "Router failed to start: $ROUTER_ID"
 
 log "Router started: ${ROUTER_ID:0:12}"
@@ -174,6 +184,9 @@ fi
 # Orchestrator initializer runs after boot: discovers orphaned agent
 # pods and hot-swaps each one with fresh Router credentials.
 
-log "starting Manager on 0.0.0.0:9200"
+# Bind to WG interface only. If you're on the mesh, you can reach Manager.
+# If you're not, you can't. WG is the auth layer.
+BIND_ADDR="10.0.0.3"
+log "starting Manager on ${BIND_ADDR}:9200"
 log "Router: up | Hub: ${HUB_HEALTHY} | Reconciliation: pending"
-exec bin/rails server -b 0.0.0.0 -p 9200 -e production
+exec bin/rails server -b "$BIND_ADDR" -p 9200 -e production
