@@ -63,7 +63,7 @@ ip link add wg0 type wireguard
 wg setconf wg0 /etc/wireguard/wg0.conf
 ip addr add "${WG_ADDRESS}/32" dev wg0
 ip link set wg0 up
-ip route add 10.0.0.0/16 dev wg0
+ip route add 10.0.0.0/8 dev wg0
 if ! ip link show wg0 up >/dev/null 2>&1; then
     log "FATAL: wireguard failed to start"
     exit 1

@@ -15,7 +15,9 @@ router:
 network:
   host_ip: "10.0.0.2"      # Host's WG address
   manager_ip: "10.0.0.3"   # Manager's WG address (API auth)
-  agent_subnet: "10.0.1.0/24"
+  hub_ip: "10.0.0.4"           # Hub's WG address
+  agent_subnet: "10.1.0.0/16"  # 10.1.x.x — agents
+  user_subnet: "10.2.0.0/16"   # 10.2.x.x — users
 
 # Static peers — always configured at boot.
 # Use `pubkey:` for inline keys or `pubkey_file:` for file paths.

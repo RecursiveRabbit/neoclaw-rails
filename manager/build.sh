@@ -94,7 +94,7 @@ log "  manager: ${MANAGER_PUBKEY:0:20}..."
 log "  hub:     ${HUB_PUBKEY:0:20}..."
 log "  host:    ${HOST_PUBKEY:0:20}..."
 
-# User keypairs (10.0.0.5, 10.0.0.6, ...)
+# User keypairs (10.2.0.1, 10.2.0.2, ...)
 declare -a USER_PRIVKEYS=()
 declare -a USER_PUBKEYS=()
 declare -a USER_IPS=()
@@ -102,7 +102,7 @@ declare -a USER_IPS=()
 for i in $(seq 1 "$USER_COUNT"); do
     privkey=$(wg genkey)
     pubkey=$(echo "$privkey" | wg pubkey)
-    ip="10.0.0.$((4 + i))"
+    ip="10.2.0.${i}"
     USER_PRIVKEYS+=("$privkey")
     USER_PUBKEYS+=("$pubkey")
     USER_IPS+=("$ip")
@@ -132,7 +132,9 @@ network:
   host_ip: "10.0.0.2"
   manager_ip: "10.0.0.3"
   hub_ip: "10.0.0.4"
-  agent_subnet: "10.0.1.0/24"
+  hub_ip: "10.0.0.4"
+  agent_subnet: "10.1.0.0/16"
+  user_subnet: "10.2.0.0/16"
 
 peers:
   host:
@@ -190,7 +192,7 @@ Address = 10.0.0.3/32
 [Peer]
 PublicKey = $ROUTER_PUBKEY
 Endpoint = ${ROUTER_BRIDGE_IP}:${ROUTER_WG_PORT}
-AllowedIPs = 10.0.0.0/16
+AllowedIPs = 10.0.0.0/8
 PersistentKeepalive = 25
 EOF
 chmod 600 "$SCRIPT_DIR/wg0.conf"
@@ -208,7 +210,7 @@ Address = 10.0.0.4/32
 [Peer]
 PublicKey = $ROUTER_PUBKEY
 Endpoint = ${ROUTER_BRIDGE_IP}:${ROUTER_WG_PORT}
-AllowedIPs = 10.0.0.0/16
+AllowedIPs = 10.0.0.0/8
 PersistentKeepalive = 25
 EOF
 chmod 600 "$PROJECT_DIR/wg0.conf"
@@ -231,7 +233,7 @@ DNS = 10.0.0.2
 
 [Peer]
 PublicKey = $ROUTER_PUBKEY
-AllowedIPs = 10.0.0.0/16
+AllowedIPs = 10.0.0.0/8
 PersistentKeepalive = 25
 USEREOF
 
@@ -303,7 +305,7 @@ log "updating host WG peer..."
 # Update running interface
 wg set nc-host peer "$ROUTER_PUBKEY" \
     endpoint "${ROUTER_BRIDGE_IP}:${ROUTER_WG_PORT}" \
-    allowed-ips "10.0.0.0/16" \
+    allowed-ips "10.0.0.0/8" \
     persistent-keepalive 25 2>/dev/null \
     && log "host nc-host peer updated (live)" \
     || log "WARNING: could not update nc-host peer (interface may not exist yet)"
@@ -319,7 +321,7 @@ Address = 10.0.0.2/32
 [Peer]
 PublicKey = $ROUTER_PUBKEY
 Endpoint = ${ROUTER_BRIDGE_IP}:${ROUTER_WG_PORT}
-AllowedIPs = 10.0.0.0/16
+AllowedIPs = 10.0.0.0/8
 PersistentKeepalive = 25
 EOF
     chmod 600 /etc/wireguard/nc-host.conf

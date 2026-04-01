@@ -87,14 +87,17 @@ def sub_path(path)
   path.sub(%r{^/agents/[^/]+}, "")
 end
 
-# Allocate the next available IP from the agent subnet.
+# Allocate the next available IP from the agent subnet (10.1.0.0/16).
 # The Router is the sole source of truth for IP assignments.
-AGENT_SUBNET_PREFIX = "10.0.1"
+# Flat number space: 10.1.0.1 through 10.1.255.254 (~65k addresses).
+AGENT_SUBNET_PREFIX = "10.1"
 
 def allocate_ip
   used = $state.all.values.map { |a| a["ip"] }.compact.to_set
-  (1..254).each do |fourth|
-    ip = "#{AGENT_SUBNET_PREFIX}.#{fourth}"
+  (1..65534).each do |n|
+    third = n >> 8
+    fourth = n & 0xFF
+    ip = "#{AGENT_SUBNET_PREFIX}.#{third}.#{fourth}"
     return ip unless used.include?(ip)
   end
   nil

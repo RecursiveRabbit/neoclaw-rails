@@ -24,7 +24,8 @@ class Firewall
     @host_ip = config.dig("network", "host_ip")
     @manager_ip = config.dig("network", "manager_ip")
     @hub_ip = config.dig("network", "hub_ip")
-    @agent_subnet = config.dig("network", "agent_subnet") || "10.0.1.0/24"
+    @agent_subnet = config.dig("network", "agent_subnet") || "10.1.0.0/16"
+    @user_subnet = config.dig("network", "user_subnet") || "10.2.0.0/16"
     @services = config["services"] || {}
     @wg_port = (config.dig("router", "wg_listen_port") || 51820).to_i
     @api_port = (config.dig("router", "api_port") || 8080).to_i
@@ -65,6 +66,12 @@ class Firewall
           ip saddr #{@host_ip} ip daddr #{@hub_ip} accept
           ip saddr #{@manager_ip} ip daddr #{@hub_ip} accept
           ip saddr #{@agent_subnet} ip daddr #{@hub_ip} accept
+          ip saddr #{@user_subnet} ip daddr #{@host_ip} accept
+          ip saddr #{@user_subnet} ip daddr #{@manager_ip} accept
+          ip saddr #{@user_subnet} ip daddr #{@hub_ip} accept
+          ip saddr #{@user_subnet} ip daddr #{@agent_subnet} accept
+          ip saddr #{@manager_ip} ip daddr #{@user_subnet} accept
+          ip saddr #{@host_ip} ip daddr #{@user_subnet} accept
           goto agents
         }
 
