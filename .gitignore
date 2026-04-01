@@ -18,7 +18,9 @@ router/wg-private.key
 router/config/config.yml
 manager/wg0.conf
 manager/router_pubkey
+manager/build_config.sh
 wg0.conf
+user-configs/
 
 # Manager runtime artifacts
 manager/log/

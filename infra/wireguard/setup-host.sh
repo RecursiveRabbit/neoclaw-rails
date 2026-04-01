@@ -76,7 +76,7 @@ for entry in "${INTERFACES[@]}"; do
 
   ip rule del from "$ip" lookup "$table_id" 2>/dev/null || true
   ip rule add from "$ip" lookup "$table_id"
-  ip route replace 10.0.0.0/16 dev "$name" table "$table_id"
+  ip route replace 10.0.0.0/8 dev "$name" table "$table_id"
 
   echo "  $name ($ip) → table $table_id"
 done
@@ -86,9 +86,9 @@ echo "=== Bridge back door prevention ==="
 # Block podman bridge traffic to WG address space.
 # Agents can only reach WG addresses through WireGuard, not the bridge.
 # Internet access via bridge NAT is unaffected.
-iptables -C INPUT -s 10.88.0.0/16 -d 10.0.0.0/16 -j DROP 2>/dev/null || \
-  iptables -I INPUT -s 10.88.0.0/16 -d 10.0.0.0/16 -j DROP
-echo "  iptables: DROP 10.88.0.0/16 → 10.0.0.0/16 on INPUT"
+iptables -C INPUT -s 10.88.0.0/16 -d 10.0.0.0/8 -j DROP 2>/dev/null || \
+  iptables -I INPUT -s 10.88.0.0/16 -d 10.0.0.0/8 -j DROP
+echo "  iptables: DROP 10.88.0.0/16 → 10.0.0.0/8 on INPUT"
 
 echo ""
 echo "=== Interface status ==="

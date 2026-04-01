@@ -18,7 +18,7 @@ INFRA_DIR="$(cd "$(dirname "$0")" && pwd)"
 KEYDIR="$INFRA_DIR/wireguard/keys"
 SERVICES_FILE="$INFRA_DIR/services.conf"
 BRIDGE_SUBNET="10.88.0.0/16"    # podman default bridge
-WG_SUBNET="10.0.0.0/16"         # our WG address space
+WG_SUBNET="10.0.0.0/8"          # our WG address space
 
 # =================================================================
 # Parse services.conf

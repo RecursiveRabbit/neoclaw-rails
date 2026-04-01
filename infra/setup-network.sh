@@ -50,14 +50,14 @@ ListenPort = 51820
 
 # Block podman bridge traffic to WG address space.
 # Agents reach WG addresses through WireGuard only, not the bridge.
-PostUp = iptables -C INPUT -s 10.88.0.0/16 -d 10.0.0.0/16 -j DROP 2>/dev/null || iptables -I INPUT -s 10.88.0.0/16 -d 10.0.0.0/16 -j DROP
-PostDown = iptables -D INPUT -s 10.88.0.0/16 -d 10.0.0.0/16 -j DROP 2>/dev/null || true
+PostUp = iptables -C INPUT -s 10.88.0.0/16 -d 10.0.0.0/8 -j DROP 2>/dev/null || iptables -I INPUT -s 10.88.0.0/16 -d 10.0.0.0/8 -j DROP
+PostDown = iptables -D INPUT -s 10.88.0.0/16 -d 10.0.0.0/8 -j DROP 2>/dev/null || true
 
 [Peer]
 # wg-router pod — the center of the star
 PublicKey = ${router_pubkey}
 Endpoint = ${router_endpoint}
-AllowedIPs = 10.0.0.0/16
+AllowedIPs = 10.0.0.0/8
 PersistentKeepalive = 25
 EOF
 
@@ -154,7 +154,7 @@ verify() {
     done
 
     # iptables
-    if iptables -C INPUT -s 10.88.0.0/16 -d 10.0.0.0/16 -j DROP &>/dev/null; then
+    if iptables -C INPUT -s 10.88.0.0/16 -d 10.0.0.0/8 -j DROP &>/dev/null; then
         log "iptables bridge block: active"
     else
         log "iptables bridge block: MISSING"
