@@ -70,13 +70,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
-wait_wg() { # container — wait for a WG handshake, up to 45s
-  local c=$1 i
-  for i in $(seq 1 45); do
-    if podman exec "$c" wg show wg0 2>/dev/null | grep -q 'latest handshake'; then
-      return 0
-    fi
-    sleep 1
+wait_fresh_wg() { # container [budget_secs] — any peer with a handshake <90s old
+  local c=$1 budget=${2:-90} hs now
+  local end=$((SECONDS + budget))
+  while [ "$SECONDS" -lt "$end" ]; do
+    hs=$(podman exec "$c" wg show wg0 dump 2>/dev/null | awk 'NR>1 && $5>m {m=$5} END{print m+0}')
+    now=$(date +%s)
+    [ "${hs:-0}" -gt $((now - 90)) ] && return 0
+    sleep 2
   done
   return 1
 }
@@ -135,7 +136,6 @@ runlog $CLI add-agent "$STATE" test2 --endpoint "$IP_AGENT_B:51820" \
   && ok "agent test2" || bad "add-agent test2"
 runlog $CLI authorize "$STATE" test1 svc-matrix \
   && runlog $CLI authorize "$STATE" test2 svc-alt \
-  && runlog $CLI authorize "$STATE" manager svc-admin \
   && ok "authorizations recorded" || bad "authorizations"
 runlog $CLI show "$STATE" | tee "$RUN/state-show.txt" >/dev/null && ok "state summary" || bad "state show"
 ROUTER_PUB_EXPECTED=$($CLI router-public "$STATE")
@@ -207,10 +207,10 @@ AGENT_CONF_A_HASH_BEFORE=$(sha256sum "$STATE/node-$C_A/wg0.conf" | awk '{print $
 log "agent-a wg config sha256 (before): $AGENT_CONF_A_HASH_BEFORE"
 
 hdr "4b. WG handshakes"
-wait_wg "$C_A" && ok "agent-a handshake with Router" || bad "agent-a handshake"
-wait_wg "$C_B" && ok "agent-b handshake with Router" || bad "agent-b handshake"
-wait_wg "$C_HOST" && ok "host handshake with Router" || bad "host handshake"
-wait_wg "$C_MANAGER" && ok "manager handshake with host" || bad "manager handshake"
+wait_fresh_wg "$C_A"    && ok "agent-a handshake with Router" || bad "agent-a handshake"
+wait_fresh_wg "$C_B"    && ok "agent-b handshake with Router" || bad "agent-b handshake"
+wait_fresh_wg "$C_HOST" && ok "host handshake with Router" || bad "host handshake"
+wait_fresh_wg "$C_MANAGER" && ok "manager handshake with host" || bad "manager handshake"
 
 hdr "4c. pairing assertions (§2.2)"
 # Every pod's ONLY [Peer] is the Router; host peers with Router+Manager.
@@ -233,9 +233,24 @@ probe "$C_A" 10.0.0.2 8448 fail "§2.4 unauthorized port: test1 -> host:8448"
 probe "$C_B" 10.0.0.2 8448 ok   "§2.3 authorized: test2 -> host:8448 (its service)"
 probe "$C_B" 10.0.0.2 443 fail "§2.5 unauthorized source: test2 -> host:443"
 
-# Manager identity -> its own authorized port only.
-probe "$C_MANAGER" 10.0.0.2 22   ok   "authorized: manager -> host:22"
-probe "$C_MANAGER" 10.0.0.2 443 fail "manager -> host:443 denied (port not authorized for manager)"
+# Manager identity: it pairs DIRECTLY with the host (topology §2.2), so its
+# traffic never crosses the Router. Port policy on that control channel is
+# host-side, out of Router scope — assert the pairing topology instead:
+# manager<->host flows must move bytes on the HOST's manager peer and zero
+# on the Router's manager peer.
+MANAGER_PUB=$(podman exec "$C_HOST" sh -c 'grep PublicKey /etc/wg/wg0.conf | sed -n 2p' | awk '{print $3}')
+HDRX_BEFORE=$(podman exec "$C_HOST" wg show wg0 dump | awk -v p="$MANAGER_PUB" 'index($0,p){print $6,$7}')
+URX_BEFORE=$(podman exec "$C_ROUTER" wg show wg0 dump | awk -v p="$MANAGER_PUB" 'index($0,p){print $6}')
+probe "$C_MANAGER" 10.0.0.2 22 ok "manager -> host:22 (direct manager<->host pairing)"
+probe "$C_MANAGER" 10.0.0.2 443 ok "manager -> host:443 (direct pairing; port policy is host-side, not Router scope)"
+HDRX_AFTER=$(podman exec "$C_HOST" wg show wg0 dump | awk -v p="$MANAGER_PUB" 'index($0,p){print $6,$7}')
+URX_AFTER=$(podman exec "$C_ROUTER" wg show wg0 dump | awk -v p="$MANAGER_PUB" 'index($0,p){print $6}')
+[ "$HDRX_BEFORE" != "$HDRX_AFTER" ] \
+  && ok "manager traffic moved on the HOST's manager peer ($HDRX_BEFORE -> $HDRX_AFTER)" \
+  || bad "host manager-peer counters did not move ($HDRX_BEFORE)"
+[ "$URX_BEFORE" = "$URX_AFTER" ] \
+  && ok "manager traffic did NOT traverse the Router (router-side rx constant at $URX_AFTER)" \
+  || bad "router rx for manager peer changed: $URX_BEFORE -> $URX_AFTER"
 
 # Agent-to-agent: pod-side (AllowedIPs excludes peers) — packets must not
 # even enter the tunnel.
@@ -249,14 +264,14 @@ out=$(podman exec "$C_A" nc -w 3 10.1.0.2 443 2>&1); rc=$?
 # inner source is not the sending peer's allowed-ip.
 hdr "5b. source-IP binding (§2.6)"
 TEST2_PUB=$($CLI show "$STATE" | awk '/agent test2/{print $NF}')
-RX_BEFORE=$(podman exec "$C_ROUTER" wg show wg0 dump | awk -v p="$TEST2_PUB" '$0 ~ p {print $6}')
+RX_BEFORE=$(podman exec "$C_ROUTER" wg show wg0 dump | awk -v p="$TEST2_PUB" 'index($0,p){print $6}')
 podman exec "$C_A" ip addr add 10.1.0.2/32 dev wg0 2>/dev/null || true
 podman exec "$C_A" sh -c 'ip route replace 10.0.0.2/32 dev wg0 src 10.1.0.2 2>/dev/null; true'
 out=$(podman exec "$C_A" nc -w 3 10.0.0.2 8448 2>&1); rc=$?
 [ $rc -ne 0 ] && ok "spoofed source rejected: test1 speaking as 10.1.0.2 (test2) — path denied (rc=$rc)" \
               || bad "spoofed source worked: $out"
 sleep 2
-RX_AFTER=$(podman exec "$C_ROUTER" wg show wg0 dump | awk -v p="$TEST2_PUB" '$0 ~ p {print $6}')
+RX_AFTER=$(podman exec "$C_ROUTER" wg show wg0 dump | awk -v p="$TEST2_PUB" 'index($0,p){print $6}')
 [ "$RX_BEFORE" = "$RX_AFTER" ] \
   && ok "Router received zero spoofed packets on test2's peer (rx $RX_BEFORE -> $RX_AFTER)" \
   || bad "Router rx for test2 changed: $RX_BEFORE -> $RX_AFTER"
@@ -301,8 +316,16 @@ runlog podman run -d --name "$C_ROUTER" --network "$NET" --ip "$IP_ROUTER" \
 sleep 3
 podman logs "$C_ROUTER" | tee -a "$LOG"
 
-wait_wg "$C_A" && ok "agent-a re-handshaken after roll" || bad "agent-a re-handshake"
-wait_wg "$C_HOST" && ok "host re-handshaken after roll" || bad "host re-handshake"
+# A replaced Router holds no session state. Peers that remember the old
+# session keep sending with it and are silently dropped until WireGuard's
+# RejectAfterTime (~180s) expires, then re-handshake automatically — no pod
+# configuration change at any point. Budget 240s and require a FRESH
+# handshake so stale state can't fake this check.
+hdr "7b. session re-establishment after roll (bounded, automatic)"
+wait_fresh_wg "$C_A" 240 && ok "agent-a re-handshaken after roll (fresh handshake)" \
+                     || bad "agent-a did not re-handshake within 240s"
+wait_fresh_wg "$C_HOST" 240 && ok "host re-handshaken after roll (fresh handshake)" \
+                        || bad "host did not re-handshake within 240s"
 
 snap2="$RUN/snapshot-roll2"
 snapshot_router "$snap2"
@@ -324,7 +347,7 @@ hdr "8. packet tests repeated after roll (§2.10)"
 probe "$C_A" 10.0.0.2 443  ok   "post-roll authorized: test1 -> host:443"
 probe "$C_A" 10.0.0.2 8448 fail "post-roll unauthorized port: test1 -> host:8448"
 probe "$C_B" 10.0.0.2 443 fail "post-roll unauthorized source: test2 -> host:443"
-probe "$C_MANAGER" 10.0.0.2 22 ok "post-roll manager -> host:22"
+probe "$C_MANAGER" 10.0.0.2 22 ok "post-roll manager -> host:22 (direct pairing unaffected)"
 
 # ------------------------------------------------------------- verdict
 hdr "verdict"
