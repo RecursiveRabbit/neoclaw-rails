@@ -163,13 +163,19 @@ hdr "4. host, Manager, and agent pods (WG configs rendered by Manager)"
 node_up() { # container_name ip conf_file role_script
   local c=$1 ip=$2 conf=$3 role=$4
   mkdir -p "$STATE/node-$c"
-  cp "$conf" "$STATE/node-$c/node.conf"
+  cp "$conf" "$STATE/node-$c/wg0.conf"
   printf '%s\n' "$role" > "$STATE/node-$c/role.sh"
-  chmod 600 "$STATE/node-$c/node.conf"
+  chmod 600 "$STATE/node-$c/wg0.conf"
   cat > "$STATE/node-$c/init.sh" <<'EOS'
 #!/bin/sh
-wg-quick up /etc/wg/node.conf
-echo "[node] wg up, pubkey: $(wg show wg0 public-key)"
+# wg-quick can lose a race with container netns setup on first boot; retry.
+n=0
+until wg-quick up /etc/wg/wg0.conf 2>/tmp/wg-quick.err; do
+    n=$((n+1))
+    [ "$n" -ge 5 ] && { cat /tmp/wg-quick.err; echo "[node] FATAL: wg never came up"; exit 1; }
+    sleep 2
+done
+echo "[node] wg0 up, pubkey: $(wg show wg0 public-key)"
 exec sh /etc/wg/role.sh
 EOS
   chmod +x "$STATE/node-$c/init.sh"
@@ -197,7 +203,7 @@ node_up "$C_MANAGER" "$IP_MANAGER" <($CLI manager-config "$STATE") "$ROLE_IDLE" 
 node_up "$C_A" "$IP_AGENT_A" <($CLI agent-config "$STATE" test1) "$ROLE_IDLE" && ok "agent-a (test1) up" || bad "agent-a up"
 node_up "$C_B" "$IP_AGENT_B" <($CLI agent-config "$STATE" test2) "$ROLE_IDLE" && ok "agent-b (test2) up" || bad "agent-b up"
 
-AGENT_CONF_A_HASH_BEFORE=$(sha256sum "$STATE/node-$C_A/node.conf" | awk '{print $1}')
+AGENT_CONF_A_HASH_BEFORE=$(sha256sum "$STATE/node-$C_A/wg0.conf" | awk '{print $1}')
 log "agent-a wg config sha256 (before): $AGENT_CONF_A_HASH_BEFORE"
 
 hdr "4b. WG handshakes"
@@ -209,12 +215,12 @@ wait_wg "$C_MANAGER" && ok "manager handshake with host" || bad "manager handsha
 hdr "4c. pairing assertions (§2.2)"
 # Every pod's ONLY [Peer] is the Router; host peers with Router+Manager.
 for c in "$C_A" "$C_B"; do
-  n=$(podman exec "$c" sh -c 'grep -c "^\[Peer\]" /etc/wg/node.conf')
+  n=$(podman exec "$c" sh -c 'grep -c "^\[Peer\]" /etc/wg/wg0.conf')
   [ "$n" = "1" ] && ok "$c has exactly one WG peer" || bad "$c peer count = $n (expected 1)"
-  podman exec "$c" sh -c 'grep -A2 "^\[Peer\]" /etc/wg/node.conf' | grep -q "$ROUTER_PUB_EXPECTED" \
+  podman exec "$c" sh -c 'grep -A2 "^\[Peer\]" /etc/wg/wg0.conf' | grep -q "$ROUTER_PUB_EXPECTED" \
     && ok "$c peers with the Router pubkey" || bad "$c does not peer with Router"
 done
-podman exec "$C_HOST" sh -c 'grep -c "^\[Peer\]" /etc/wg/node.conf' | grep -q 2 \
+podman exec "$C_HOST" sh -c 'grep -c "^\[Peer\]" /etc/wg/wg0.conf' | grep -q 2 \
   && ok "host peers with Router and Manager" || bad "host peer count != 2"
 podman exec "$C_ROUTER" wg show wg0 dump | awk '{print $1}' | grep -q . \
   && ok "Router has a peer set" || bad "Router has no peers"
@@ -309,7 +315,7 @@ diff -u "$snap1.peers" "$snap2.peers" && ok "§2.9 peer set unchanged across rol
 diff -u "$snap1.iptables" "$snap2.iptables" | grep -v '^[+-]:' \
   && ok "iptables policy identical across rolls" || bad "iptables policy changed"
 
-AGENT_CONF_A_HASH_AFTER=$(sha256sum "$STATE/node-$C_A/node.conf" | awk '{print $1}')
+AGENT_CONF_A_HASH_AFTER=$(sha256sum "$STATE/node-$C_A/wg0.conf" | awk '{print $1}')
 [ "$AGENT_CONF_A_HASH_BEFORE" = "$AGENT_CONF_A_HASH_AFTER" ] \
   && ok "§2.9 agent-a WG config untouched by the roll" || bad "agent-a config changed"
 
