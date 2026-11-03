@@ -1,0 +1,8 @@
+[Unit]
+Description=NeoClaw WG key drift check (host/manager/router)
+After=network.target
+
+[Service]
+Type=oneshot
+User=rook
+ExecStart=/usr/local/bin/neoclaw-wg-drift-check --fix
