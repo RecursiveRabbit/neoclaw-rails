@@ -276,6 +276,9 @@ RX_AFTER=$(podman exec "$C_ROUTER" wg show wg0 dump | awk -v p="$TEST2_PUB" 'ind
   && ok "Router received zero spoofed packets on test2's peer (rx $RX_BEFORE -> $RX_AFTER)" \
   || bad "Router rx for test2 changed: $RX_BEFORE -> $RX_AFTER"
 podman exec "$C_A" ip addr del 10.1.0.2/32 dev wg0 2>/dev/null || true
+# Restore the route we borrowed for the spoof attempt — without this the
+# src-route lingers and every later probe from agent-a is source-spoofed.
+podman exec "$C_A" ip route replace 10.0.0.2/32 dev wg0 src 10.1.0.1 2>/dev/null || true
 podman exec "$C_ROUTER" iptables -L NEOCLAW_FWD -v -n | tee "$RUN/iptables-fwd.txt" >/dev/null
 
 # ------------------------------------------- 6. no API / registry / state
