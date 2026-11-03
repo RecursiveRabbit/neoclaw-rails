@@ -1,0 +1,82 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# neoclaw-pods — the Manager's podman lifecycle interface (spec §5 of the
+# vertical slice). Exercises inventory, start, stop, inspect, logs, exec,
+# and the rescue copy path — everything the Manager needs through podman,
+# with no Relay HTTP server involved.
+
+require "optparse"
+require_relative "../app/services/pod_lifecycle"
+
+USAGE = <<~US
+  neoclaw-pods — Manager-side podman lifecycle surface
+
+  Commands:
+    inventory                     # all containers: name/state/status
+    exists NAME
+    running NAME
+    start NAME
+    stop NAME [--timeout N]
+    inspect NAME                  # full podman inspect JSON
+    logs NAME [--tail N]
+    exec NAME -- CMD [ARGS...]    # explicit lifecycle operation in the pod
+    rescue NAME --path P --to D   # copy workspace/session content out (no Relay)
+US
+
+def die(msg) = (warn "neoclaw-pods: #{msg}"; exit 1)
+
+podman_args = []
+args = ARGV.dup
+while args.first == "--root"
+  podman_args += ["--root", args.delete_at(1)]
+  args.shift
+end
+
+cmd = args.shift or die("no command\n#{USAGE}")
+
+case cmd
+when "inventory"
+  puts JSON.pretty_generate(PodLifecycle.inventory(podman_args:))
+when "exists"
+  exit(PodLifecycle.exists?(args.shift, podman_args:) ? 0 : 1)
+when "running"
+  exit(PodLifecycle.running?(args.shift, podman_args:) ? 0 : 1)
+when "start"
+  name = args.shift or die("start NAME")
+  puts PodLifecycle.start(name, podman_args:) ? "started #{name}" : "FAILED to start #{name}"
+  exit(PodLifecycle.running?(name, podman_args:) ? 0 : 1)
+when "stop"
+  opts = { timeout: 30 }
+  op = OptionParser.new { |o| o.on("--timeout N") { |v| opts[:timeout] = v.to_i } }
+  op.parse!(args)
+  name = args.shift or die("stop NAME")
+  ok = PodLifecycle.stop(name, timeout: opts[:timeout], podman_args:)
+  puts ok ? "stopped #{name}" : "FAILED to stop #{name}"
+  exit(ok ? 0 : 1)
+when "inspect"
+  puts JSON.pretty_generate(PodLifecycle.inspect(args.shift, podman_args:))
+when "logs"
+  opts = { tail: 100 }
+  op = OptionParser.new { |o| o.on("--tail N") { |v| opts[:tail] = v.to_i } }
+  op.parse!(args)
+  puts PodLifecycle.logs(args.shift, tail: opts[:tail], podman_args:)
+when "exec"
+  name = args.shift or die("exec NAME -- CMD")
+  args.shift == "--" or die("exec NAME -- CMD [ARGS...]")
+  puts PodLifecycle.exec(name, args, podman_args:)
+when "rescue"
+  name = args.shift or die("rescue NAME --path P --to D")
+  opts = {}
+  op = OptionParser.new do |o|
+    o.on("--path P") { |v| opts[:path] = v }
+    o.on("--to D")   { |v| opts[:to] = v }
+  end
+  op.parse!(args)
+  die("rescue needs --path and --to") unless opts[:path] && opts[:to]
+  files = PodLifecycle.rescue_copy(name, container_path: opts[:path], to: opts[:to],
+                                   podman_args:)
+  puts JSON.pretty_generate(files)
+else
+  die("unknown command #{cmd}\n#{USAGE}")
+end

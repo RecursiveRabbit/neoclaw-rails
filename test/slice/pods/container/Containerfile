@@ -1,0 +1,17 @@
+FROM docker.io/library/node:22-bookworm-slim
+
+RUN apt-get update -qq \
+ && apt-get install -y -qq --no-install-recommends \
+      python3 python3-pip libmagic1 wireguard-tools iproute2 curl jq \
+ && pip3 install --break-system-packages --no-cache-dir matrix-nio \
+ && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# stock Kimi Code CLI (verbatim copy of the published bundle)
+COPY kimi-code /opt/kimi-code
+RUN printf '#!/bin/sh\nexec node /opt/kimi-code/dist/main.mjs "$@"\n' > /usr/local/bin/kimi \
+ && chmod +x /usr/local/bin/kimi
+
+WORKDIR /pod
+COPY pod/ /pod/
+
+ENTRYPOINT ["/pod/start.sh"]
