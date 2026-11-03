@@ -392,9 +392,10 @@ gate_roll() { # roll_index
   # Manager-side out-of-band wake: pods initiate sessions too. The ICMP
   # echo itself is policy-dropped at the Router's FORWARD chain; the
   # handshake the ping triggers is the point.
-  podman exec "$C_A" sh -c 'ping -c1 -W1 10.0.0.2 >/dev/null 2>&1 || true' &
-  podman exec "$C_B" sh -c 'ping -c1 -W1 10.0.0.2 >/dev/null 2>&1 || true' &
-  wait
+  local wake_pids=""
+  podman exec "$C_A" sh -c 'ping -c1 -W1 10.0.0.2 >/dev/null 2>&1 || true' & wake_pids="$wake_pids $!"
+  podman exec "$C_B" sh -c 'ping -c1 -W1 10.0.0.2 >/dev/null 2>&1 || true' & wake_pids="$wake_pids $!"
+  wait $wake_pids
   sleep 2.2   # let post-recovery accepts land in the log
   tend=$(date +%s%N)
   local result rc
