@@ -10,6 +10,7 @@ RUN apk add --no-cache \
     wireguard-tools \
     iptables \
     iproute2 \
-    busybox-extras
+    busybox-extras \
+    coreutils
 
 RUN mkdir -p /etc/wg /run/node

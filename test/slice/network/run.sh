@@ -168,11 +168,18 @@ podman logs "$C_ROUTER" | tee -a "$LOG"
 # ------------------------------------------------- 4. host + manager + pods
 hdr "4. host, Manager, and agent pods (WG configs rendered by Manager)"
 
-node_up() { # container_name ip conf_file role_script
-  local c=$1 ip=$2 conf=$3 role=$4
+node_up() { # container_name ip conf_file role_script [rw]
+  local c=$1 ip=$2 conf=$3 role=$4 rw=${5:-ro}
   mkdir -p "$STATE/node-$c"
   cp "$conf" "$STATE/node-$c/wg0.conf"
   printf '%s\n' "$role" > "$STATE/node-$c/role.sh"
+  cat > "$STATE/node-$c/serve.sh" <<'EOS'
+#!/bin/sh
+# -e hook: runs per accepted connection, socket on stdio. The accept
+# timestamp is the server-side truth of "traffic actually flowed".
+echo "$(date +%s%N) accept $1" >> /etc/wg/accepts.log
+echo "host:$1-ok"
+EOS
   chmod 600 "$STATE/node-$c/wg0.conf"
   cat > "$STATE/node-$c/init.sh" <<'EOS'
 #!/bin/sh
@@ -186,10 +193,10 @@ done
 echo "[node] wg0 up, pubkey: $(wg show wg0 public-key)"
 exec sh /etc/wg/role.sh
 EOS
-  chmod +x "$STATE/node-$c/init.sh"
+  chmod +x "$STATE/node-$c/init.sh" "$STATE/node-$c/serve.sh"
   podman run -d --name "$c" --network "$NET" --ip "$ip" \
     --cap-add NET_ADMIN \
-    -v "$STATE/node-$c:/etc/wg:ro" \
+    -v "$STATE/node-$c:/etc/wg:$rw" \
     localhost/neoclaw-node:test /etc/wg/init.sh >/dev/null 2>&1
 }
 
@@ -197,16 +204,16 @@ ROLE_HOST=$(cat <<'EOS'
 #!/bin/sh
 for p in 443:matrix 22:admin 8448:alt; do
   port=${p%%:*}; name=${p##*:}
-  ( while :; do printf "host:%s-ok\n" "$name" | nc -l -p "$port" -w 5; done ) &
+  ( while :; do nc -l -p "$port" -w 60 -e /etc/wg/serve.sh "$name" 2>/dev/null; done ) &
 done
-echo "[host] listeners on 443 22 8448"
+echo "[host] listeners on 443 22 8448 (accepts timestamped to /etc/wg/accepts.log)"
 wait
 EOS
 )
 ROLE_IDLE='#!/bin/sh
 sleep infinity'
 
-node_up "$C_HOST" "$IP_HOST" <($CLI host-config "$STATE") "$ROLE_HOST" && ok "host container up" || bad "host up"
+node_up "$C_HOST" "$IP_HOST" <($CLI host-config "$STATE") "$ROLE_HOST" rw && ok "host container up" || bad "host up"
 node_up "$C_MANAGER" "$IP_MANAGER" <($CLI manager-config "$STATE") "$ROLE_IDLE" && ok "manager container up" || bad "manager up"
 node_up "$C_A" "$IP_AGENT_A" <($CLI agent-config "$STATE" test1) "$ROLE_IDLE" && ok "agent-a (test1) up" || bad "agent-a up"
 node_up "$C_B" "$IP_AGENT_B" <($CLI agent-config "$STATE" test2) "$ROLE_IDLE" && ok "agent-b (test2) up" || bad "agent-b up"
@@ -327,12 +334,12 @@ runlog podman run -d --name "$C_ROUTER" --network "$NET" --ip "$IP_ROUTER" \
 sleep 3
 podman logs "$C_ROUTER" | tee -a "$LOG"
 
-# A replaced Router holds no session state. Peers that remember the old
-# session keep sending with it and are silently dropped until WireGuard's
-# RejectAfterTime (~180s) expires, then re-handshake automatically — no pod
-# configuration change at any point. Budget 240s and require a FRESH
-# handshake so stale state can't fake this check.
-hdr "7b. session re-establishment after roll (bounded, automatic)"
+# A replaced Router holds no session state, so it initiates fresh sessions
+# itself (entrypoint warm-up) instead of waiting for peer rekey timers.
+# Manager-side wake pings (out of band, podman exec) cover the same from
+# the pod direction. Require a FRESH handshake so stale state can't fake
+# this check.
+hdr "7b. session re-establishment after roll (Router-initiated warm-up)"
 wait_fresh_wg "$C_A" 240 && ok "agent-a re-handshaken after roll (fresh handshake)" \
                      || bad "agent-a did not re-handshake within 240s"
 wait_fresh_wg "$C_HOST" 240 && ok "host re-handshaken after roll (fresh handshake)" \
@@ -352,6 +359,70 @@ diff -u "$snap1.iptables" "$snap2.iptables" | grep -v '^[+-]:' \
 AGENT_CONF_A_HASH_AFTER=$(sha256sum "$STATE/node-$C_A/wg0.conf" | awk '{print $1}')
 [ "$AGENT_CONF_A_HASH_BEFORE" = "$AGENT_CONF_A_HASH_AFTER" ] \
   && ok "§2.9 agent-a WG config untouched by the roll" || bad "agent-a config changed"
+
+# --------------------------------------- 7c. repeated rolls, hard <=2s gate
+# Evans' requirement: worst-case interruption across a roll <= 2 seconds.
+# Continuous authorized traffic flows from agent-a (3 staggered streams)
+# for the whole phase; the host timestamps every accepted connection.
+# Interruption per roll is measured server-side: first accept after roll
+# start minus last accept before it. Assertion is on the WORST roll, not
+# the average. Traffic verification is real (application accepts), not
+# `wg show`.
+hdr "7c. repeated rolls under continuous traffic (worst case <= 2.0s)"
+TPIDS=""
+for s in 0 0.06 0.13; do
+  sleep "$s"
+  podman exec "$C_A" sh -c 'while :; do printf "\n" | nc -w 1 10.0.0.2 443 >/dev/null 2>&1; done' &
+  TPIDS="$TPIDS $!"
+done
+sleep 1   # settle: accept log has pre-roll traffic
+
+gate_roll() { # roll_index
+  local i=$1
+  local conf="$STATE/router-render-roll$i"
+  $CLI render-router "$STATE" "$conf" >/dev/null
+  local t0 tstart tend
+  t0=$(date +%s%N)
+  podman rm -f "$C_ROUTER" >/dev/null 2>&1
+  podman run -d --name "$C_ROUTER" --network "$NET" --ip "$IP_ROUTER" \
+    --cap-add NET_ADMIN --sysctl net.ipv4.ip_forward=1 \
+    -v "$conf:/etc/neoclaw:ro" \
+    localhost/neoclaw-router:test >/dev/null
+  tstart=$(date +%s%N)
+  # Manager-side out-of-band wake: pods initiate sessions too. The ICMP
+  # echo itself is policy-dropped at the Router's FORWARD chain; the
+  # handshake the ping triggers is the point.
+  podman exec "$C_A" sh -c 'ping -c1 -W1 10.0.0.2 >/dev/null 2>&1 || true' &
+  podman exec "$C_B" sh -c 'ping -c1 -W1 10.0.0.2 >/dev/null 2>&1 || true' &
+  wait
+  sleep 2.2   # let post-recovery accepts land in the log
+  tend=$(date +%s%N)
+  local result rc
+  result=$(awk -v t0="$t0" -v tend="$tend" '
+    $1 >= t0-10000000000 {
+      if ($1 < t0) { if ($1 > lastb) lastb=$1 }
+      else if (firsta == 0 && $1 <= tend) { firsta=$1 }
+    }
+    END {
+      if (lastb == 0 || firsta == 0) { printf "NOMEASURE(lastb=%d,firsta=%d)", lastb, firsta+0; exit 1 }
+      printf "%.3f", (firsta-lastb)/1000000000
+    }' "$STATE/node-$C_HOST/accepts.log")
+  rc=$?
+  log "roll $i: container swap $(( (tstart-t0)/1000000 ))ms; observed interruption ${result}s (server-side accepts)"
+  if [ $rc -eq 0 ]; then
+    awk -v r="$result" 'BEGIN{exit !(r<=2.0)}' \
+      && ok "roll $i: interruption ${result}s <= 2.0s worst-case gate" \
+      || bad "roll $i: interruption ${result}s EXCEEDS 2.0s worst-case gate"
+  else
+    bad "roll $i: traffic did not resume ($result)"
+  fi
+}
+
+for i in 2 3 4 5; do gate_roll "$i"; done
+kill $TPIDS 2>/dev/null || true
+[ "$(podman exec "$C_ROUTER" wg show wg0 public-key)" = "$ROUTER_PUB_EXPECTED" ] \
+  && ok "after roll 5: Router public key still matches Manager-held key" \
+  || bad "Router pubkey drifted across repeated rolls"
 
 # ------------------------------------------------- 8. re-run packet tests
 hdr "8. packet tests repeated after roll (§2.10)"

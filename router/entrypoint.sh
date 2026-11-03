@@ -128,6 +128,24 @@ jq -c '.nat_rules[]?' "$CONF" | while read -r rule; do
     echo "[router] NAT: $src out $out (instructed)"
 done
 
+# ------------------------------------------------------- session warm-up
+# Roll requirement: <=2s interruption, worst case. WireGuard peers that
+# remember a dead session will not re-initiate until their rekey timers
+# expire (~120-180s) — far too slow. The replacement Router therefore
+# initiates immediately: any outbound packet triggers a handshake for a
+# peer with no valid session, and a valid initiation makes the peer adopt
+# the new session at once. We ping every peer's tunnel IP once. Payload
+# loss (e.g. an agent with no return route to us) is irrelevant — the
+# handshake exchange is the point. Peers with no configured endpoint
+# cannot be woken from here; the Manager covers those out of band via
+# podman (its own wake step, outside this appliance).
+jq -r '.peers[]? | .allowed_ips[]?' "$CONF" | while read -r cidr; do
+    ipaddr=${cidr%/*}
+    case "$ipaddr" in *:*) continue ;; esac
+    ping -c 1 -W 1 "$ipaddr" >/dev/null 2>&1 || true
+done
+echo "[router] session warm-up: initiation sent to every peer"
+
 # --------------------------------------------------------------------------
 echo "[router] applied. no API, no registry, no state. holding."
 exec tail -f /dev/null
