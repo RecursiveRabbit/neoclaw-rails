@@ -1,0 +1,15 @@
+# NeoClaw vertical-slice network node.
+#
+# Generic WireGuard node for the slice harness: wg-quick brings up the
+# Manager-rendered config, then a role script runs listeners or holds.
+# Never used outside test/slice/network.
+
+FROM alpine:3.19
+
+RUN apk add --no-cache \
+    wireguard-tools \
+    iptables \
+    iproute2 \
+    busybox-extras
+
+RUN mkdir -p /etc/wg /run/node
