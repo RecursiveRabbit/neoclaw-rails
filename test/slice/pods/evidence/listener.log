@@ -1,0 +1,99 @@
+[07:41:09] resumed session session_ab32302a-b95d-4e6a-816f-fd36cad2bee9
+[07:41:09] initial sync: SyncResponse
+[07:41:09] join !5WwCRsWS_BJYJ4EyKSICIkVkJmk49mvyuJQ6dIAzaXg JoinResponse
+[07:41:09] join !RBmyzLX0pDAM0UXS9HJg6blzM0Xyir6VyPSPM0p3jY8 JoinResponse
+[07:41:49] WAKE [dm] !5WwCRsWS_BJYJ4EyKSICIkVkJmk49mvyuJQ6dIAzaXg @slice-tester:test.slice $HUTyHCNKgHmjDrCnXzY62YbZ5OyDtE3-o4AjJE5rq-4
+[07:41:50] prompt status= running
+[07:42:34] WAKE [mention] !RBmyzLX0pDAM0UXS9HJg6blzM0Xyir6VyPSPM0p3jY8 @slice-tester:test.slice $beI8LNTe83mvRYmEm2yDC2KycRhxcCqha5c9BZvyObU
+[07:42:34] busy -> steered guidance: {"code": 0, "msg": "success", "data": {"steered": true, "prompt_ids": ["msg_01M6G5R88NEXEBST8Z9EJA1BAS"]}, "request_id": "01M6G5R8APTAXZ0W1S
+[07:43:19] no wake (!RBmyzLX0pDAM0UXS9HJg6blzM0Xyir6VyPSPM0p3jY8): unrelated
+[08:00:42] resumed session session_ab32302a-b95d-4e6a-816f-fd36cad2bee9
+[08:00:42] initial sync: SyncResponse
+[08:00:42] join !RBmyzLX0pDAM0UXS9HJg6blzM0Xyir6VyPSPM0p3jY8 JoinResponse
+[08:00:42] join !5WwCRsWS_BJYJ4EyKSICIkVkJmk49mvyuJQ6dIAzaXg JoinResponse
+[08:17:33] resumed session session_ab32302a-b95d-4e6a-816f-fd36cad2bee9
+[08:17:34] initial sync: SyncResponse
+[08:17:34] join !RBmyzLX0pDAM0UXS9HJg6blzM0Xyir6VyPSPM0p3jY8 JoinResponse
+[08:17:34] join !5WwCRsWS_BJYJ4EyKSICIkVkJmk49mvyuJQ6dIAzaXg JoinResponse
+[08:18:16] WAKE [dm] !5WwCRsWS_BJYJ4EyKSICIkVkJmk49mvyuJQ6dIAzaXg @slice-tester:test.slice $FXm7PD8DV6cT13zHvomqFvoWxYHLEM8F2ncBWCiWFoc
+[08:18:16] prompt status= running
+[08:31:28] resumed session session_ab32302a-b95d-4e6a-816f-fd36cad2bee9
+[08:31:28] initial sync: SyncResponse
+[08:31:28] join !5WwCRsWS_BJYJ4EyKSICIkVkJmk49mvyuJQ6dIAzaXg JoinResponse
+[08:31:28] join !RBmyzLX0pDAM0UXS9HJg6blzM0Xyir6VyPSPM0p3jY8 JoinResponse
+[08:31:57] WAKE [dm] !5WwCRsWS_BJYJ4EyKSICIkVkJmk49mvyuJQ6dIAzaXg @slice-tester:test.slice $on_athsp_XRlSPKTHkQ6wioe5cmzaexYbcxjCtlNzPg
+[08:31:58] prompt status= running
+[08:39:06] resumed session session_ab32302a-b95d-4e6a-816f-fd36cad2bee9
+[08:39:06] initial sync: SyncResponse
+[08:39:06] join !5WwCRsWS_BJYJ4EyKSICIkVkJmk49mvyuJQ6dIAzaXg JoinResponse
+[08:39:06] join !RBmyzLX0pDAM0UXS9HJg6blzM0Xyir6VyPSPM0p3jY8 JoinResponse
+[08:40:38] resumed session session_ab32302a-b95d-4e6a-816f-fd36cad2bee9
+[08:40:38] initial sync: SyncResponse
+[08:40:38] join !RBmyzLX0pDAM0UXS9HJg6blzM0Xyir6VyPSPM0p3jY8 JoinResponse
+[08:40:38] join !5WwCRsWS_BJYJ4EyKSICIkVkJmk49mvyuJQ6dIAzaXg JoinResponse
+[08:41:13] WAKE [dm] !5WwCRsWS_BJYJ4EyKSICIkVkJmk49mvyuJQ6dIAzaXg @slice-tester:test.slice $2YXicDxagAi6glFFLWcs2VS2rZ1wG3dWQ1bHrN9PS6k
+[08:41:13] prompt status= running
+[08:45:32] resumed session session_ab32302a-b95d-4e6a-816f-fd36cad2bee9
+[08:45:32] initial sync: SyncResponse
+[08:45:32] join !5WwCRsWS_BJYJ4EyKSICIkVkJmk49mvyuJQ6dIAzaXg JoinResponse
+[08:45:32] join !RBmyzLX0pDAM0UXS9HJg6blzM0Xyir6VyPSPM0p3jY8 JoinResponse
+[08:45:34] responder heartbeat: busy=False pending=0
+[08:46:01] WAKE [dm] !5WwCRsWS_BJYJ4EyKSICIkVkJmk49mvyuJQ6dIAzaXg @slice-tester:test.slice $wt7DJeoykk4qxH5pW0fpnO9HwlaINVgOymu_bJ-xtKA
+[08:46:02] prompt status= running
+[08:46:08] SEND FAILED: TypeError("RoomMessageText.__init__() missing 3 required positional arguments: 'body', 'formatted_body', and 'format'")
+[08:46:34] responder heartbeat: busy=False pending=0
+[08:47:34] responder heartbeat: busy=False pending=0
+[08:48:34] responder heartbeat: busy=False pending=0
+[08:49:29] resumed session session_ab32302a-b95d-4e6a-816f-fd36cad2bee9
+[08:49:30] initial sync: SyncResponse
+[08:49:30] join !5WwCRsWS_BJYJ4EyKSICIkVkJmk49mvyuJQ6dIAzaXg JoinResponse
+[08:49:30] join !RBmyzLX0pDAM0UXS9HJg6blzM0Xyir6VyPSPM0p3jY8 JoinResponse
+[08:49:31] responder heartbeat: busy=False pending=0
+[08:49:43] WAKE [dm] !5WwCRsWS_BJYJ4EyKSICIkVkJmk49mvyuJQ6dIAzaXg @slice-tester:test.slice $5y9J5APSm0B7gbGqfdXoIRlrOfVRbV1YByY0qypqqRk
+[08:49:43] prompt status= running
+[08:49:50] replied to !5WwCRsWS_BJYJ4EyKSICIkVkJmk49mvyuJQ6dIAzaXg len 5 resp: RoomSendResponse
+[08:49:50] self-echo suppressed: $8ue6J-RmyJoiS3i79-2KEFAtVaSRiVK_MPINfN5xaeg
+[08:50:32] responder heartbeat: busy=False pending=0
+[08:51:13] resumed session session_ab32302a-b95d-4e6a-816f-fd36cad2bee9
+[08:51:13] initial sync: SyncResponse
+[08:51:13] join !5WwCRsWS_BJYJ4EyKSICIkVkJmk49mvyuJQ6dIAzaXg JoinResponse
+[08:51:13] join !RBmyzLX0pDAM0UXS9HJg6blzM0Xyir6VyPSPM0p3jY8 JoinResponse
+[08:51:13] WAKE [dm] !5WwCRsWS_BJYJ4EyKSICIkVkJmk49mvyuJQ6dIAzaXg @slice-tester:test.slice $5y9J5APSm0B7gbGqfdXoIRlrOfVRbV1YByY0qypqqRk
+[08:51:13] prompt status= running
+[08:51:13] self-echo suppressed: $8ue6J-RmyJoiS3i79-2KEFAtVaSRiVK_MPINfN5xaeg
+[08:51:15] responder heartbeat: busy=True pending=1
+[08:51:21] replied to !5WwCRsWS_BJYJ4EyKSICIkVkJmk49mvyuJQ6dIAzaXg len 6 resp: RoomSendResponse
+[08:51:21] self-echo suppressed: $ux73tcguFLjSNKpCnVRsNU0KpYQ8-Emr6roy_bUXNKk
+[08:51:24] WAKE [dm] !5WwCRsWS_BJYJ4EyKSICIkVkJmk49mvyuJQ6dIAzaXg @slice-tester:test.slice $RAIdV7IfIK0-cqiPy3Zlv9pUiD62CLrVSNa7WPkBmDA
+[08:51:24] prompt status= running
+[08:51:31] replied to !5WwCRsWS_BJYJ4EyKSICIkVkJmk49mvyuJQ6dIAzaXg len 6 resp: RoomSendResponse
+[08:51:31] self-echo suppressed: $g3JHDQDMDqmDrDhgcefognCL698fQkXuPB3kNh-eIno
+[08:52:15] responder heartbeat: busy=False pending=0
+[08:52:55] WAKE [mention] !RBmyzLX0pDAM0UXS9HJg6blzM0Xyir6VyPSPM0p3jY8 @slice-tester:test.slice $YJYow3GeTpt1-Y_KcwFv4xhQtiqPsE_SO-zAdE4g1_0
+[08:52:55] prompt status= running
+[08:52:59] replied to !RBmyzLX0pDAM0UXS9HJg6blzM0Xyir6VyPSPM0p3jY8 len 5 resp: RoomSendResponse
+[08:52:59] self-echo suppressed: $-sWugjitU4ZeONeF-xdZV_4D-VQuk4P-D7FXwzmJML4
+[08:53:15] responder heartbeat: busy=False pending=0
+[08:54:16] responder heartbeat: busy=False pending=0
+[08:54:54] WAKE [dm] !5WwCRsWS_BJYJ4EyKSICIkVkJmk49mvyuJQ6dIAzaXg @slice-tester:test.slice $7Qt1fn8SMe7QCkn-ajkAqs4HTEbxAe9J9BF5jMbWyGc
+[08:54:54] prompt status= running
+[08:55:16] responder heartbeat: busy=True pending=1
+[08:55:24] WAKE [mention] !RBmyzLX0pDAM0UXS9HJg6blzM0Xyir6VyPSPM0p3jY8 @slice-tester:test.slice $1BKRl7Fu8F1BO_U8ieCTaZFL9WGkEGqyj6K17f1fXPE
+[08:55:24] busy -> steered guidance: {"code": 0, "msg": "success", "data": {"steered": true, "prompt_ids": ["msg_01M6G9XM0VA3ECYKXP0G75TTBN"]}, "request_id": "01M6G9XM1K4MJYRXNJ
+[08:56:16] responder heartbeat: busy=True pending=2
+[08:57:08] replied to !5WwCRsWS_BJYJ4EyKSICIkVkJmk49mvyuJQ6dIAzaXg len 14 resp: RoomSendResponse
+[08:57:08] self-echo suppressed: $OpCJn7JY8s8t43x9tzC89ndYlBZ0weHYyciTR9Dava8
+[08:57:09] replied to !RBmyzLX0pDAM0UXS9HJg6blzM0Xyir6VyPSPM0p3jY8 len 14 resp: RoomSendResponse
+[08:57:09] self-echo suppressed: $F94W3hp1Coxx2PgZOAHQG1jhNgVtmnsUHTBO3nOKFlc
+[08:57:17] responder heartbeat: busy=False pending=0
+[08:58:17] responder heartbeat: busy=False pending=0
+[08:59:17] responder heartbeat: busy=False pending=0
+[09:00:17] responder heartbeat: busy=False pending=0
+[09:01:17] responder heartbeat: busy=False pending=0
+[09:02:18] responder heartbeat: busy=False pending=0
+[09:03:18] responder heartbeat: busy=False pending=0
+[09:04:37] resumed session session_ab32302a-b95d-4e6a-816f-fd36cad2bee9
+[09:04:37] initial sync: SyncResponse
+[09:04:37] join !5WwCRsWS_BJYJ4EyKSICIkVkJmk49mvyuJQ6dIAzaXg JoinResponse
+[09:04:37] join !RBmyzLX0pDAM0UXS9HJg6blzM0Xyir6VyPSPM0p3jY8 JoinResponse
+[09:04:39] responder heartbeat: busy=False pending=0

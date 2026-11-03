@@ -1,0 +1,72 @@
+{
+ "probe": "guidance-during-active-turn-v2",
+ "session": "session_289111ff-60aa-471f-a8da-16d36453b226",
+ "steps": [
+  {
+   "step": "submit_A",
+   "note": "60s bash loop, auto permission",
+   "t": "2026-11-03T07:14:19Z"
+  },
+  {
+   "A_status": "running",
+   "A_prompt": "msg_01M6G44GG0HMHVD4FM4Q4RSENR",
+   "A_raw": null,
+   "t": "2026-11-03T07:14:19Z"
+  },
+  {
+   "note": "session_busy_check",
+   "busy": false,
+   "main_turn_active": false,
+   "t": "2026-11-03T07:15:19Z"
+  },
+  {
+   "step": "submit_B_while_busy",
+   "t": "2026-11-03T07:15:19Z"
+  },
+  {
+   "B_status": "running",
+   "B_prompt": "msg_01M6G46BC0HAKJQJGKEP1Z8YY5",
+   "B_raw": null,
+   "t": "2026-11-03T07:15:19Z"
+  },
+  {
+   "step": "steer_B_single_colon",
+   "t": "2026-11-03T07:15:20Z"
+  },
+  {
+   "steer": {
+    "code": 40402,
+    "msg": "no active prompt to steer into",
+    "data": null,
+    "request_id": "01M6G46CCR0J5MN4NQBC5WRZFN",
+    "stack": "Error2: no active prompt to steer into\n    at AgentLoopService.steer (file:///usr/lib/node_modules/@moonshot-ai/kimi-code/dist/main.mjs:266525:59)\n    at Object.steerPromptAction [as handle] (file:///usr/lib/node_modules/@moonshot-ai/kimi-code/dist/main.mjs:358072:24)\n    at runAction (file:///usr/lib/node_modules/@moonshot-ai/kimi-code/dist/main.mjs:357771:14)\n    at Object.<anonymous> (file:///usr/lib/node_modules/@moonshot-ai/kimi-code/dist/main.mjs:358044:10)\n    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)"
+   },
+   "t": "2026-11-03T07:15:20Z"
+  },
+  {
+   "note": "state_after_steer",
+   "busy": false,
+   "main_turn_active": false,
+   "pending_interaction": "none",
+   "t": "2026-11-03T07:15:21Z"
+  },
+  {
+   "note": "final_state",
+   "last_turn": "failed",
+   "busy": false,
+   "main_turn_active": false,
+   "t": "2026-11-03T07:15:21Z"
+  },
+  {
+   "step": "messages_fetched",
+   "n": 6,
+   "t": "2026-11-03T07:15:21Z"
+  },
+  {
+   "guidance_ack_in_transcript": true,
+   "tick60_in_transcript": false,
+   "shared_room_in_transcript": true,
+   "t": "2026-11-03T07:15:21Z"
+  }
+ ]
+}
