@@ -29,16 +29,26 @@ under `evidence/<timestamp>/`.
 
 ## Last full run
 
-2026-11-03 (evidence `20261103-025241`): **56 PASS / 0 FAIL** — every §2
-item proven: pairing topology, authorized/unauthorized matrix, agent-to-agent
-deny, source-IP spoof rejection (zero spoofed packets received), no API
-listener / registry / state on the Router, and a replacement roll that kept
-the same IP, public key, peer set, and iptables policy with agent pod WG
-config untouched.
+2026-11-03 (evidence `20261103-034036` challenge-bound gate): **65 PASS /
+0 FAIL** — every §2 item proven: pairing topology, authorized/unauthorized
+matrix, agent-to-agent deny, source-IP spoof rejection (zero spoofed
+packets received), no API listener / registry / state on the Router, and
+repeated replacement rolls (5 total) that kept the same IP, public key,
+peer set, and iptables policy with agent pod WG config untouched.
 
-## Operational finding (recorded per §1 honesty)
+**Roll interruption gate (Evans' hard requirement: <=2 s worst case):**
+four rolls under continuous challenge-bound application traffic measured
+1581 / 1596 / 1638 / 1680 ms from old-router death to first fresh served
+connection — worst 1680 ms. Mechanism: Router entrypoint session warm-up
++ Manager out-of-band pod wake (podman exec ping) + `podman kill`/`rm`
+fast teardown. See `router/router.md`.
 
-An ordinary roll drops in-kernel WireGuard sessions. Peers self-heal at the
-rekey window (~120 s; worst ~180 s) with zero configuration change; observed
-recovery <5 s when the session was already past rekey age. See
-`router/router.md` "What replacement means".
+## Operational findings (recorded per §1 honesty)
+
+- Manager<->host pairing bypasses the Router by design; Manager port
+  policy is host-side, out of Router scope (asserted with wg counters).
+- A roll drops in-kernel WireGuard sessions; without the warm-up/wake
+  mechanisms, recovery would wait out ~120-180 s rekey timers. With them:
+  <=2 s proven above.
+- `podman rm -f` alone burns a 10 s SIGTERM grace on the test host (PID 1
+  ignores SIGTERM environment-wide); rolls must use `podman kill` + `rm`.

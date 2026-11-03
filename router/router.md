@@ -62,18 +62,33 @@ re-registration, or peer-discovery protocol is involved.
 A change to the Router's own IP/key or to a pod's peer data is not an ordinary
 roll; the Manager must deliberately update the affected connection contracts.
 
-Operational note: WireGuard session state is kernel state and dies with the
-container. A peer that was talking to the old Router keeps transmitting with
-its old session and is silently dropped until WireGuard's rekey window
-(REKEY_AFTER_TIME, ~120 seconds) or, at the outside, RejectAfterTime
-(~180 seconds) passes, at which point it re-handshakes automatically —
-observed recovery is typically the first keepalive after the rekey window
-(<5 s when the session was already past rekey age). An ordinary roll
-therefore causes up to ~3 minutes of agent outage with no configuration
-change and no operator action. If a future requirement cannot tolerate that
-window, the remedy is a deliberate design change (for example, a
-Manager-initiated link bounce delivered out of band), not a Router control
-API.
+Operational note — roll interruption is bounded to <=2 seconds, worst
+case, by three cooperating mechanisms (requirement set by Evans;
+measured in the vertical slice, `test/slice/network/run.sh` §7c):
+
+1. **Router-side session warm-up.** WireGuard session state is kernel
+   state and dies with the container; peers that remember a dead session
+   will not re-initiate until their rekey timers expire (~120-180 s) — far
+   too slow. The entrypoint therefore pings every peer's tunnel IP once
+   after applying config. Any outbound packet triggers a handshake for a
+   peer with no valid session, and a valid handshake initiation makes the
+   peer adopt the new session at once. Payload loss is irrelevant; the
+   handshake exchange is the point.
+2. **Manager-side out-of-band wake.** Immediately after the replacement
+   starts, the Manager pings from every pod via podman exec (ICMP echo is
+   policy-dropped at the Router's FORWARD chain; the triggered handshake
+   is the point). This covers peers the Router cannot reach itself
+   (no configured endpoint) — the Router remains dumb and needs no API.
+3. **Fast teardown.** The old container is removed with `podman kill` +
+   `podman rm` (~0.5 s on the test host; `podman rm -f` alone burns a 10 s
+   SIGTERM grace because PID 1 ignores SIGTERM there).
+
+Measured (four repeated rolls under continuous challenge-bound
+application traffic; per-roll bound = old-router death to first served
+connection provably initiated after the new container's run): **1581 ms,
+1596 ms, 1638 ms, 1680 ms — worst case 1680 ms <= 2000 ms.** Container
+swap (kill+rm+run) accounts for ~820 ms of that; the remainder is
+entrypoint apply plus WireGuard handshakes plus one probe cadence tick.
 
 ## Implementation boundary
 
