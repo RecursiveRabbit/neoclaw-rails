@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # NeoClaw Rails — vertical-slice network test (VERTICAL-SLICE-TEST.md §2).
 #
-# Runs on z620. DISPOSABLE ONLY: dedicated podman network (10.99.0.0/24),
+# Runs on z620. DISPOSABLE ONLY: dedicated podman network (10.99.1.0/24),
 # neoclaw-test-* containers, and Manager state under a fresh temp dir.
 # Production WireGuard interfaces (wg0, wg-hub, nc-host), the host
 # firewall, production Synapse, and live residents are never touched.
@@ -357,7 +357,7 @@ AGENT_CONF_A_HASH_AFTER=$(sha256sum "$STATE/node-$C_A/wg0.conf" | awk '{print $1
 hdr "8. packet tests repeated after roll (§2.10)"
 {
   echo "--- agent-a wg/ip state post-roll"
-  podman exec "$C_A" sh -c 'wg show wg0; ip -4 addr show wg0; ip route; ip neigh show 10.99.0.10' 2>&1
+  podman exec "$C_A" sh -c 'wg show wg0; ip -4 addr show wg0; ip route; ip neigh show 10.99.1.10' 2>&1
   echo "--- router wg dump post-roll"
   podman exec "$C_ROUTER" wg show wg0 dump 2>&1
   echo "--- router forward-chain counters post-roll"
