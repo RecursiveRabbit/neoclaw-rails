@@ -62,6 +62,16 @@ re-registration, or peer-discovery protocol is involved.
 A change to the Router's own IP/key or to a pod's peer data is not an ordinary
 roll; the Manager must deliberately update the affected connection contracts.
 
+Operational note: WireGuard session state is kernel state and dies with the
+container. A peer that was talking to the old Router keeps transmitting with
+its old session and is silently dropped until WireGuard's RejectAfterTime
+(~180 seconds) expires, at which point it re-handshakes automatically. An
+ordinary roll therefore causes up to ~3 minutes of agent outage with no
+configuration change and no operator action. If a future requirement cannot
+tolerate that window, the remedy is a deliberate design change (for example,
+a Manager-initiated link bounce delivered out of band), not a Router control
+API.
+
 ## Implementation boundary
 
 A suitable implementation is a minimal image containing only:
