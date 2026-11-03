@@ -45,12 +45,12 @@ runlog() { # run a command, tee output to transcript, return status
 
 # ------------------------------------------------------------ topology
 NET=neoclaw-test
-SUBNET=10.99.0.0/24
-IP_ROUTER=10.99.0.10
-IP_HOST=10.99.0.2
-IP_MANAGER=10.99.0.3
-IP_AGENT_A=10.99.0.11
-IP_AGENT_B=10.99.0.12
+SUBNET=10.99.1.0/24
+IP_ROUTER=10.99.1.10
+IP_HOST=10.99.1.2
+IP_MANAGER=10.99.1.3
+IP_AGENT_A=10.99.1.11
+IP_AGENT_B=10.99.1.12
 
 C_ROUTER=neoclaw-test-router
 C_HOST=neoclaw-test-host
