@@ -3,8 +3,8 @@
 **Purpose:** prove the new design on one disposable resident before deleting
 or migrating production infrastructure.
 
-This is a test plan, not a claim that the implementation exists or that the
-test has run.
+This is the test plan. Current evidence and remaining integration work are
+tracked in [`docs/PHASE-1-STATUS.md`](PHASE-1-STATUS.md).
 
 ## Scope
 

@@ -21,14 +21,17 @@ The authoritative design is in
 [`docs/NEOCLAW-RAILS-SPEC.md`](docs/NEOCLAW-RAILS-SPEC.md). Network and Router
 contracts are in [`docs/NETWORK.md`](docs/NETWORK.md) and
 [`router/router.md`](router/router.md). The first acceptance exercise is
-specified in [`docs/VERTICAL-SLICE-TEST.md`](docs/VERTICAL-SLICE-TEST.md).
+specified in [`docs/VERTICAL-SLICE-TEST.md`](docs/VERTICAL-SLICE-TEST.md), and
+its evidence is summarized in [`docs/PHASE-1-STATUS.md`](docs/PHASE-1-STATUS.md).
 
 ## Status
 
-The documentation describes the **target architecture**. Implementation and
-the vertical-slice test are still ahead. Earlier documents and code describe a
-Hub-and-Relay system; those are being replaced, not treated as the design to
-preserve.
+The disposable z620 vertical slice has produced its network and Matrix/pod
+evidence: **PR #40** covers the dumb Router and ≤2-second replacement; **PR
+#41** covers Matrix/Kimi behavior, guidance, and podman lifecycle. The real
+Manager integration and production migration are still ahead. Earlier code
+describes a Hub-and-Relay system and is being replaced, not preserved as the
+target architecture.
 
 ## Components in the target system
 

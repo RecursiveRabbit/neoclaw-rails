@@ -1,11 +1,11 @@
 # NeoClaw Rails — design specification
 
-**Status:** target architecture, specified 2026-11-02; implementation and
-vertical-slice verification follow.
+**Status:** target architecture, specified 2026-11-02; phase-1 evidence is
+summarized in [`docs/PHASE-1-STATUS.md`](PHASE-1-STATUS.md).
 
 This specification replaces the Hub-and-Relay design and the earlier Router
-API/configuration iterations. It describes the system we intend to finish, not
-the behavior of the existing code.
+API/configuration iterations. It describes the target system being built; the
+older code is being replaced rather than preserved as the design.
 
 ---
 
