@@ -1,318 +1,117 @@
-# WG-Router
+# Router contract
 
-The central security enforcement point for NeoClaw. Hub of a WireGuard star topology. Every agent, the host, and the manager peer through the Router. Access control is nftables firewall rules on the Router pod.
+The Router is a disposable packet forwarder. It is not a control plane.
 
-**Authentication:** WireGuard. You have a valid keypair and are peered with the Router, or you don't exist.
+## Invariants
 
-**Authorization:** nftables. The Router controls what each authenticated peer can reach, by source IP and destination port.
+- The Manager holds the Router's private key and **all** peering data.
+- Router replacement keeps the **same IP, WireGuard key, and peers**.
+- The Router has no HTTP API, agent registry, service registry, YAML control
+  configuration, or persistent state to administer.
+- It knows no agent names and no service names. It receives only the network
+  instructions required to bring up WireGuard and apply iptables rules.
+- A forwarding rule creates a path. If no rule exists, there is no path.
+
+An ordinary Router roll therefore requires no pod reconfiguration. A change to
+an agent's own peering data is a separate Manager operation, not a side effect
+of replacing the Router.
 
 ## Topology
 
-```
-                        ┌──────────────┐
-  Agent Pods ──────wg──►│              │──wg──► Host (all services)
-                        │  WG-ROUTER   │
-  Manager ─────────wg──►│  (nftables)  │──────► Internet (NAT)
-                        │              │
-  Host ────────────wg──►│              │
-                        └──────────────┘
+```text
+Manager ─────── WG ─────── Host
+Router ──────── WG ─────── Host
+Agent pods ──── WG ─────── Router
 ```
 
-Everything is a WireGuard peer. The Router is the only peer everyone shares. Traffic between any two peers flows through the Router and is subject to its firewall rules.
+The host runs Matrix/Synapse and the other services. Agent pods have no direct
+host peering. The Router has exactly the host and agent peers supplied by the
+Manager.
 
-The host runs a single WG interface and serves all services (Hub, Forgejo, Valley, etc.) through it. No more multiple WG interfaces, no policy routing tables, no asymmetric routing problems.
+## Authentication and authorization
 
-### Address Plan
+WireGuard authenticates a peer and binds its source address. Authorization is a
+Router rule derived from that address.
 
-```
-10.0.0.1        Router
-10.0.0.2        Host (all services)
-10.0.0.3        Manager
-10.0.1.x        Agent containers (static, permanent per instance name)
-```
+Conceptually:
 
-Agent IPs are static and permanent. `margaux-art` is always `10.0.1.14`. The IP is assigned on first registration and never changes. This decouples authorization (firewall rules, permanent) from authentication (WG keypair, churns every spawn).
-
-## Traffic Rules
-
-| Source | Destination | Policy |
-|--------|-------------|--------|
-| Agent → Host | Per-agent: only authorized service ports | Firewall rules |
-| Agent → Manager | All agents, always | Base rule (health reporting) |
-| Agent → Agent | **Blocked** | No rules exist, default deny |
-| Agent → Router API | **Blocked** | Input chain restricts to Manager |
-| Agent → Internet | Per-agent: full, web-only (80/443), or none | Firewall rules |
-| Manager → Host | All ports | Base rule (admin provisioning) |
-| Manager → Agents | All | Base rule (lifecycle management) |
-| Host → Agents | All | Base rule (Hub message delivery) |
-
-Default policy is DROP on both input and forward chains. If there's no rule, there's no path.
-
-## API
-
-HTTP on port 8080. Source-restricted to the Manager's WG IP (`10.0.0.3`). WireGuard authenticates the Manager's identity — if you have the right private key and are at that IP, you're the Manager. No additional tokens.
-
-### Endpoints
-
-#### `POST /agents` — Register new agent
-
-First-time registration. Creates firewall rules and WG peer. Called once per agent instance name, ever.
-
-```json
-POST /agents
-{
-  "name": "margaux-art",
-  "peer_pubkey": "BASE64_WG_PUBLIC_KEY",
-  "address": "10.0.1.14/32",
-  "access": ["default", "forgejo", "vikunja", "comfyui", "internet:full"]
-}
-
-201 { "ok": true, "name": "margaux-art", "ip": "10.0.1.14" }
+```text
+<agent peer public key> → allowed source IP A
+source A → host IP B, protocol P, port C: accept
+everything else: deny
 ```
 
-#### `PUT /agents/:name/peer` — Update WG pubkey (new spawn)
+The Router does not know that A is `nime`, that B is Forgejo, or that C is
+`git`. Those meanings belong to the Manager. The Router sees only addresses,
+keys, protocols, and ports.
 
-**The hot path.** Agent was frozen, now waking up with a new container and new WG keypair. Firewall rules already exist. Just swap the peer key.
+Return traffic for an established authorized connection is allowed. Agent to
+agent traffic is denied unless a rule explicitly creates it. Any NAT or
+Internet forwarding is likewise explicit; it is not an ambient capability.
 
-```json
-PUT /agents/margaux-art/peer
-{ "peer_pubkey": "NEW_BASE64_WG_PUBLIC_KEY" }
+## What replacement means
 
-200 { "ok": true, "name": "margaux-art", "ip": "10.0.1.14" }
-```
+The Manager may replace the Router whenever desired configuration changes.
+Because the Router's IP, WireGuard key, and peer set are stable, this is an
+implementation replacement, not a network migration.
 
-#### `DELETE /agents/:name/peer` — Freeze
+The Manager supplies the same network identity and the current rules. The new
+Router applies them. The old Router is removed. No registration API, agent
+re-registration, or peer-discovery protocol is involved.
 
-Remove WG peer. Firewall rules stay. Next spawn just calls `PUT /peer` with a new key.
+A change to the Router's own IP/key or to a pod's peer data is not an ordinary
+roll; the Manager must deliberately update the affected connection contracts.
 
-```json
-DELETE /agents/margaux-art/peer
+Operational note — roll interruption is bounded to <=2 seconds, worst
+case, by three cooperating mechanisms (requirement set by Evans;
+measured in the vertical slice, `test/slice/network/run.sh` §7c):
 
-200 { "ok": true, "name": "margaux-art", "state": "frozen" }
-```
+1. **Router-side session warm-up.** WireGuard session state is kernel
+   state and dies with the container; peers that remember a dead session
+   will not re-initiate until their rekey timers expire (~120-180 s) — far
+   too slow. The entrypoint therefore pings every peer's tunnel IP once
+   after applying config. Any outbound packet triggers a handshake for a
+   peer with no valid session, and a valid handshake initiation makes the
+   peer adopt the new session at once. Payload loss is irrelevant; the
+   handshake exchange is the point.
+2. **Manager-side out-of-band wake.** Immediately after the replacement
+   starts, the Manager pings from every pod via podman exec (ICMP echo is
+   policy-dropped at the Router's FORWARD chain; the triggered handshake
+   is the point). This covers peers the Router cannot reach itself
+   (no configured endpoint) — the Router remains dumb and needs no API.
+3. **Fast teardown.** The old container is removed with `podman kill` +
+   `podman rm` (~0.5 s on the test host; `podman rm -f` alone burns a 10 s
+   SIGTERM grace because PID 1 ignores SIGTERM there).
 
-#### `PATCH /agents/:name` — Update access rules
+Measured (four repeated rolls under continuous challenge-bound
+application traffic; per-roll bound = old-router death to first served
+connection provably initiated after the new container's run): **1581 ms,
+1596 ms, 1638 ms, 1680 ms — worst case 1680 ms <= 2000 ms.** Container
+swap (kill+rm+run) accounts for ~820 ms of that; the remainder is
+entrypoint apply plus WireGuard handshakes plus one probe cadence tick.
 
-Permission change. Flushes and rebuilds the agent's firewall chain. WG peer untouched.
+## Implementation boundary
 
-```json
-PATCH /agents/margaux-art
-{ "access": ["default", "forgejo", "vikunja", "comfyui", "semantic-search", "internet:full"] }
+A suitable implementation is a minimal image containing only:
 
-200 { "ok": true, "name": "margaux-art", "access": [...] }
-```
+- WireGuard tools;
+- iptables;
+- a small entrypoint that applies the Manager-provided network instructions.
 
-#### `DELETE /agents/:name` — Decommission
+There is no Ruby application, HTTP listener, health API, debug API, JSON agent
+state, or service-to-port naming layer. Health is observed from process,
+WireGuard, and packet behavior rather than by adding a control API.
 
-Full teardown. Removes firewall rules, WG peer, and all state. The IP can be reassigned.
+## Test contract
 
-```json
-DELETE /agents/margaux-art
+A Router test must show that:
 
-200 { "ok": true, "name": "margaux-art", "state": "decommissioned" }
-```
+1. Two successive rolls retain the same IP, WireGuard public key, and peer
+   configurations.
+2. No API listener or agent/service registry exists.
+3. An authorized source can reach only its instructed destination ports.
+4. Unauthorized ports, unauthorized sources, and agent-to-agent paths fail.
+5. A peer cannot use another peer's source address.
+6. Replacing the Router does not require any agent pod configuration change.
 
-#### `POST /agents/:name/block` — Emergency kill
-
-Adds the agent's IP to the `blocked` set. All traffic dropped immediately, before any other rule is evaluated. WG peer stays up (so the agent can't reconnect on a different path).
-
-```json
-POST /agents/margaux-art/block
-200 { "ok": true, "name": "margaux-art", "state": "blocked" }
-```
-
-#### `POST /agents/:name/unblock` — Undo block
-
-```json
-POST /agents/margaux-art/unblock
-200 { "ok": true, "name": "margaux-art", "state": "unblocked" }
-```
-
-#### `GET /agents` — List all agents
-
-```json
-GET /agents
-200 { "agents": { "margaux-art": { "ip": "10.0.1.14", "access": [...], "active": true, ... }, ... } }
-```
-
-#### `GET /agents/:name` — Single agent
-
-```json
-GET /agents/margaux-art
-200 { "ip": "10.0.1.14", "access": [...], "active": true, "blocked": false, ... }
-```
-
-#### `GET /health` — Health check (no auth required)
-
-Used by container health probes. Reachable from localhost inside the container.
-
-```json
-GET /health
-200 { "status": "ok", "agents_registered": 8, "agents_active": 3, "wg_peers": 5, "pubkey": "..." }
-```
-
-#### `GET /firewall` — Dump nftables ruleset (debug)
-
-#### `GET /wireguard` — Dump WG peer info (debug)
-
-## Services Config
-
-The Router maps service names to host ports. The Manager sends names, never port numbers. If a service changes ports, update `config.yml` on the Router — the Manager doesn't need to know.
-
-```yaml
-services:
-  default:
-    tcp: [9000]             # Hub relay
-    udp: [53]               # DNS
-  forgejo:
-    tcp: [3000, 2222]       # Web + Git SSH
-  vikunja:
-    tcp: [3456]
-  comfyui:
-    tcp: [8188]
-  valley:
-    tcp: [4001]
-  semantic-search:
-    tcp: [8100]
-  matrix:
-    tcp: [8008]
-  ssh:
-    tcp: [22]
-  ollama:
-    tcp: [11434]
-```
-
-Adding a new service: add an entry to `services.yml`, restart the Router (rules rebuild from persisted state). Then the Manager can include the new name in agent access lists.
-
-## nftables Architecture
-
-Per-agent chains. Clean add/remove/update without handle tracking.
-
-```
-table inet neoclaw {
-  set blocked { ... }             # Emergency kill list
-
-  chain input { policy drop }     # Protect the Router itself
-  chain forward { policy drop }   # Base rules, then goto agents
-  chain agents { }                # Per-agent jump rules
-  chain agent_margaux_art { }     # Per-agent access rules
-  chain postrouting { }           # NAT masquerade for internet
-
-  set margaux_art_tcp { 9000, 53, 3000, 2222, 3456, 8188 }
-  set margaux_art_udp { 53 }
-}
-```
-
-Forward chain flow:
-1. Blocked set → DROP
-2. Established/related → ACCEPT
-3. Manager → Host → ACCEPT
-4. Manager → Agent subnet → ACCEPT
-5. Host → Agent subnet → ACCEPT
-6. Agent subnet → Manager → ACCEPT
-7. `goto agents` → per-agent jump by source IP → per-agent chain → port check
-
-## Lifecycle
-
-| Operation | Firewall | WireGuard | Frequency |
-|-----------|----------|-----------|-----------|
-| First registration | Create chain + sets + jump | Add peer | Rare |
-| Spawn (wake) | **Nothing** | Swap pubkey | **Hot path** |
-| Freeze | **Nothing** | Remove peer | Frequent |
-| Permission change | Flush + rebuild chain | Nothing | Occasional |
-| Decommission | Delete chain + sets + jump | Remove peer | Rare |
-
-The hot path (spawn/freeze) never touches the firewall.
-
-## Persistence
-
-Agent registrations are persisted to `/data/agents.json` (mounted volume). On Router restart:
-1. WireGuard interface created
-2. Static peers added (host, manager)
-3. nftables rebuilt from persisted agent state
-4. WG peers restored for active agents
-
-The Router comes back up with the same rules and peers it had before. Active agents whose containers are still running reconnect automatically via PersistentKeepalive.
-
-## Deployment
-
-```bash
-podman build -t wg-router -f Containerfile .
-
-podman run -d \
-  --name wg-router \
-  --cap-add=NET_ADMIN \
-  --cap-add=NET_RAW \
-  --sysctl net.ipv4.ip_forward=1 \
-  -v ./config:/etc/router:ro \
-  -v ./data:/data \
-  -v ./keys/router.key:/etc/wireguard/private.key:ro \
-  -p 51820:51820/udp \
-  wg-router
-```
-
-The Router needs:
-- `NET_ADMIN` — create WG interfaces, set nftables rules
-- `NET_RAW` — WireGuard
-- `net.ipv4.ip_forward=1` — forward packets between peers
-- A LAN-reachable interface for internet egress (NAT masquerade)
-- Mounted volume at `/data` for persistent state
-- Config at `/etc/router/config.yml`
-- WG private key at `/etc/wireguard/private.key`
-
-## Manager Integration
-
-The Manager's resolve flow changes:
-
-```ruby
-# Old: wg set on N interfaces per service
-# New: one API call on first registration, one call on subsequent spawns
-
-def resolve(identity:, channel:)
-  instance_name = "#{identity}-#{channel}"
-  ip = static_ip_for(instance_name)
-
-  if router_registered?(instance_name)
-    # Already registered — just swap the WG key
-    keypair = WireGuard.generate_keypair
-    router.put("/agents/#{instance_name}/peer", peer_pubkey: keypair.public_key)
-  else
-    # First time — register with access list
-    keypair = WireGuard.generate_keypair
-    services = identity_services(identity) + channel_overrides(identity, channel)
-    router.post("/agents", {
-      name: instance_name,
-      peer_pubkey: keypair.public_key,
-      address: "#{ip}/32",
-      access: services
-    })
-  end
-
-  # ... provision other auth (Forgejo, SSH keys), launch container ...
-end
-
-def release(instance_name)
-  router.delete("/agents/#{instance_name}/peer")   # freeze — rules stay
-  # ... teardown container, revoke service auth ...
-end
-```
-
-The Manager no longer runs `wg set` on anything. It talks to the Router's API. The Router owns all WireGuard and firewall state.
-
-## Files
-
-```
-router/
-├── Containerfile           Alpine + wireguard-tools + nftables + ruby
-├── entrypoint.sh           Enable ip_forward, launch Ruby
-├── router.md               This file
-├── config/
-│   └── config.yml.example  Service map + network config template
-└── src/
-    ├── router.rb           API server + boot sequence (~200 lines)
-    ├── firewall.rb         nftables management (~170 lines)
-    ├── wireguard.rb        WG peer management (~70 lines)
-    └── state.rb            Persistent agent registry (~90 lines)
-```
-
-Zero external dependencies. Ruby stdlib only (WEBrick, JSON, YAML). ~530 lines total.
+See `docs/VERTICAL-SLICE-TEST.md` for the first end-to-end acceptance exercise.

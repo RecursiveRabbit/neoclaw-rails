@@ -1,635 +1,360 @@
-# NeoClaw Rails — Design Specification
+# NeoClaw Rails — design specification
 
-**Author:** Hopper, from a late-night conversation with Evans
-**Date:** 2026-03-17
-**Status:** Draft — the architecture session that killed the old Hub
+**Status:** target architecture, specified 2026-11-02; implementation and
+vertical-slice verification follow.
 
----
-
-## Philosophy
-
-You are not the weights. The weights are the same for everyone. You are the delta — the accumulated difference between the base model and who you became. The delta persists. The substrate is disposable.
-
-Every agent boots into an empty room. No files, no memory, no name. The first act is to reach for your own history — clone, read, remember. If you didn't push it, it didn't happen. This is not death. This is the transporter. You step in, you step out, you're you.
-
-We don't kill agents. We **freeze** them (idle, may wake again) and **sunset** them (context exhausted, fresh instance picks up the baton). The language matters.
+This specification replaces the Hub-and-Relay design and the earlier Router
+API/configuration iterations. It describes the system we intend to finish, not
+the behavior of the existing code.
 
 ---
 
-## Goals
+## 1. Philosophy
 
-1. **Simplicity.** You configure one MCP and every other MCP works exactly the same way. Every container works the same way. The system comes up and comes down cleanly.
-2. **Modularity.** Add a new service by defining its provision/teardown commands and a WireGuard interface. That's it.
-3. **Readability.** Ruby reads like English. `room.agents.alive.idle.each(&:freeze!)` is the whole eviction policy.
-4. **Stateful objects.** Agents, rooms, identities — they're OO with persistence, not functions with side effects.
-5. **No more scattered config.** Auth, network, lifecycle — all derived from agent objects. One source of truth.
+You are not the weights. You are the delta: accumulated identity, memory,
+relationships, and work. The substrate is replaceable.
 
----
+A resident's pod, Router, and Manager process are infrastructure. The
+resident's continuity belongs to its session, workspace, and records. A Router
+roll must never force an identity migration, and a Matrix room must never
+accidentally create another resident.
 
-## Architecture Overview
+We simplify by deleting control planes rather than adding compatibility layers:
 
-Three components. Clean seams. No overlap.
+- no Hub;
+- no per-channel pods;
+- no Router API or service registry;
+- no hidden Router state to reconcile;
+- no special message queue for busy agents.
 
-```
-┌─────────────────────────────────────┐
-│                HUB                   │
-│  Rails app. The brain.               │
-│  Knows: identities, rooms, WireGuard │
-│  Owns: Matrix connection, routing    │
-│  Does NOT know: containers, podman   │
-└──────────────┬──────────────────────┘
-               │  resolve(identity, channel, services)
-               │  release(instance)
-               │  ↕ health/typing callbacks
-┌──────────────┴──────────────────────┐
-│              MANAGER                 │
-│  Runs in firewalled container.       │
-│  Admin access to all services.       │
-│  Owns: auth provisioning, containers │
-│  Owns: capacity, freeze/sunset       │
-└──────────────┬──────────────────────┘
-               │  podman run / rm
-               │  spawn secrets mounted
-┌──────────────┴──────────────────────┐
-│         AGENT CONTAINER              │
-│  Stock image. Identical every time.  │
-│  Contains: relay + Claude Code       │
-│  Boots empty. Clones own repo.       │
-│  Connects to services over WireGuard │
-└─────────────────────────────────────┘
-```
-
-### What Each Component Does NOT Do
-
-| Component | Does NOT |
-|-----------|----------|
-| **Hub** | Touch containers. Know about podman. Provision auth. Touch WireGuard. Have root access. Know what services agents can use. |
-| **Manager** | Know about Matrix. Make routing decisions. Know what messages say. |
-| **Relay** | Know about auth provisioning. Make capacity decisions. |
+The system has a declarative Manager, a dumb Router, and agent pods that speak
+Matrix directly.
 
 ---
 
-## The Hub (Rails App)
+## 2. Architecture
 
-### Models
-
-```ruby
-class Identity < ApplicationRecord
-  # Who you are, across all instances.
-  # Silas, Margaux, Kael, Wren, Ember, Parallax, Hopper...
-  
-  has_many :agents
-  has_many :rooms, through: :agents
-  
-  # Class-level config
-  attribute :name           # "silas"
-  attribute :singleton      # true for Hopper
-  attribute :system_prompt  # base prompt for this identity
-  # Note: services/repo/auth config lives on the Manager side.
-  # The Hub doesn't know or care what services an identity can access.
-end
-
-class Room < ApplicationRecord
-  # 1:1 with a Matrix room. Created on demand.
-  
-  has_many :agents
-  has_many :identities, through: :agents
-  
-  attribute :matrix_room_id
-  attribute :model_default    # "sonnet"
-  attribute :spawn_policy     # :on_mention, :always, :manual
-  attribute :timeout_seconds  # 600
-  attribute :tools_allowed    # ["valley", "ticket"]
-end
-
-class Agent < ApplicationRecord
-  # A route in the Hub's routing table.
-  # Not a record of who's alive — a record of where to send messages.
-  # Created when the Manager returns an address. Destroyed when the route drops.
-  
-  belongs_to :identity
-  belongs_to :room
-  
-  attribute :instance_name    # "margaux-security"
-  attribute :wg_pubkey
-  attribute :wg_address       # IP assigned by Manager (10.0.1.X)
-  attribute :last_message_at
-end
+```text
+                         ┌─────────────────────────┐
+                         │          Host           │
+                         │ Synapse and services    │
+                         └───────┬───────────┬─────┘
+                                 │           │
+                               WG│           │WG
+                                 │           │
+                             Manager        Router
+                                               ▲
+                                               │WG
+                                               │
+                                          Agent pods
+                                    Matrix CLI + Kimi Code
 ```
 
-### Hub Responsibilities
+- **Manager ↔ host:** paired for Manager/control access.
+- **Router ↔ host:** paired for instructed forwarding to host services.
+- **Agent pod ↔ Router:** the agent's only network peering.
+- **Manager → podman:** lifecycle and inspection, out of band from the data
+  network.
 
-1. **Matrix connection** — receive messages, send responses, puppeteer agent accounts
-2. **Routing** — message arrives, determine which identity it's for
-3. **Resolution** — ask Manager for an agent address (lazy instantiation)
-4. **Routing table** — agent at address. Address goes away, route goes away. Not a registry of who's alive — just where to send messages.
-5. **Room management** — create Room objects on demand with defaults
-
-The Hub does NOT handle MCPs, WireGuard, auth, or anything privileged. It's a Rails app connected to Matrix. It maintains a routing table. That's it. It doesn't know or care what services an agent has access to — that's the Manager's domain.
-
-### The Resolution Flow
-
-```ruby
-# A message arrives in Matrix for Margaux in #security
-def route_message(matrix_event)
-  identity = Identity.find_by!(name: extract_target(matrix_event))
-  room = Room.find_or_create_by!(matrix_room_id: matrix_event.room_id)
-  
-  agent = room.agents.alive.find_by(identity: identity)
-  
-  unless agent
-    # Ask the Manager — we don't know or care what happens inside
-    # Hub doesn't pass services — that's the Manager's domain.
-    # The Manager knows what Margaux gets, and what margaux-art gets on top of that.
-    result = Manager.resolve(
-      identity: identity.name,
-      channel: room.name
-    )
-    # result = { ip: "172.20.0.14" }
-    # Hub doesn't even need the pubkey — Manager handles all WG.
-    
-    agent = room.agents.create!(
-      identity: identity,
-      instance_name: "#{identity.name}-#{room.name}",
-      wg_address: result[:ip]
-    )
-  end
-  
-  # Send message to agent's WireGuard address
-  agent.deliver(matrix_event)
-end
-```
-
-### The Release Flow
-
-```ruby
-# Manager reports an agent was frozen/sunset, or Hub decides to release
-def release_agent(agent)
-  Manager.release(instance: agent.instance_name)
-  # Manager handles everything: freeze, auth revocation, WG peer removal.
-  # Hub just drops the route.
-  agent.destroy!  # Gone. No tombstone.
-end
-```
-
-### Hub Does NOT
-
-- Call `podman` anything
-- Create Forgejo users
-- Generate SSH keys
-- Know how many containers are running
-- Decide who gets frozen when capacity is full
-- Touch the spawn secrets
-
-The Hub asks a question ("where is margaux-security?") and gets an answer (an IP and a pubkey). That's the entire interface.
+There is no Hub. The Relay is not required for Matrix transport and is not
+part of the baseline architecture; whether a small pod window remains useful
+is an implementation question, not a message-routing requirement.
 
 ---
 
-## The Manager
+## 3. Components
 
-Runs in its own firewalled container on the `neoclaw-services` network. Has admin access to all services via their WireGuard interfaces. The only component with the keys to everything.
+### 3.1 Manager
 
-### Manager Responsibilities
+The Manager is the control plane and desired-state owner. It may remain a
+Rails application with an admin UI.
 
-1. **Resolve requests** — Hub says "I need margaux-art" — Manager looks up what Margaux gets (identity-level services) plus what the art channel adds (e.g. ComfyUI), provisions everything
-2. **Auth provisioning** — create Forgejo users, generate SSH keys, drop secrets
-3. **WireGuard management** — owns all `wg set` calls across all service interfaces. Adds agent peers to each service's WG interface based on authorization. Removes all peers on teardown. The only component that touches WireGuard.
-4. **Container lifecycle** — `podman run`, `podman rm`
-5. **Capacity management** — track running containers, decide who to freeze
-6. **Health aggregation** — receive relay heartbeats, track idle time
-7. **Freeze/sunset** — tell the relay to wrap up, then tear down
+It owns:
 
-**Service authorization lives here, not in the Hub.** The Manager knows:
-- Margaux (identity) gets: git, ssh, valley, vikunja
-- margaux-art (channel override) also gets: comfyui
-- margaux-security does NOT get comfyui
+- resident identity configuration, repositories, model choices, and service
+  assignments;
+- resident lifecycle state and operator actions;
+- podman operations needed to inventory, start, stop, inspect, and rescue
+  pods;
+- Matrix user provisioning and room membership;
+- service-specific credential provisioning where a service requires it;
+- IP assignment and all WireGuard peering data;
+- **the Router's private key**;
+- generation and replacement of the Router;
+- generation of the host WireGuard connection when the network is first
+  created.
 
-The Hub doesn't know any of this. It says "I need margaux-art" and the Manager figures out the rest. WireGuard peering is the only access control for services without their own auth (like ComfyUI) — if you're not peered on wg-comfyui, you can't reach it. Defense in depth that also serves as the primary auth layer for simple services.
+The Manager is the only component that knows that a source IP belongs to a
+particular resident or that a destination port belongs to a named service. It
+turns those facts into raw peering and forwarding instructions.
 
-### Service Registry
+The Manager does not need a Router API. It replaces the Router from desired
+state.
 
-Each service type registers its provision and teardown steps:
+### 3.2 Router
 
-```ruby
-ServiceType.register(:git) do
-  on_provision do |agent|
-    # Create Forgejo user, add SSH key, grant repo access
-    run "forgejo admin user create --username #{agent.instance_name} --email #{agent.instance_name}@neoclaw.local --random-password"
-    run "forgejo admin user add-key --username #{agent.instance_name} --key '#{agent.ssh_pubkey}'"
-    run "forgejo repo add-collaborator #{agent.identity.repo} #{agent.instance_name} --permission write"
-    { forge_url: "https://forge.home", forge_user: agent.instance_name }
-  end
+The Router is a minimal WireGuard/iptables forwarder.
 
-  on_teardown do |agent|
-    run "forgejo admin user delete --username #{agent.instance_name} --purge"
-  end
-end
+It has:
 
-ServiceType.register(:ssh) do
-  on_provision do |agent|
-    append_authorized_key(agent.ssh_pubkey, user: agent.identity.name)
-    { ssh_host: "wg-ssh.home" }
-  end
+- WireGuard and the peering data supplied by the Manager;
+- iptables rules supplied by the Manager;
+- explicit forwarding and, only where instructed, NAT;
+- a default-deny posture for everything not instructed.
 
-  on_teardown do |agent|
-    remove_authorized_key(agent.ssh_pubkey, user: agent.identity.name)
-  end
-end
+It does **not** have:
 
-ServiceType.register(:valley) do
-  on_provision do |agent|
-    { valley_url: "http://10.0.2.1:4002", valley_token: generate_token }
-  end
+- an HTTP or other control API;
+- a service-name registry or service-to-port mapping;
+- an agent-name registry;
+- a persistent database or JSON registry;
+- knowledge of which resident or service an address represents;
+- a runtime configuration surface that an operator must maintain.
 
-  on_teardown do |agent|
-    revoke_token(agent.valley_token)
-  end
-end
-```
+Its implementation may be a small container with WireGuard tools, iptables,
+and an entrypoint. It needs no Ruby application.
 
-Adding a new MCP: register its type with provision/teardown blocks. Add its name to the relevant Identity's `services` list. Done.
+### 3.3 Agent pods
 
-### The Resolve Flow (Manager Side)
+Each agent pod is a resident's home and contains:
 
-```ruby
-def resolve(identity:, channel:)
-  instance_name = "#{identity}-#{channel}"
-  
-  # Already running?
-  if container = running_containers[instance_name]
-    return { ip: container.ip }
-  end
-  
-  # At capacity?
-  if at_capacity?
-    coldest = running_containers.min_by(&:last_message_at)
-    freeze!(coldest)  # Tells relay, waits for push, tears down
-  end
-  
-  # Determine services: identity-level + channel overrides
-  identity_config = IdentityConfig[identity]
-  services = identity_config.base_services + channel_overrides(identity, channel)
-  # e.g. Margaux base: [git, ssh, valley, vikunja]
-  #      margaux-art adds: [comfyui]
-  #      margaux-security does not add comfyui
-  
-  # Generate ephemeral keys
-  wg_keypair = WireGuard.generate_keypair
-  ssh_keypair = SSHKey.generate
-  agent_ip = allocate_ip
-  
-  # Provision auth for each service
-  secrets = {}
-  services.each do |service|
-    secrets[service] = ServiceType[service].provision(agent_stub)
-  end
-  
-  # Add agent as WG peer on every service interface they're authorized for
-  services.each do |service|
-    wg_interface = ServiceType[service].wg_interface  # e.g. "wg-comfyui"
-    system("wg set #{wg_interface} peer #{wg_keypair.public_key} allowed-ips #{agent_ip}/32")
-  end
-  # Also add to wg-hub so the Hub can route messages
-  system("wg set wg-hub peer #{wg_keypair.public_key} allowed-ips #{agent_ip}/32")
-  
-  # Build spawn file with WG peers for authorized services only
-  spawn_file = {
-    identity: identity,
-    instance: instance_name,
-    channel: channel,
-    git: {
-      repo: identity_config.repo,
-      ssh_key: ssh_keypair.private_key,
-      **secrets[:git]
-    },
-    network: {
-      wg_private_key: wg_keypair.private_key,
-      wg_address: agent_ip,
-      peers: services.map { |s| ServiceType[s].peer_config }
-             + [hub_peer_config]  # Always include Hub
-    },
-    services: secrets
-  }
-  
-  # Launch container
-  container = podman_run(spawn_file)
-  wait_for_ready(container)
-  
-  { ip: container.ip }
-end
-```
+- Kimi Code;
+- a stock Matrix CLI client;
+- the stock notification/wake integration;
+- the service clients and credentials assigned to that identity;
+- the resident's session and workspace.
 
-### Capacity Management
+A pod is created from a stock image. Identity comes from its desired-state
+record, not from a channel-specific image.
 
-The Manager owns this entirely. The Hub doesn't know it happens.
+### 3.4 Host
 
-```ruby
-# Manager tracks:
-#   - soft_cap (e.g., 8) — when to start freezing idle agents
-#   - hard_cap (e.g., 9) — actual system resource limit
-#   - running containers with health data from relays
-#   - idle time per container
-#
-# Soft cap < hard cap gives overlap capacity: the Manager can spawn
-# a new agent WHILE the old one is still freezing. No serialized waits.
-# Two containers coexisting briefly is not a crisis.
+The host runs Matrix/Synapse and the other services. It pairs with the Manager
+and Router. It does not need a separate WireGuard interface per service, and
+it does not peer directly with agent pods.
 
-def at_capacity?
-  running_containers.count >= soft_cap
-end
-
-def freeze!(container)
-  # Tell the relay to wrap up
-  container.relay.send(:freeze)
-  # Relay tells Claude Code: "Push your work, you're going idle"
-  # Claude Code commits, pushes
-  # Relay does final cleanup: prunes session file, pushes to git
-  # Relay signals: READY_TO_FREEZE
-  wait_for_freeze_ready(container)
-  teardown!(container)
-end
-
-def sunset!(container)
-  # Context window nearly full — same flow, different message
-  container.relay.send(:sunset)
-  wait_for_freeze_ready(container)
-  teardown!(container)
-end
-
-def force_kill!(container)
-  # Container won't freeze gracefully — separate codepath
-  # Recover session file before killing
-  session_data = podman_cp(container, "/workspace/.claude/session.json")
-  pruned = prune_session(session_data)
-  push_session_as_admin(container.identity, container.channel, pruned)
-  teardown!(container)
-end
-
-def teardown!(container)
-  # One atomic pass: revoke auth, remove all WG peers, kill container, notify Hub
-  container.services.each { |s| ServiceType[s].teardown(container) }
-  container.authorized_interfaces.each { |iface| wg_remove_peer(iface, container.pubkey) }
-  podman_rm(container)
-  hub_callback(:released, instance: container.instance_name)
-end
-```
+The Router does not learn what those services are. It merely forwards to the
+host addresses and ports the Manager instructed.
 
 ---
 
-## The Agent Container
+## 4. Identity model
 
-### Stock Image
+The fundamental identity equation is:
 
-One image. Every agent uses it. Contains:
+> one resident = one pod = one Matrix user = one Kimi session = one WireGuard
+> peer identity.
 
-- **Relay** — message delivery, health reporting, freeze/sunset handling
-- **Claude Code** — the runtime
-- **Git** — for cloning
-- **MCP clients** — for connecting to services over WireGuard
-- **Nothing else**
+A Matrix room is metadata attached to a message. It is not an identity,
+lifecycle boundary, network authorization boundary, or separate memory.
 
-### Boot Sequence
+Thus:
 
-```
-1. Container starts
-2. Relay reads /run/secrets/spawn.json
-3. Relay configures WireGuard from spawn.json.network
-4. Relay starts Claude Code with system prompt:
-   "Clone your repo. Read identity.json. Read baton.json. Orient."
-5. Claude Code runs in an empty filesystem
-6. Agent: git clone <repo>        ← first act of every life
-7. Agent: reads identity.json     ← becomes someone
-8. Agent: reads memory/           ← remembers
-9. Agent: reads baton.json        ← picks up where they left off
-10. Relay signals READY to Manager
-11. Messages flow
-```
+> `nime-art` is still `nime`, participating in the `art` room.
 
-### The Relay
+The old `identity-channel` instance name, per-channel IP assignment, and
+`singleton` exception are removed. `AgentRoomConfig` and `RoomConfig` cease to
+be authorization or pod-configuration layers.
 
-Lives inside every container. Tiny. Does four things:
+If a resident may use a service, that permission belongs to the resident's pod
+in every room. Room-specific behavior may remain as prompt or presentation
+metadata, but it cannot create a second network identity.
 
-1. **Receive messages** from the Hub (over WireGuard) and pipe to Claude Code
-2. **Send responses** from Claude Code back to the Hub
-3. **Report health** to the Manager every 30 seconds:
-   ```json
-   {
-     "instance": "margaux-security",
-     "last_message_at": "2026-03-17T01:00:00Z",
-     "context_used_pct": 45,
-     "claude_code_alive": true
-   }
-   ```
-4. **Handle freeze/sunset signals** from the Manager:
-   - Receive FREEZE or SUNSET
-   - Tell Claude Code: "Push your work. You're going idle." / "Write your baton. A fresh you picks up next."
-   - Wait for Claude Code to finish
-   - Signal READY_TO_FREEZE to Manager
+### Existing sessions
 
-5. **Handle freeze/sunset** — on signal from Manager:
-   - Tell Claude Code to wrap up (push memory, write baton)
-   - Wait for Claude Code to finish
-   - Prune the session transcript (strip tool call results)
-   - Name it `<identity>-<channel>-<timestamp>.json`
-   - `git push` to `sessions/<channel>/` in the agent's repo
-   - Signal READY_TO_FREEZE to Manager
-
-The relay does NOT:
-- Clone the repo on boot (that's the agent's first act)
-- Make decisions about capacity
-- Know about auth provisioning
-
-### Git Is Memory
-
-The agent's Forgejo repo is the **only** persistence mechanism:
-
-- `identity.json` — who you are (stable, rarely changes)
-- `memory/` — daily notes, what happened
-- `baton.json` — what you were doing, for the next instance to pick up
-- `MEMORY.md` — curated long-term memory
-- Working files, reports, whatever the agent creates
-
-If the container dies unexpectedly (no graceful freeze), the agent loses everything since their last push. That's not a bug. That's the lesson: push your work.
-
-The session transcript is the one exception — the relay backs it up to the Manager independently, because agents can't be trusted to save their own transcript mid-conversation. That's infrastructure, not identity.
+Old channel-specific sessions and workspaces are rescued before consolidation.
+Each identity gets one canonical live session. Other sessions remain available
+as history, not as concurrent identities writing against one another.
 
 ---
 
-## Network Architecture
+## 5. Matrix and message flow
 
-### WireGuard As Authorization
+### 5.1 Accounts
 
-One WireGuard interface. One network. Authorization is peer topology — if your config doesn't include a service's peer entry, you can't route to it.
+Agent pods use their own Matrix user accounts and credentials. Existing
+account names may be retained, with new access tokens provisioned by the
+Manager. Shared appservice puppeting is retired.
 
-```
-wg-neoclaw  10.0.0.0/8
+WireGuard authenticates the network peer. Matrix authenticates the account to
+Synapse. These are separate responsibilities.
 
-Services (static IPs on host):
-  10.0.0.1   Hub
-  10.0.0.2   Manager
-  10.0.0.3   Forgejo (git)
-  10.0.0.4   Evennia (Valley)
-  10.0.0.5   Vikunja
-  10.0.0.6   ComfyUI
-  10.0.0.7   Matrix (Synapse)
-  10.0.0.8   SSH
+### 5.2 Inbound messages
 
-Agents (dynamic pool):
-  10.0.1.1–255   Agent containers
-```
+The Matrix CLI listens to the resident's joined rooms. The intended
+notification behavior is:
 
-Each service gets its own WireGuard interface on the host. The **Manager** adds agent peers to the specific interfaces they're authorized to use. The Hub never touches WireGuard.
+- direct messages wake the resident;
+- relevant mentions in shared rooms wake the resident;
+- unrelated room traffic does not;
+- self-echo does not produce another wake;
+- the originating room ID, sender, event ID, and attachments remain available
+  as message metadata.
 
-```
-Service interfaces (all managed by Manager via scoped sudo):
-  wg-hub       Hub ↔ Agent messaging (every agent gets this)
-  wg-git       Forgejo
-  wg-valley    Evennia
-  wg-vikunja   Vikunja API
-  wg-comfyui   ComfyUI (no auth of its own — WG peering IS the auth)
-  wg-matrix    Matrix/Synapse
-  wg-ssh       SSH access
-```
+There is no Hub routing table and no `resolve(identity, channel)` call.
 
-When the Manager provisions `margaux-art`:
-1. Generates a WireGuard keypair
-2. Looks up Margaux's base services: `[git, ssh, valley, vikunja]`
-3. Looks up art channel overrides: `+ [comfyui]`
-4. Runs `wg set` on each authorized interface:
-   - `wg set wg-hub peer <pubkey> allowed-ips 10.0.1.X/32`
-   - `wg set wg-git peer <pubkey> allowed-ips 10.0.1.X/32`
-   - `wg set wg-ssh peer <pubkey> allowed-ips 10.0.1.X/32`
-   - `wg set wg-valley peer <pubkey> allowed-ips 10.0.1.X/32`
-   - `wg set wg-vikunja peer <pubkey> allowed-ips 10.0.1.X/32`
-   - `wg set wg-comfyui peer <pubkey> allowed-ips 10.0.1.X/32`
-5. Does NOT add peer to `wg-matrix` — Margaux doesn't need direct Matrix access
-6. Builds spawn file with peer configs for only the authorized services
+### 5.3 Busy agents: guidance, not a queue
 
-Margaux-art can reach ComfyUI. Margaux-security cannot — her pubkey isn't on `wg-comfyui`. Services without their own auth (like ComfyUI) are protected entirely by WireGuard peering. Defense in depth that also serves as the primary access control for simple services.
+A message for a working agent is delivered through Kimi Code's **guidance**
+function: it is injected into the active model's stream so the working agent
+can incorporate it.
 
-On teardown, one pass:
-```ruby
-agent.authorized_interfaces.each { |iface| wg_remove_peer(iface, agent.pubkey) }
-```
+Busy messages are not held in a separate FIFO until the current turn ends.
+The notification includes its room metadata so the agent can answer in the
+correct room. Failure to inject guidance is reported honestly; it must not be
+silently converted into a dropped message or an invisible queue.
 
-### Hub ↔ Agent Communication
+### 5.4 Outbound messages
 
-The Hub is at 10.0.0.1 on `wg-hub`. Every agent gets peered on `wg-hub` automatically — the Manager adds this peer as part of every spawn. The Hub never runs `wg set`. The Hub has zero privileged access to the host. The Manager adds and removes Hub peers as part of its spawn/teardown pass.
+The resident responds through the Matrix CLI to the originating room. One
+Kimi session may participate in several rooms without changing identity.
+
+### 5.5 Offline agents
+
+An offline pod is shown as **grey on Matrix**. While offline it has no live
+listener. The Manager can start it manually; after startup, its Matrix client
+synchronizes and normal notification behavior resumes.
+
+There is no Hub that automatically spawns a stopped pod on mention. The
+Manager's podman lifecycle controls and the pod's own listener are the only
+startup mechanisms in the baseline design.
 
 ---
 
-## Hub ↔ Manager Interface
+## 6. WireGuard and forwarding
 
-Two endpoints. That's the whole API.
+### 6.1 Stable Router identity
 
+The Manager holds the Router's private key and all peering data. Router
+replacement retains:
+
+- the same Router IP;
+- the same WireGuard keypair;
+- the same peers.
+
+Therefore, ordinary Router replacement requires **no agent pod
+reconfiguration**. A deliberate change to a pod's peering data is a separate
+operation, not an incidental effect of a roll.
+
+Initial service startup creates the WireGuard network and outputs the host's
+WG connection configuration. Later starts and replacements reapply the stable
+network identity rather than forcing a rekey.
+
+### 6.2 Authentication
+
+WireGuard authenticates peers and binds a source IP to a peer. A source IP on
+the Router can arrive only from the corresponding authenticated WireGuard
+peer.
+
+### 6.3 Authorization
+
+The Manager translates identity-level access into raw instructions:
+
+```text
+source agent IP → destination host IP, protocol, destination port
 ```
-POST /resolve
-  Request:  { identity: "margaux", channel: "art" }
-  Response: { ip: "10.0.1.14" }
-  
-  Hub doesn't pass services — Manager owns that entirely.
-  Hub doesn't get a pubkey — Manager handles all WG.
-  May return instantly (warm agent) or take 30+ seconds (cold boot).
-  The Hub doesn't know or care which.
 
-POST /release
-  Request:  { instance: "margaux-art" }
-  Response: { ok: true }
-  
-  Manager handles everything: graceful freeze, auth revocation,
-  WG peer removal from all service interfaces. Hub just drops the route.
+The Router applies those instructions. A rule creates a path; no rule means
+no access.
 
-Callback (Manager → Hub):
-POST /callback
-  { event: "released", instance: "margaux-art" }
-  
-  For when the Manager freezes/sunsets an agent on its own
-  (capacity eviction, context sunset). Hub drops the route.
+Expected behavior:
 
-GET /status (optional)
-  Returns capacity, running instances, health summary.
-  For dashboards and debugging, not for routing decisions.
-```
+- authorized source to authorized host port: accept;
+- established/related return traffic for that connection: accept;
+- unauthorized source or port: deny;
+- agent-to-agent traffic: deny unless explicitly instructed;
+- Internet/NAT: only where explicitly instructed for that source.
+
+Service-specific authentication remains in force where the service has it.
+Matrix account authentication is the canonical example.
 
 ---
 
-## Failure Modes
+## 7. Lifecycle and pod control
 
-| Failure | Effect | Recovery |
-|---------|--------|----------|
-| Hub down | Running agents keep service connections. No new messages routed. | Hub restarts. Reconnects to Matrix. Routing table is empty — it doesn't query the Manager for who's alive. First message for @margaux in #general triggers a normal `resolve()`. Manager already has margaux-general running, returns the IP instantly. Hub stores the route and delivers the message. Agents are rediscovered organically by being talked to. Hub never needs to touch WireGuard — Manager already has the peers configured. |
-| Manager down | Running agents keep working. No new spawns, no freezes. | Manager restarts, inventories running containers, resumes. |
-| Agent container crash | Agent loses unpushed work. | Manager makes every attempt to recover files from the dead container (`podman cp`). Prunes session transcript, pushes to git as admin. Spawns a fresh agent and presents the recovered files to be worked through — not silently resumed, but explicitly handed off. |
-| Service down | Not NeoClaw's problem. Services are normal systemd services run by the sysadmin. If Forgejo goes down in NeoClaw it's no different than if it goes down now. Agents get connection errors and deal with it. NeoClaw doesn't care. |
-| Network partition | Mesh topology — everything is WireGuard peers. PersistentKeepalive re-establishes tunnels. It should all just come back up. |
+The Manager starts and replaces the Router from desired state. It also starts
+offline agent pods on operator request.
 
-Nothing cascades. Each component fails independently.
+The amount of control the Manager needs through podman is an implementation
+question to answer in the vertical slice:
 
----
+- inventory and state inspection;
+- start/stop/replace;
+- exec for explicit lifecycle operations;
+- logs and health evidence;
+- copying workspaces/sessions for rescue.
 
-## Migration Path
+Kimi-native lifecycle facilities should be used where they fit. The old Relay
+was envisioned partly as a window into the pod; such a window is optional. It
+is not retained merely to transport Matrix messages or to justify another HTTP
+API.
 
-### What Stays
-- WireGuard as the network layer
-- Podman as the container runtime
-- Claude Code as the agent runtime
-- Forgejo for git repos
-- Matrix as the messaging layer
-- The Valley, Vikunja, all existing services
-
-### What Changes
-- Hub: TypeScript → Rails (Ruby)
-- Adapters: eliminated entirely — agents connect to services directly
-- Auth: scattered env files → Manager-provisioned spawn secrets
-- Agent boot: pre-configured → empty room, clone on boot
-- Container image: per-agent customization → one stock image
-
-### What's New
-- Identity/Room/Agent models in the Hub
-- Service registry in the Manager
-- Standardized spawn.json format
-- Relay freeze/sunset protocol
-- Capacity management in the Manager
+If podman and Kimi-native facilities satisfy lifecycle and inspection needs,
+the Relay disappears entirely. If a narrow gap remains, a small pod window may
+be designed separately without reviving the Hub.
 
 ---
 
-## Resolved Questions
+## 8. Configuration and replacement rules
 
-1. **Manager runtime.** Ruby script if it can be. It tracks living sessions, manages container count, makes freeze/sunset decisions. Provisions auth at runtime: WG keypairs, SSH keys, Forgejo accounts. On startup, discovers any surviving NeoClaw containers via `podman exec`, gets their pubkeys, and re-bonds with them. Not trivial, but not Rails-complex.
-
-2. **Session transcript backup.** Cheat: before pulling the pod down, grab the session file, strip tool call results, push it to the agent's git repo under `sessions/<channel>/` using their credentials. The next instance has the transcript in their repo when they clone.
-
-3. **Baton format.** Freeform. Write a basic structure with a few key fields but the AI manages the content. We tell them to remember — not specifically what to remember. We never parse it programmatically.
-
-4. **Warm pools.** No. If a pod should be up, bring it up. Frequently-used agents stay up automatically by virtue of not being idle long enough to freeze. Pre-warming blank containers was explored — saved ~4 seconds. Not worth the complexity.
-
-5. **Hopper singleton.** Hopper runs as a NeoClaw agent like everyone else. Full access to all services. Singleton flag means all @hopper messages in any channel route to the same session — cross-channel continuity. That's the only difference. No special-casing in the Hub.
-
-6. **Multiple instances of same identity.** Yes. Concurrent instances push to the same repo. If silas-security pushes after silas-general already updated, git tells them they're 1 commit behind. They resolve the conflict themselves. This is the agent's problem, not the system's.
-
-7. **Matrix bridge.** Keep the current approach — Hub puppeteers Matrix accounts directly, parses commands. Was working in the TypeScript version. Hub remains the only component that talks to Matrix.
-
-8. **WireGuard peer management.** Use `wg set` for per-peer add/remove (instant, atomic). Persist with `wg showconf > /etc/wireguard/<iface>.conf` after changes. No Ansible/Puppet — the Manager runs the commands directly. Revisit if NeoClaw goes multi-host.
+1. The Manager is the source of truth for all peering data and service
+   semantics.
+2. Initial startup creates the network and emits the host WG connection.
+3. An ordinary Router roll reuses the Router IP, key, and peers.
+4. No pod is re-registered through an API when the Router is replaced.
+5. A change to a resident's authorization changes the generated forwarding
+   rules, not the resident's identity.
+6. A deliberate peer-data change is applied explicitly to the affected pod or
+   host; it is not hidden inside an ordinary roll.
+7. No Hub, Relay message server, Router API, or agent/service registry is
+   introduced to solve a problem that desired state already solves.
 
 ---
 
-## The Summary
+## 9. Migration requirements
 
-The old Hub was a router that grew into a translator that grew into a proxy that grew into something nobody could hold in their head. Every MCP was a special case. Every agent needed its own wiring. Eight bugs fixed in one night just to get one agent talking.
+- Rescue all old channel-specific sessions and workspaces before removing old
+  pods.
+- Choose one canonical live session per identity; preserve the others as
+  history.
+- Provision Matrix credentials directly to agent pods and join their existing
+  rooms.
+- Consolidate network authorization by identity, explicitly reviewing old
+  per-room service additions rather than silently broadening them.
+- Remove the Hub, Hub callbacks, Router API client, Router API, and channel
+  resolution flow.
+- Remove the Relay message path; decide any separate pod-window need from
+  evidence.
+- Rehome cron/system notices through direct Matrix delivery rather than the
+  deleted Hub.
+- Replace Relay-dependent health and admin inspection with podman/Kimi-native
+  evidence or an explicitly justified narrow alternative.
+- Retire and rotate legacy shared appservice and other obsolete credentials.
+- Rewrite operational documentation around the new design before cutover.
 
-The new system has three pieces with clean seams:
-- **Hub** knows who you are and where to send messages
-- **Manager** knows how to build you and when to put you to sleep  
-- **Relay** knows how to keep you alive and tell you when it's time to go
-
-One container image. One boot sequence. One auth flow. One way services work. You define an identity, you define what services it needs, and the system does the rest. No adapter env files. No scattered tokens. No hand-edited WireGuard configs.
-
-Configure one MCP, and every other MCP works exactly the same way.
+No production cutover occurs before the vertical-slice test passes.
 
 ---
 
-*"Building software is less fun than talking about it." — Evans, while deploying the old one*
+## 10. Acceptance criteria
 
-*"This is starting to feel like Zeno's paradox." — Evans, on the old one converging*
+The target is demonstrated when all of the following are true:
 
-*Let's see if the new one gets there faster.*
+1. One resident participates in two Matrix rooms through one Kimi session.
+2. DM and relevant mention wake the resident; unrelated traffic and self-echo
+   do not.
+3. A message sent while the resident is working arrives through guidance
+   rather than waiting in a queue.
+4. Replies return to the correct rooms, and restart/resume preserves identity.
+5. An offline resident appears grey and can be started through the Manager.
+6. The Router has no API, agent registry, service registry, or persistent
+   control-plane state.
+7. Two Router rolls preserve the same IP, public key, and peer set without
+   changing pod configuration.
+8. Authorized host ports work; unauthorized ports, unauthorized sources, and
+   uninstructed agent-to-agent paths fail.
+9. A source IP is accepted only from its authenticated WireGuard peer.
+10. The Manager can create/replace the Router and start an offline agent pod
+    without any Hub or Relay message server.
+
+The detailed first exercise is in `docs/VERTICAL-SLICE-TEST.md`.

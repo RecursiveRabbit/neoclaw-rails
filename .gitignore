@@ -33,3 +33,10 @@ config/credentials.yml.enc
 # Ignore key files for decrypting credentials and more.
 /config/*.key
 
+
+# Manager network desired-state runtime (private key material)
+storage/network/
+
+# Vertical-slice network test runtime + evidence
+test/slice/network/state/
+test/slice/network/evidence/

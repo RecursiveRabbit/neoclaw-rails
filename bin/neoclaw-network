@@ -1,0 +1,115 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+#
+# neoclaw-network — the Manager's network desired-state interface.
+#
+# This CLI is how the Manager (and the vertical-slice harness) exercises
+# network ownership: it creates the WireGuard network's identities, holds
+# all peering data and the Router's private key, translates identity-level
+# access into raw forwarding instructions, and renders the Router's config.
+#
+# Nothing here talks to a Router API — there isn't one. The Router is a
+# disposable appliance that consumes rendered config (see
+# app/services/network/router_lifecycle.rb and test/slice/network/run.sh).
+
+require "optparse"
+require "fileutils"
+require_relative "../app/services/network/state"
+require_relative "../app/services/network/renderer"
+require_relative "../app/services/network/router_lifecycle"
+
+USAGE = <<~US
+  neoclaw-network — Manager-side network desired state
+
+  Commands:
+    init DIR --router-endpoint H:PORT --host-endpoint H:PORT --manager-endpoint H:PORT
+    add-agent DIR NAME [--endpoint H:PORT] [--ip A.B.C.D]
+    add-service DIR NAME --host IP --port N [--protocol tcp|udp|icmp]
+    authorize DIR AGENT|manager SERVICE
+    render-router DIR OUT_DIR          # network.json + router.key for the Router container
+    host-config DIR                    # wg-quick config (contains a private key; handle with care)
+    agent-config DIR NAME              # wg-quick config (contains a private key; handle with care)
+    manager-config DIR                 # wg-quick config (contains a private key; handle with care)
+    router-public DIR                  # Router public key only
+    show DIR                           # public summary of state
+US
+
+def die(msg) = (warn "neoclaw-network: #{msg}"; exit 1)
+
+cmd = ARGV.shift or die("no command\n#{USAGE}")
+dir = ARGV.shift or die("no state dir\n#{USAGE}")
+
+case cmd
+when "init"
+  opts = {}
+  op = OptionParser.new do |o|
+    o.on("--router-endpoint V")   { |v| opts[:router_endpoint] = v }
+    o.on("--host-endpoint V")     { |v| opts[:host_endpoint] = v }
+    o.on("--manager-endpoint V")  { |v| opts[:manager_endpoint] = v }
+  end
+  op.parse!(ARGV)
+  st = Network::State.init(dir, **opts)
+  puts "initialized: router=#{st.router_ip} host=#{st.host_ip} manager=#{st.manager_ip}"
+  puts "router public key: #{st.router_public_key}"
+
+when "add-agent"
+  name = ARGV.shift or die("agent name required")
+  opts = {}
+  op = OptionParser.new do |o|
+    o.on("--endpoint V") { |v| opts[:endpoint] = v }
+    o.on("--ip V")       { |v| opts[:ip] = v }
+  end
+  op.parse!(ARGV)
+  st = Network::State.load(dir).add_agent!(name, **opts)
+  a = st.agent(name)
+  puts "agent #{name}: ip=#{a['ip']} pubkey=#{a['public_key']}"
+
+when "add-service"
+  name = ARGV.shift or die("service name required")
+  opts = {}
+  op = OptionParser.new do |o|
+    o.on("--host V") { |v| opts[:host] = v }
+    o.on("--port N", Integer) { |v| opts[:port] = v }
+    o.on("--protocol V") { |v| opts[:protocol] = v }
+  end
+  op.parse!(ARGV)
+  die("--host and --port required") unless opts[:host] && opts[:port]
+  Network::State.load(dir).add_service!(name, **opts)
+  puts "service #{name}: #{opts[:host]}:#{opts[:port]} #{opts[:protocol] || 'tcp'}"
+
+when "authorize"
+  agent = ARGV.shift or die("agent required")
+  svc = ARGV.shift or die("service required")
+  Network::State.load(dir).authorize!(agent, svc)
+  puts "authorized: #{agent} -> #{svc}"
+
+when "render-router"
+  out = ARGV.shift or die("output dir required")
+  conf = Network::Renderer.new(Network::State.load(dir)).render_router_config(out)
+  FileUtils.chmod(0o700, out)
+  puts "rendered #{conf['peers'].size} peers, #{conf['forward_rules'].size} forward rules -> #{out}"
+
+when "host-config"
+  print Network::Renderer.new(Network::State.load(dir)).host_wg_quick_config
+
+when "agent-config"
+  name = ARGV.shift or die("agent name required")
+  print Network::Renderer.new(Network::State.load(dir)).agent_wg_quick_config(name)
+
+when "manager-config"
+  print Network::Renderer.new(Network::State.load(dir)).manager_wg_quick_config
+
+when "router-public"
+  puts Network::State.load(dir).router_public_key
+
+when "show"
+  st = Network::State.load(dir)
+  puts "network: router=#{st.router_ip} host=#{st.host_ip} manager=#{st.manager_ip} agents-net=#{st.agent_network}"
+  puts "router pubkey: #{st.router_public_key}"
+  st.agents.each_value { |a| puts "agent #{a['name']}: #{a['ip']} #{a['public_key']}" }
+  st.services.each_value { |s| puts "service #{s['name']}: #{s['host']}:#{s['port']} #{s['protocol']}" }
+  st.authorizations.each { |a| puts "authz: #{a['agent']} -> #{a['service']}" }
+
+else
+  die("unknown command: #{cmd}\n#{USAGE}")
+end
