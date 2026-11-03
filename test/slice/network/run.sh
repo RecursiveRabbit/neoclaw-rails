@@ -175,10 +175,14 @@ node_up() { # container_name ip conf_file role_script [rw]
   printf '%s\n' "$role" > "$STATE/node-$c/role.sh"
   cat > "$STATE/node-$c/serve.sh" <<'EOS'
 #!/bin/sh
-# -e hook: runs per accepted connection, socket on stdio. The accept
-# timestamp is the server-side truth of "traffic actually flowed".
-echo "$(date +%s%N) accept $1" >> /etc/wg/accepts.log
-echo "host:$1-ok"
+# -e hook: runs per accepted connection, socket on stdio. The client sends
+# "PING <send-ns-timestamp>"; logging it gives a challenge-bound proof that
+# a connection initiated AFTER a given moment was served, which stale
+# pre-roll SYN retransmits can never fake.
+line=""
+read -t 3 line || true
+echo "$(date +%s%N) accept $1 ${line:-NOLINE}" >> /etc/wg/accepts.log
+printf "host:%s-ok\n" "$1"
 EOS
   chmod 600 "$STATE/node-$c/wg0.conf"
   cat > "$STATE/node-$c/init.sh" <<'EOS'
@@ -363,17 +367,21 @@ AGENT_CONF_A_HASH_AFTER=$(sha256sum "$STATE/node-$C_A/wg0.conf" | awk '{print $1
 
 # --------------------------------------- 7c. repeated rolls, hard <=2s gate
 # Evans' requirement: worst-case interruption across a roll <= 2 seconds.
-# Continuous authorized traffic flows from agent-a (3 staggered streams)
-# for the whole phase; the host timestamps every accepted connection.
-# Interruption per roll is measured server-side: first accept after roll
-# start minus last accept before it. Assertion is on the WORST roll, not
-# the average. Traffic verification is real (application accepts), not
-# `wg show`.
+# Continuous authorized traffic flows from agent-a (2 staggered streams,
+# ~4 conn/s) for the whole phase. Each probe carries a send-timestamp
+# nonce; the host service logs accept time + nonce. Per roll the rigorous
+# bound is: (first accept whose nonce was sent after the new container's
+# run returned) minus (old container killed) <= 2.0s. Stale pre-roll SYN
+# retransmits cannot fake it. Assertion is on EVERY roll, not the average.
 hdr "7c. repeated rolls under continuous traffic (worst case <= 2.0s)"
 TPIDS=""
-for s in 0 0.06 0.13; do
+for s in 0 0.25; do
   sleep "$s"
-  podman exec "$C_A" sh -c 'while :; do printf "\n" | nc -w 1 10.0.0.2 443 >/dev/null 2>&1; done' &
+  podman exec "$C_A" sh -c 'while :; do
+      ts=$(date +%s%N)
+      printf "PING %s\n" "$ts" | nc -w 1 10.0.0.2 443 >/dev/null 2>&1
+      sleep 0.5
+    done' &
   TPIDS="$TPIDS $!"
 done
 sleep 1   # settle: accept log has pre-roll traffic
@@ -404,30 +412,24 @@ gate_roll() { # roll_index
   podman exec "$C_A" sh -c 'ping -c1 -W1 10.0.0.2 >/dev/null 2>&1 || true' & wake_pids="$wake_pids $!"
   podman exec "$C_B" sh -c 'ping -c1 -W1 10.0.0.2 >/dev/null 2>&1 || true' & wake_pids="$wake_pids $!"
   wait $wake_pids
-  sleep 2.2   # let post-recovery accepts land in the log
-  local result rc
-  # Interruption = largest gap between consecutive server-side accepts in
-  # the roll window. Continuous traffic makes any service hole dominate
-  # this metric; probe-timeout slop (~1s) overestimates, never hides.
-  result=$(awk -v t0="$t0" -v tend="$tend" '
-    $1 >= t0 && $1 <= tend { ts[n++]=$1 }
-    END {
-      if (n < 2) { printf "NOMEASURE(n=%d)", n; exit 1 }
-      maxgap=0
-      for (i=1; i<n; i++) { g=ts[i]-ts[i-1]; if (g>maxgap) maxgap=g }
-      printf "%.3f", maxgap/1000000000
-    }' "$STATE/node-$C_HOST/accepts.log")
-  rc=$?
-  log "roll $i: kill $(( (tdead-t0)/1000000 ))ms + rm $(( (trun-tdead)/1000000 ))ms + run $(( (tend-trun)/1000000 ))ms; observed max interruption gap ${result}s (server-side accepts)"
+  sleep 2.5   # let post-recovery traffic land in the accept log
+  local t_first upper_ms
+  # First accept of a connection whose nonce was sent at/after the new
+  # container's run — the moment REAL new traffic flowed through it.
+  t_first=$(awk -v tend="$tend" '$4=="PING" && $5 >= tend {print $1; exit}' \
+              "$STATE/node-$C_HOST/accepts.log")
+  log "roll $i: kill $(( (tdead-t0)/1000000 ))ms + rm $(( (trun-tdead)/1000000 ))ms + run $(( (tend-trun)/1000000 ))ms"
   [ "$id_before" != "$id_after" ] && [ "$id_after" != "none" ] \
     && ok "roll $i: container actually replaced (${id_after:0:12})" \
     || bad "roll $i: container NOT replaced (id $id_before -> $id_after)"
-  if [ $rc -eq 0 ]; then
-    awk -v r="$result" 'BEGIN{exit !(r<=2.0)}' \
-      && ok "roll $i: max interruption ${result}s <= 2.0s worst-case gate" \
-      || bad "roll $i: max interruption ${result}s EXCEEDS 2.0s worst-case gate"
+  if [ -n "$t_first" ]; then
+    upper_ms=$(( (t_first - tdead)/1000000 ))
+    log "roll $i: old-router dead -> first fresh application traffic served: ${upper_ms}ms"
+    [ "$upper_ms" -le 2000 ] \
+      && ok "roll $i: interruption ${upper_ms}ms <= 2000ms worst-case gate" \
+      || bad "roll $i: interruption ${upper_ms}ms EXCEEDS 2000ms worst-case gate"
   else
-    bad "roll $i: traffic did not resume ($result)"
+    bad "roll $i: no fresh post-roll application traffic observed"
   fi
 }
 
