@@ -68,7 +68,12 @@ cleanup() {
   podman network rm "$NET" >/dev/null 2>&1
   rm -rf "$STATE"
 }
-trap cleanup EXIT
+# On failure, leave the stack and state dir in place for live inspection.
+trap 'if [ "$FAIL" = 0 ]; then cleanup; else
+  log "FAILURES — stack left running for inspection:"
+  log "  state: $STATE"
+  log "  pods:  podman exec $C_A|${C_B}|$C_HOST|$C_MANAGER|$C_ROUTER ..."
+fi' EXIT
 
 wait_fresh_wg() { # container [budget_secs] — any peer with a handshake <90s old
   local c=$1 budget=${2:-90} hs now
@@ -143,6 +148,9 @@ log "Manager-held Router public key: $ROUTER_PUB_EXPECTED"
 
 # ------------------------------------------------------------- 3. network
 hdr "3. disposable podman network + Router"
+# Belts and braces: a previous interrupted run must not poison this one.
+podman rm -f "$C_ROUTER" "$C_HOST" "$C_MANAGER" "$C_A" "$C_B" >/dev/null 2>&1
+podman network rm "$NET" >/dev/null 2>&1 || true
 runlog podman network create --subnet "$SUBNET" "$NET" && ok "network $NET created" || bad "network create"
 
 CONF_A="$STATE/router-render-a"
@@ -347,6 +355,14 @@ AGENT_CONF_A_HASH_AFTER=$(sha256sum "$STATE/node-$C_A/wg0.conf" | awk '{print $1
 
 # ------------------------------------------------- 8. re-run packet tests
 hdr "8. packet tests repeated after roll (§2.10)"
+{
+  echo "--- agent-a wg/ip state post-roll"
+  podman exec "$C_A" sh -c 'wg show wg0; ip -4 addr show wg0; ip route; ip neigh show 10.99.0.10' 2>&1
+  echo "--- router wg dump post-roll"
+  podman exec "$C_ROUTER" wg show wg0 dump 2>&1
+  echo "--- router forward-chain counters post-roll"
+  podman exec "$C_ROUTER" iptables -L NEOCLAW_FWD -v -n 2>&1
+} | tee "$RUN/post-roll-diagnostics.txt" >> "$LOG"
 probe "$C_A" 10.0.0.2 443  ok   "post-roll authorized: test1 -> host:443"
 probe "$C_A" 10.0.0.2 8448 fail "post-roll unauthorized port: test1 -> host:8448"
 probe "$C_B" 10.0.0.2 443 fail "post-roll unauthorized source: test2 -> host:443"
