@@ -1,0 +1,17 @@
+[Unit]
+Description=NeoClaw Manager UI demo (isolated, no host orchestration)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/var/lib/neoclaw/ui-demo/ui-demo.env
+ExecStartPre=/usr/bin/mkdir -p /var/lib/neoclaw/ui-demo/data
+ExecStartPre=-/usr/bin/podman rm -f neoclaw-ui-demo
+ExecStart=/usr/bin/podman run --rm --name neoclaw-ui-demo --network host -v /var/lib/neoclaw/ui-demo/data:/data:Z -e BIND_ADDR=127.0.0.1 localhost/neoclaw-ui-demo:latest
+ExecStop=/usr/bin/podman stop -t 10 neoclaw-ui-demo
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,31 @@
+# NeoClaw Manager UI demo — no host orchestration, no WireGuard, no podman socket.
+FROM ruby:3.3-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    sqlite3 \
+    libsqlite3-dev \
+    libyaml-dev \
+    pkg-config \
+    build-essential \
+    curl \
+    tini \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+ENV BUNDLE_WITHOUT="development:test" \
+    RAILS_ENV=production \
+    NEOCLAW_UI_DEMO=1
+
+COPY Gemfile Gemfile.lock* ./
+RUN bundle config set --local path vendor/bundle \
+    && bundle config set --local without 'development test' \
+    && bundle install --jobs=4
+
+COPY . .
+RUN mkdir -p db tmp log storage \
+    && SECRET_KEY_BASE=placeholder RAILS_ENV=production NEOCLAW_UI_DEMO=1 \
+       bundle exec rails assets:precompile \
+    && chmod +x /app/entrypoint.ui-demo.sh
+
+EXPOSE 9200
+ENTRYPOINT ["tini", "--", "/app/entrypoint.ui-demo.sh"]

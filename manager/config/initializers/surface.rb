@@ -188,6 +188,6 @@ end
 # Boot — verify we're in the container, or die
 # =================================================================
 
-unless ENV["RAILS_ENV"] == "test" || defined?(Rake)
+unless ENV["RAILS_ENV"] == "test" || defined?(Rake) || ENV["NEOCLAW_UI_DEMO"] == "1"
   Surface.verify_container!
 end

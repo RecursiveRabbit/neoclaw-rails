@@ -6,7 +6,7 @@
 # Only runs in server mode — skip during rake tasks, console, tests.
 
 Rails.application.config.after_initialize do
-  if defined?(Puma)
+  if defined?(Puma) && ENV["NEOCLAW_UI_DEMO"] != "1"
     Thread.new do
       sleep 5
       begin
