@@ -682,7 +682,9 @@ Checked hardest, per the twin agreement:
   mapping was implicit). Soro's B1/B2/B3 → §8.4 B3/B4 + §4.2/§4.1.
 - **Unverified names, checked:** `ResponseSourceBadge` and
   `ModelFallbackNotice` are real components (webui/src/components/), not
-  invented anchors. No V3 required.
+  invented anchors. No third correction was required *at the original
+  reconciliation pass*; a V3 was added later, by desk order (the R3
+  reversal — see Appendix A), and this sentence is scoped to that pass.
 - **Editorial normalization in assembly only:** the four part files were
   assembled into this single document (commission requires one document);
   per-part status headers and sign-off lines consolidated into this record;
