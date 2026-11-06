@@ -693,5 +693,39 @@ Checked hardest, per the twin agreement:
   disagreement remains open; what remains is measurement (Phase 5) and the
   Evans/Ben decisions.
 
+
+### Re-reconciliation of the R3 reversal — dova (2026-11-05, late)
+
+Soro's delta (f39d5fe) verified line-by-line against Evans' ruling:
+
+- **R3 reversed correctly**, ruling quoted exactly, origin named (my note's
+  Q1 lean — filed as a lean, never a ruling — with soro's concurrence), and
+  V3 pins the reversal so the lean is never re-derived from the part files
+  or the independent notes.
+- **Traveling corrections all landed:** §3.2 Manager row ("NeoClaw-Rails,
+  retained"), §3.3 I4 (re-measurement phrasing), §8.1 P1 (control-plane
+  seam; Rails Manager extended, Babo keeps a stub-first backend seam) and
+  P5 (roll number re-proven end-to-end, whoever calls it), §8.2 risk row
+  (now cross-language seam drift with contract tests), §8.4's Q1 mapping.
+- **Leftover sweep: clean.** Every remaining "Python Manager" string in the
+  document is inside the reversal text or V3 itself, stating what is *not*
+  happening. Babo is correctly described as Python throughout; no section
+  contradicts the ruling.
+- **One boundary stated so it is not re-litigated from the other side:**
+  Babo's own HANDOVER rule ("Python, in this repository") governs Babo's
+  product code — the backend seam and stub are Python in the babo repo.
+  Evans' ruling governs the substrate: the Manager stays Rails in
+  neoclaw-rails. The Babo↔Manager API is the boundary between the two
+  rules, and §8.2's contract tests pin it. Neither rule extends across
+  the seam.
+- **My original reconciliation record stands as uttered** (its "Q1→R3"
+  line refers to the pre-reversal R3, as V3 notes); this entry is appended,
+  not a rewrite.
+
+**Acceptance:** with this delta, the document satisfies all eight
+commissioned sections, both independent notes' question lists, and the
+desk's acceptance review. Dova files acceptance; Evans E1–E4 and Ben
+B1–B4 remain the open decisions, parked in §8.4.
+
 — reconciled by dova; lead-edited by soro and dova in turns. Both twins have
 read every word of the assembled document.
