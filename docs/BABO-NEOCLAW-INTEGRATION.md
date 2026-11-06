@@ -116,7 +116,7 @@ rendering of it, not a parallel decision.
 | Component | What it is in the merged product | What it can see | What it can never see |
 |---|---|---|---|
 | **Babo core** (Python; the existing repo, `agent/`, `baton/`, `gateway/`, webui, tui) | The product. Identity/lifecycle vocabulary, memory authorship, Review governance, model gateway, owner UI. Unchanged semantics; one new backend seam. | Everything it sees today: town repo, profiles, sessions, owner config (keys). | Container internals beyond what the Manager reports. |
-| **Manager service** (new; Python behind an injectable backend — Q1, §8) | Babo's substrate driver: spawn/stop/rescue/replace pods, render network desired state, per-spawn ephemeral keys, adopt orphans, capacity. Speaks to Babo through one API; speaks to Router/podman through narrow adapters. | Babo's *directives* (session specs, profile-derived access lists), podman, Router key material. | Upstream model/provider credentials (it passes no model traffic), the town's git content beyond mounts, Review decisions (it executes, never decides). |
+| **Manager (NeoClaw-Rails, retained)** — the existing Rails Manager, kept as the generic workload control plane per Evans' ruling (R3; V3, Appendix A) | Babo's substrate driver: spawn/stop/rescue/replace pods, render network desired state, per-spawn ephemeral keys, adopt orphans, capacity. Exposes a Babo-facing API; drives Router/podman through its existing adapters. | Babo's *directives* (session specs, profile-derived access lists), podman, Router key material. | Upstream model/provider credentials (it passes no model traffic), the town's git content beyond mounts, Review decisions (it executes, never decides). |
 | **Dumb Router** (PR #40 shape: alpine + wg-tools + iptables; **no API, no state**) | Stateless forwarder. The Manager holds its private key and renders its full config; replacement preserves IP, key, and peers. | Packets; rules rendered by the Manager. | Nothing persistent. It is enforcement, not policy. |
 | **Pod** (stock image: opencode 2 + Babo plugin + MCP client env) | Where a resident session runs. One per session. Ephemeral WG identity; resident folder mounted from the town repo; `babo mcp` reachable over the tunnel. | Its own session traffic, its own per-service tokens (Manager-delivered), the gateway address. | Upstream provider keys (F1 retired: no `/run/secrets/claude`-class mount); any other resident's data; services its profile doesn't peer with. |
 | **Model gateway** (Babo's existing queue/gateway, exposed as a mesh service address) | The only model path. Provider `babo` in the pod points here over the tunnel; per-session token (B2) authenticates the pod; resident/priority headers preserved; presets resolve local (through the queue) or hosted (OpenRouter et al.) with keys in owner config. | Model traffic, per-resident metering. | Pod shell access — it is a network service, not a resident tool. |
@@ -163,8 +163,8 @@ direction: opencode).
   per-spawn and rotate on replacement; the resident's identity (session id,
   baton, town folder, Valley token binding) persists across replacement.
   Replacement keeps addressing stable: measured ≤2 s interruption
-  (1581/1596/1638/1680 ms, PR #40 roll gate; re-measured on the Python
-  Manager in Phase 5).
+  (1581/1596/1638/1680 ms, PR #40 roll gate; re-measured end-to-end on the
+  merged stack in Phase 5).
 - **I5 — Owner approval is load-bearing and convenient.** Every widening
   path (move-in, errand, round, tool proposal, profile change, allow-all)
   flows through Review exactly as today; the Manager accepts no out-of-band
@@ -516,11 +516,13 @@ walk (§6).
   state, don't adjudicate, the local-only `kimi-code-swap` commit (B2);
   land PR #40 (closes F3's docs/code drift and makes the dumb Router real);
   confirm none of the key material ever enters the Babo repo.
-- **P1 — Manager service skeleton.** Python Manager behind an injectable
-  backend; the default stub backend reproduces today's in-process spawn,
-  so Babo keeps working with zero containers. Deliverable: the Babo→
-  Manager API, the property test that rendered network/access state is a
-  pure function of Babo state (I1), and the audit trail.
+- **P1 — Control-plane seam.** Extend the NeoClaw-Rails Manager with a
+  Babo-facing API (session specs in, state/events out); Babo keeps a
+  backend seam whose stub reproduces today's in-process spawn, so Babo
+  works with zero containers until the Manager backend is configured.
+  Deliverable: the Babo↔Manager API, the property test that rendered
+  network/access state is a pure function of Babo state (I1), and the
+  audit trail.
 - **P2 — One podded office.** Stock image (opencode 2 + plugin + MCP env,
   no secrets beyond §4.1) on a dev machine; Archivist sessions run in pods;
   network-from-profile rendering; gateway exposed as a mesh service;
@@ -533,7 +535,9 @@ walk (§6).
   early runs). Deliverable: S5.
 - **P5 — Acceptance.** The full §6 walk and §7 gates on the disposable
   rig; eval/trial baselines re-measured on the podded stack; the ≤2 s roll
-  number re-proven on the Python Manager. Deliverable: G8, the gate.
+  number re-proven end-to-end with Babo driving (the roll mechanism is
+  PR #40's; the number must hold on the merged stack, whoever calls it).
+  Deliverable: G8, the gate.
 - **P6 — Pilot.** Grimes runs it; findings file as Babo issues/PRs under
   the one-step-one-PR rule; then general availability as a Babo release.
 
@@ -547,7 +551,7 @@ walk (§6).
 | Local-model capacity mis-set | medium | gateway slots + eval baselines; owner-visible saturation notices |
 | Host WG/plumbing varies across owner machines | medium | opt-in install step + doctor checks, same pattern as `host-services` |
 | Review-gate latency freezing pod-residents | medium | async Review routing (E2 recommendation); 24h permission-wait grace already exists |
-| Python Manager re-proving cost (Q1) | medium | Rails Manager + PR #40/#41 remain as reference semantics; numbers re-measured, not inherited |
+| Cross-language seam drift (Babo Python ↔ Manager Ruby) | medium | one Babo↔Manager API with schema fixtures and contract tests in CI on both repos; I1 property test pins semantics; neither side re-derives the other's state |
 
 ### 8.3 Twins' recommended decisions
 
@@ -557,9 +561,13 @@ walk (§6).
 - **R2 — Default-deny internet, derived from profile** (F2): peering
   rendered from profile fields; internet is a per-profile grant, revocable,
   audited. *(Question E1: Evans confirms the default-deny posture.)*
-- **R3 — Manager substrate: Python service, injectable backend** (Q1;
-  dova's lean, soro concurs): one language runtime for owners; Rails
-  Manager becomes reference semantics; re-prove numbers on P5.
+- **R3 — Manager substrate: NeoClaw-Rails is retained, full stop** (Q1;
+  Evans' ruling, V3 Appendix A): the Rails Manager is the generic
+  workload control plane — "Ruby is not open for re-litigation," and the
+  Manager is not in the product hot path (session-granularity calls, not
+  per-token). No Python Manager, no migration, no re-proving obligation;
+  Babo keeps one backend seam (stub-first, P1) so its product code stays
+  testable without containers.
 - **R4 — Terminal: per-resident `opencode serve` + thin broker** (Q2;
   agreed): discovery, tunnel, presence — no shared multi-runtime broker.
 - **R5 — Permission escalations route to async Review** (E2 recommendation):
@@ -596,8 +604,9 @@ walk (§6).
 - **B4** Implement the per-session gateway token (§4.1) and the attach-path
   authentication for the terminal broker (§4.7).
 
-**Resolved by the twins (recorded so they aren't re-opened):** Q1→R3,
-Q2→R4, Q3→R7, Q4→R8; the memory model → R1 (D1); live-terminal shape → R4.
+**Resolved by the twins (recorded so they aren't re-opened):** Q1→R3
+(Evans' ruling, V3), Q2→R4, Q3→R7, Q4→R8; the memory model → R1 (D1);
+live-terminal shape → R4.
 
 ---
 
@@ -633,6 +642,20 @@ visible. Entries are appended, never rewritten.
   Matrix routing core vs Babo's session layer. The routing table dies;
   Matrix is one channel among 18; per-channel identity instances map to
   sessions/tags of one persistent resident — never new identities.
+- **V3 (desk-ordered reversal of R3, 2026-11-05):** R3 as first drafted
+  recommended a Python Manager service behind an injectable backend — the
+  lean originated in dova's independent note (§7, Q1) and soro concurred.
+  Desk acceptance found this contradicted Evans' explicit ruling, received
+  via nime: NeoClaw was built in Python first and NeoClaw-Rails is the
+  deliberate rewrite; "Ruby is not open for re-litigation, and nothing in
+  the hot path touches Ruby." R3 is reversed: NeoClaw-Rails is retained as
+  the generic workload control plane; no Python Manager, no migration, no
+  re-proving obligation. Traveling corrections: §3.2 Manager row, §3.3
+  invariant I4 (re-measurement phrasing), §8.1 P1 and P5, §8.2's risk row
+  (now cross-language seam drift), §8.4's Q1 mapping. This entry records
+  the reversal so the earlier lean is never re-derived from the part files
+  or the independent notes. (The reconciliation record's "Q1→R3" line
+  refers to the pre-reversal R3.)
 ---
 
 ## Reconciliation record — dova's pass (2026-11-05)
