@@ -16,5 +16,5 @@ else
   bin/rails db:migrate
 fi
 
-echo "[ui-demo] starting Manager UI on ${BIND_ADDR:-127.0.0.1}:9200"
-exec bin/rails server -b "${BIND_ADDR:-127.0.0.1}" -p 9200 -e production
+echo "[ui-demo] starting Manager UI on ${BIND_ADDR:-127.0.0.1}:${PORT:-19200}"
+exec bin/rails server -b "${BIND_ADDR:-127.0.0.1}" -p "${PORT:-19200}" -e production

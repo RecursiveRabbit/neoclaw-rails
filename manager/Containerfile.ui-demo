@@ -27,5 +27,5 @@ RUN mkdir -p db tmp log storage \
        bundle exec rails assets:precompile \
     && chmod +x /app/entrypoint.ui-demo.sh
 
-EXPOSE 9200
+EXPOSE 19200
 ENTRYPOINT ["tini", "--", "/app/entrypoint.ui-demo.sh"]

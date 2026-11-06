@@ -23,8 +23,9 @@ application process. Its SQLite database is disposable demo state.
 Create `/var/lib/neoclaw/ui-demo/ui-demo.env` mode `0600` with a locally
 generated `SECRET_KEY_BASE`, install `neoclaw-ui-demo.service`, then enable and
 start it. The unit mounts only `/var/lib/neoclaw/ui-demo/data` and binds Rails
-to `127.0.0.1:9200` on the host. `--network host` avoids z620's unrelated
-Podman DNS issue without granting any additional capability.
+to `127.0.0.1:19200` on the host (leaving the existing 9200 service alone).
+`--network host` avoids z620's unrelated Podman DNS issue without granting any
+additional capability.
 
 Install `dnsmasq.conf` as `/etc/dnsmasq.d/neoclaw-ui-demo.conf` and
 `caddy.conf` as `/etc/caddy/conf.d/neoclaw-ui-demo.conf`, import the latter
