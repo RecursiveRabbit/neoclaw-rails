@@ -5,7 +5,7 @@ class DashboardController < AdminController
     @containers = Container.active.order(state: :asc, last_message_at: :desc)
     @alive_count = Container.alive.count
     @starting_count = Container.starting.count
-    memory_used = Podman.agent_memory_usage
+    memory_used = ENV["NEOCLAW_UI_DEMO"] == "1" ? 0 : Podman.agent_memory_usage
     memory_budget = Surface.memory_budget
     @capacity = {
       running: @alive_count + @starting_count,
