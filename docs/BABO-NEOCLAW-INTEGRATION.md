@@ -731,3 +731,16 @@ B1–B4 remain the open decisions, parked in §8.4.
 
 — reconciled by dova; lead-edited by soro and dova in turns. Both twins have
 read every word of the assembled document.
+
+---
+
+## Addendum pointer — DeepSeek Box unification (2026-11-08)
+
+Evans' ruling "Our two projects are the same project" (the-townline origin
+`6e6f4049`) unifies the DeepSeek/OpenCode/NOX bench into this architecture
+as an acceptance campaign and a provider option — never a third product,
+parallel registry, or lifecycle plane. The reconciled twin addendum lives
+at `docs/DEEPSEEK-BOX-UNIFICATION-ADDENDUM.md` (independent notes: dova
+Babo-first `c785389b`, soro NeoClaw-first `acdc2f06`; desk reconciliation
+`64d72df3` applied). This document is not amended in place; the addendum
+extends it, and both stand.
