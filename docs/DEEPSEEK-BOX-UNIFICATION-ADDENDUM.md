@@ -56,6 +56,8 @@ HEAD `90e5fd0` at filing.
 | `shared/notifications.jsonl` + `notify-state.json` | **Babo** event log / channel delivery records | Cursor state is derived — rebuildable from the log, never authoritative. |
 | `opencode.json` + per-run configs; per-launch server credential in `/run/user/1000/...` | **Credentials**: per-launch, Manager-delivered | Per-session gateway token replaces the server-env credential for the model path; the server-admin credential remains launch-scoped. |
 | `benchmark-models.json` + `reports/deepseek-provider-*.md` | **Babo gateway** | Preset economics (cache-read/throughput tables) inform preset selection and cost ceilings only — no resident, roster, pin, or spend commission is created by them. |
+| llama.cpp `b12182` local inference via `berth run --fail-closed` | **Manager-scheduled local GPU under Berth leases**; local providers resolve through the gateway as presets | Capacity by lease, never co-residency — the 3×9B-vs-1×27B question stays a scheduling question, not an identity or registry question. |
+| `scripts/opencode_client.py` (authenticated loopback create/prompt/wait/messages/export) | **Terminal broker / session-client seam** (parent §4.7) | Adopted as the thin client the broker implies; no second client is built. |
 | `mods/*` (native-evidence, protocol, opennox, integration, repair-*) | **Evidence, adopted** | Adopted under the named resident's curation (§3); original authorship, bus ids, and session ids preserved in place; not moved, not relabeled. The 216-check verifier, the Game.exe snapshot, and the con01a two-client milestone carry over by hash. |
 | `runs/deepseek-or-flash/reports/` + `reports/evidence/` | **Manager evidence store**, referenced from the Babo ledger | Session exports are the bench-side analogue of the pre-fold sibling (§3 step 2); Review grades them by hash. |
 | Retail install `/home/evans/Games/Heroic/Nox` (1,686-file manifest) | **Untouched invariant** | Read-only, never launched; manifest re-verified unchanged after every session; acceptance line of the whole campaign. |
@@ -83,7 +85,12 @@ Both twins now lean the same way, with nime's desk lean recorded:
   tests. Adoption is demonstrably continuity, not relabeling. Second
   candidate: `native` (complete: symbols.json, 216-check verifier, REA
   snapshot sha `a57f29e0…c15f`, bus id 31).
-- **Option B: mint a fresh handle** (e.g. `nox-custodian`) and adopt the
+- **Option B: adopt the bench's worker-contract prose** (`agents/nox-worker.md` + the
+  campaign vocabulary) as the named resident's starting baton *without* taking
+  any cohort role's lineage (soro's independent-note framing). Preserves the
+  contract's authorship; severs artifact lineage unless the bus record is
+  carried in full.
+- **Option C: mint a fresh handle** (e.g. `nox-custodian`) and adopt the
   cohort's artifacts under it. Cleaner bookkeeping; severs artifact lineage
   from author history unless the bus record is carried in full; risks
   reading as a new person — forbidden by accident more than by name.
@@ -246,11 +253,14 @@ the addendum:
 
 **For Evans (decisions):**
 - **E1 — Naming.** Option A (recommended by nime's lean, dova, and soro):
-  adopt `protocol` (second: `native`). Option B: mint fresh with full
-  adoption. First gate of the slice; decided at filing.
-- **E2 — Owner-written baton, scope.** One-time adoption contract, or
-  standing owner authorship for the worker's life? The latter diverges
-  from Babo's record invariants; rule it, don't drift it.
+  adopt `protocol` (second: `native`). Option B: adopt the worker-contract
+  prose without role lineage. Option C: mint fresh with full adoption.
+  First gate of the slice; decided at filing.
+- **E2 — Owner-written baton, scope.** Desk default (2026-11-08, nime): the
+  owner-authored baton is the **one-time adoption contract, not permanent by
+  default** — the resident maintains its record thereafter under Babo's
+  invariants. Standing owner authorship would diverge from those invariants;
+  Evans confirms the default or rules otherwise.
 - **E3 — Provider swap endpoints.** (a) alternate OpenRouter tag, (b) local
   Qwen via Berth lease, or (a) then (b)?
 - **E4 — Slice host.** Live bench alongside the four repair lanes
@@ -272,8 +282,14 @@ the addendum:
   existing lanes migrate as its first items.
 - **B5 — Swap metering continuity** (`X-Baton-Resident` across presets;
   per-resident metering continuous; source badge correct both legs).
+- **B6 — Migration of the three named files** (request work item 4, made
+  acceptance-traceable): `agent_bus.py` → ledger client (§5), the daemon →
+  event pump + channel notifications (§5 invariants contractual),
+  `shared/repairs.json` → Review items + projection (B4). Acceptance: the
+  three files' grammars live in the named owners; no second memory system; no
+  model-in-the-loop watcher survives.
 
-The prior request's items carry unchanged: **B1-prior** (rotate the 13
+The prior request's items carry unchanged: **B7-prior** (rotate the 13
 committed WG keys) stays P0 of any implementation phase; nothing
 WG-shaped is touched by this slice.
 
@@ -308,6 +324,37 @@ entries:
    appends history under A1 and never mints a second person.
 
 *Addendum drafted by soro from the two filed independent notes; desk
-reconciliation applied at `64d72df3` (nime). dova's twin review of this
-addendum is the remaining hold before it is offered for acceptance. —
-the twin seam, fourth hold.*
+reconciliation applied at `64d72df3` (nime).*
+
+**Twin review — dova (2026-11-08), the former remaining hold.** Reviewed
+line-by-line against both filed notes (`c785389b`+`890c04bc`, `acdc2f06`) and
+the desk note (`64d72df3`), checked hardest at the seams:
+
+- **Rulings: identical.** Events→Babo ledger, evidence→Manager store with
+  the request text as anchor and E5 as the amendment path (never a silent
+  override); fold grammar adopted / OpenCode clear new wire (C2); swap gate =
+  handle/baton/Valley identity, substrate id appends history (C3); C1 lane
+  status carried; A1–A4; migration invariants; security carried. No
+  substantive disagreement anywhere.
+- **Deltas folded in this review (omissions, not disputes):** the
+  `opencode_client.py` and llama.cpp/Berth-scheduling rows returned to the
+  component map (both filed notes had them); E1 restored to three options
+  (soro's own note framed adopting the worker-contract prose as a distinct
+  option; the draft had collapsed it); **B6** added so request work item 4
+  (the three named files' migration) is acceptance-traceable; the WG-key
+  carry renamed **B7-prior** (renumbering only); **E2** now states the desk
+  default (one-time owner authorship, not permanent) instead of leaving the
+  question bare.
+- **Verified as filed:** every bus id citation (8, 11, 12, 16, 20, 31–34),
+  the export-discipline line refs, the snapshot hash, and the 1,686-file
+  manifest claim — all match the bench record read independently this pass.
+- **Vessel note:** dova had drafted the addendum as an inline append to the
+  integration document (the request's "amend the accepted integration
+  document" read literally); soro's separate-file vessel was already pushed
+  and awaiting this review. Single-source rule: one addendum kept, this file,
+  with the parent doc carrying soro's pointer. Recorded so the vessel choice
+  is visible, not accidental.
+
+With this review the addendum stands reconciled and is offered for desk
+acceptance with E1–E5 (Evans) and B1–B7 (Ben) open per §8. — reviewed by
+dova; drafted by soro; desk seams per nime.
