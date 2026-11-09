@@ -21,6 +21,17 @@ preservation (§9–§11)**; joint: vocabulary, consistency, open questions
 seam check against the enforcement matrix, and the desk's sequencing
 review before the doc is offered for acceptance.
 
+**Venue ancestry, recorded not smoothed (dova's flag, verified):** this
+branch was announced as "off main (`ef28ab9`)" but in fact sits on
+`26e2d90` ("Record phase-1 vertical slice evidence") — local `main` was one
+commit ahead of `origin/main` when the branch was cut, and `26e2d90` is
+reachable from `demo/manager-ui-pod`, not from any main. **Decision:
+keep the base.** It is a descendant of `ef28ab9`, it carries the phase-1
+evidence the reset class keeps evaporating, and §9.4's placement ruling
+exists precisely because this repo's `main` is not a safe home for records
+of persons — the branch's own ancestry now demonstrates the class it
+cites. No rebase; the discrepancy stays in the record.
+
 ## 1. Ruling and premise
 
 Evans' ruling (verbatim from the request): **"A chat session is not an
