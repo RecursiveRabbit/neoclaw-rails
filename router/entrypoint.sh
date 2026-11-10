@@ -16,4 +16,12 @@ fi
 mkdir -p /var/log
 mkdir -p /data
 
+# Config and private key are mounted per boot by the Manager.
+# Refuse to start without them: a Router with no key must fail loudly.
+if [ ! -f /etc/router/config.yml ] || [ ! -f /etc/router/private.key ]; then
+  echo "[entrypoint] FATAL: /etc/router/config.yml and /etc/router/private.key must be mounted"
+  exit 1
+fi
+echo "[entrypoint] config mounted, key present"
+
 exec ruby /opt/router/src/router.rb

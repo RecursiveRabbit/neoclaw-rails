@@ -22,14 +22,95 @@ HOST_DB_DIR="/var/lib/neoclaw/manager-db"
 HOST_CLAUDE_CREDS="/var/lib/neoclaw/secrets/claude-credentials.json"
 PODMAN_SOCKET="/run/podman/podman.sock"
 
-# Service credentials
-FORGEJO_ADMIN_TOKEN="${FORGEJO_ADMIN_TOKEN:-1f0759db1301cd07f336c119ef0cd8287984433e}"
+# Service credentials — NEVER defaults in this file.
+# Read from the host secret store (mode 0600), or from the environment for
+# an operator who is deliberately injecting them. Missing required secrets
+# abort the launch instead of silently using a value from the repo.
+SECRETS_DIR="${SECRETS_DIR:-/var/lib/neoclaw/secrets}"
 
-# Matrix tokens — Manager passes these through to the Hub container
-NEOCLAW_AS_TOKEN="${NEOCLAW_AS_TOKEN:-f6f2b7713fa76c0d9b8785770276a59181e55c159304bff93fcf0a54bd75f356}"
-NEOCLAW_HS_TOKEN="${NEOCLAW_HS_TOKEN:-091c5f175e45ee0b3196cdce5ff869be1d1cf78de0470f80298009a3c5ec9d91}"
+read_secret() {  # $1 = filename under SECRETS_DIR; echoes value or nothing
+    local f="${SECRETS_DIR}/$1"
+    [ -r "$f" ] && tr -d '\n' < "$f"
+}
+
+FORGEJO_ADMIN_TOKEN="${FORGEJO_ADMIN_TOKEN:-$(read_secret forgejo-admin-token)}"
+if [ -z "$FORGEJO_ADMIN_TOKEN" ]; then
+    echo "[manager-run] FATAL: no Forgejo admin token. Set FORGEJO_ADMIN_TOKEN or write ${SECRETS_DIR}/forgejo-admin-token (0600)." >&2
+    echo "[manager-run] There is deliberately no default: a token in this script is a token in git." >&2
+    exit 1
+fi
+
+# Matrix tokens — optional (Hub degrades without them); same store, no defaults.
+NEOCLAW_AS_TOKEN="${NEOCLAW_AS_TOKEN:-$(read_secret matrix-as-token)}"
+NEOCLAW_HS_TOKEN="${NEOCLAW_HS_TOKEN:-$(read_secret matrix-hs-token)}"
 
 log() { echo "[manager-run] $*"; }
+
+# --- Per-boot host peering -------------------------------------------------
+# The Router key is generated fresh by the Manager entrypoint on every boot.
+# The host's nc-host peer must be re-pointed after each start; this script is
+# the root step that does it. It waits for the boot handoff file, then updates
+# the live interface and the persisted config.
+update_host_peer() {
+    local pubkey_file="${HOST_SPAWN_DIR}/runtime/router.pubkey"
+    local i
+    for i in $(seq 1 60); do
+        [ -s "$pubkey_file" ] && break
+        sleep 1
+    done
+    if [ ! -s "$pubkey_file" ]; then
+        log "WARNING: no router.pubkey after 60s — host peer not updated"
+        return 1
+    fi
+    local pubkey
+    pubkey=$(tr -d '\n' < "$pubkey_file")
+    wg set nc-host peer "$pubkey" \
+        endpoint "10.88.0.20:51820" \
+        allowed-ips "10.0.0.0/8" \
+        persistent-keepalive 25 2>/dev/null \
+        && log "host nc-host peer re-pointed (live) → ${pubkey:0:12}..." \
+        || log "WARNING: could not update nc-host (interface may not exist yet)"
+    local host_conf=/etc/wireguard/nc-host.conf
+    if [ -f "$host_conf" ]; then
+        local host_privkey
+        host_privkey=$(awk '/^PrivateKey/{print $3}' "$host_conf")
+        if [ -n "$host_privkey" ]; then
+            (umask 077; cat > "$host_conf" <<EOF
+[Interface]
+PrivateKey = ${host_privkey}
+Address = 10.0.0.2/32
+
+[Peer]
+PublicKey = ${pubkey}
+Endpoint = 10.88.0.20:51820
+AllowedIPs = 10.0.0.0/8
+PersistentKeepalive = 25
+EOF
+            )
+            log "nc-host.conf re-pointed at the current boot's Router key"
+        fi
+    fi
+}
+
+# User configs: build.sh writes templates; the per-boot Router pubkey is
+# substituted here so the files operators hold always match the mesh.
+render_user_configs() {
+    local pubkey_file="${HOST_SPAWN_DIR}/runtime/router.pubkey"
+    local dir="${USER_CONFIG_DIR:-/var/lib/neoclaw/user-configs}"
+    [ -s "$pubkey_file" ] || return 0
+    [ -d "$dir" ] || return 0
+    local pubkey
+    pubkey=$(tr -d '\n' < "$pubkey_file")
+    local f out
+    for f in "$dir"/*.conf.in; do
+        [ -e "$f" ] || return 0
+        out="${f%.in}"
+        sed "s|^PublicKey = __ROUTER_PUBKEY__$|PublicKey = ${pubkey}|" "$f" > "$out"
+        chmod 600 "$out"
+        log "rendered $(basename "$out") with current Router key"
+    done
+}
+
 
 # Ensure host directories exist
 mkdir -p "$HOST_SPAWN_DIR" "$HOST_SSH_KEYS_DIR" "$HOST_DB_DIR"
@@ -71,7 +152,10 @@ sleep 3
 for i in $(seq 1 40); do
     if podman exec "$CONTAINER_NAME" curl -sf http://localhost:9200/health >/dev/null 2>&1; then
         log "manager is up"
+        update_host_peer || true
+        render_user_configs || true
         log ""
+        log "Router key this boot: $(cat "${HOST_SPAWN_DIR}/runtime/router.pubkey" 2>/dev/null | cut -c1-12)..."
         log "Manager:  http://10.0.0.3:9200/"
         log "Router:   podman exec wg-router wg show"
         log "Hub:      http://10.0.0.4:3100/health"

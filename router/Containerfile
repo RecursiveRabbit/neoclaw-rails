@@ -12,11 +12,12 @@ COPY src/ /opt/router/src/
 COPY entrypoint.sh /opt/router/entrypoint.sh
 RUN chmod +x /opt/router/entrypoint.sh
 
-# Config and WG key baked at build time by build.sh.
-# No runtime mounts needed for these.
-COPY config/ /etc/router/
-COPY wg-private.key /etc/wireguard/private.key
-RUN chmod 600 /etc/wireguard/private.key
+# No config and no WG key in the image. The Manager renders both at
+# boot and mounts its runtime directory read-only at /etc/router:
+#   config.yml   — rendered per boot (per-boot Manager/Hub pubkeys)
+#   private.key  — generated per boot, never baked
+# Manual runs must supply the same mount; the entrypoint refuses to start
+# without it (a Router with no key is a silent failure, not a default).
 
 WORKDIR /opt/router
 
@@ -30,12 +31,13 @@ HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
 
 ENTRYPOINT ["/opt/router/entrypoint.sh"]
 
-# Launched by the Manager's entrypoint. All keys baked in.
+# Launched by the Manager's entrypoint with the boot's runtime dir.
 # Manual run (for testing):
 #   podman run \
 #     --cap-add=NET_ADMIN \
 #     --cap-add=NET_RAW \
 #     --sysctl net.ipv4.ip_forward=1 \
 #     --ip 10.88.0.20 \
+#     -v /var/lib/neoclaw/spawn/runtime/router:/etc/router:ro \
 #     --name wg-router \
 #     localhost/neoclaw-router:latest

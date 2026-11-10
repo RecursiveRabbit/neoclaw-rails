@@ -37,10 +37,9 @@ RUN bundle config set --local path vendor/bundle \
     && bundle config set --local without 'development test' \
     && bundle install --local
 
-# WG config baked at build time. Hub is 10.0.0.4 on the mesh.
+# No WG config in the image: the Hub's keypair is generated per Manager
+# boot, and the Manager mounts this boot's /etc/wireguard read-only.
 RUN mkdir -p /etc/wireguard
-COPY wg0.conf /etc/wireguard/wg0.conf
-RUN chmod 600 /etc/wireguard/wg0.conf
 
 # Hub application code (not manager/, router/, relay/, etc.)
 COPY app/ app/

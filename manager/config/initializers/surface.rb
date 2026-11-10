@@ -99,11 +99,21 @@ module Surface
       ENV.fetch("ROUTER_URL", "http://10.0.0.1:8080")
     end
 
-    # Baked into the image at build time. Agents need this to peer with the Router.
+    # Rendered fresh every Manager boot by entrypoint.sh Phase 0, and reused
+    # for every Router replacement within that boot. Agents need it to peer
+    # with the Router; a stale value means a pod built for a dead Router, so
+    # there is no baked fallback that would quietly "work".
     def router_pubkey
-      @router_pubkey ||= File.read("/etc/neoclaw/router_pubkey").strip
+      @router_pubkey ||= File.read(File.join(SPAWN_DIR, "runtime", "router.pubkey")).strip
     rescue Errno::ENOENT
-      ENV.fetch("ROUTER_PUBKEY")
+      raise "router pubkey missing at #{SPAWN_DIR}/runtime/router.pubkey — Manager boot did not render it"
+    end
+
+    # Boot id of the current Manager boot (matches the Router key in use).
+    def boot_id
+      JSON.parse(File.read(File.join(SPAWN_DIR, "runtime", "boot.json")))['boot_id']
+    rescue StandardError
+      "unknown"
     end
 
     # Router's bridge IP + WG port. Baked into agent spawn.json.
