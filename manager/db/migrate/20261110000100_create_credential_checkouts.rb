@@ -1,7 +1,6 @@
 class CreateCredentialCheckouts < ActiveRecord::Migration[8.1]
   def change
-    create_table :credential_checkouts, id: false do |t|
-      t.string :id, primary_key: true, null: false
+    create_table :credential_checkouts, id: :string do |t|
       # What was issued. A scope is a class of credential, not a secret.
       t.string :scope, null: false
       # Which agent instance the credential belongs to (the pod's name).
