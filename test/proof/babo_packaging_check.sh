@@ -77,6 +77,18 @@ probe() {
   printf '%s' "$out"
 }
 
+# The same discipline one layer out: an empty answer from a failed `podman
+# inspect` is not a zero. It is a sentinel, and the row that asked fails.
+INSPECT_FAILED="__inspect_failed__"
+inspect_field() { # format-string -> value, or INSPECT_FAILED
+  local out
+  if ! out=$(podman inspect -f "$1" "$CONTAINER" 2>/dev/null); then
+    printf '%s' "$INSPECT_FAILED"
+    return 0
+  fi
+  printf '%s' "$out"
+}
+
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
 ENTRY_SRC="$REPO_ROOT/deploy/babo/entrypoint.sh"
@@ -114,7 +126,9 @@ else
 fi
 
 # --- 3. The entrypoint refuses to start without a mounted config -------
-set +e
+# The script runs with `set -u` only and captures every status it wants to
+# reason about. It never toggles errexit: a toggle left on would abort the run
+# at the first unguarded command and turn a check verdict into a crash.
 OUT3=$(podman run --rm "$IMAGE" 2>&1); RC3=$?
 if [ "$RC3" -ne 0 ] && echo "$OUT3" | grep -q "wg0.conf not mounted"; then
   ok "container refuses to start without a mounted wg0.conf (rc=$RC3, reason stated)"
@@ -150,13 +164,26 @@ else
   fi
 fi
 
+# The image's own ENV is a build-time fact and needs no container run. This is
+# the narrow row README fact 7 rests on ("the image bakes no token environment
+# variable"); without it that half of the claim is unproven, not proven.
+IMG_ENV=$(podman image inspect -f '{{json .Config.Env}}' "$IMAGE" 2>/dev/null); IMG_ENV_RC=$?
+if [ "$IMG_ENV_RC" -ne 0 ] || [ -z "$IMG_ENV" ]; then
+  bad "image environment could not be read (podman image inspect failed), so the baked-token claim is unproven"
+else
+  IMG_TOKENS=$(printf '%s' "$IMG_ENV" | tr ',' '\n' | tr -d '[]"' | grep -E '^[A-Za-z_]*TOKEN[A-Za-z_]*=' | cut -d= -f1 | tr '\n' ' ')
+  if [ -z "$IMG_TOKENS" ]; then
+    ok "image bakes no token environment variable"
+  else
+    bad "image bakes token variable(s): $IMG_TOKENS"
+  fi
+fi
+
 # --- 3c. Trusted-source handling is fail-closed in the pod -------------
 # Cheap checks first: an invalid value must be refused BEFORE anything else,
 # with the value named, and without needing a mounted wg0.conf.
 for BADVAL in "0.0.0.0/0" "10.0.0.0/8" "10.0.0.2" "::/0" "example.internal"; do
-  set +e
   O=$(podman run --rm -e "BABO_TRUSTED_SOURCES=$BADVAL" "$IMAGE" 2>&1); R=$?
-  set -e 2>/dev/null || true
   if [ "$R" -ne 0 ] && echo "$O" | grep -qF "$BADVAL"; then
     ok "refuses trusted source '$BADVAL' by name (rc=$R)"
   elif [ -z "$O" ]; then
@@ -267,9 +294,12 @@ else
   if [ -z "$SPAWN_DIR" ]; then
     unmet "mount source prefix unknown: pass --spawn-dir or set HOST_SPAWN_DIR"
   fi
-  MOUNTS=$(podman inspect -f '{{range .Mounts}}{{.Type}}|{{.Source}}|{{.Destination}}|{{.RW}}
-{{end}}' "$CONTAINER" 2>/dev/null)
+  MOUNTS=$(inspect_field '{{range .Mounts}}{{.Type}}|{{.Source}}|{{.Destination}}|{{.RW}}
+{{end}}')
   NLINES=$(printf '%s' "$MOUNTS" | grep -c '|' || true)
+  if [ "$MOUNTS" = "$INSPECT_FAILED" ]; then
+    bad "container facts could not be read (podman inspect $CONTAINER failed), so the mount set is unknown"
+  else
   case "$NLINES" in
     1)
       MTYPE=$(printf '%s\n' "$MOUNTS" | cut -d'|' -f1)
@@ -287,21 +317,29 @@ else
     0) bad "no bind mounts: the per-boot wg0.conf would be missing" ;;
     *) bad "$NLINES mounts present; exactly one is allowed" ;;
   esac
+  fi
 
-  PORTS=$(podman inspect -f '{{json .HostConfig.PortBindings}}' "$CONTAINER" 2>/dev/null)
-  NETMODE=$(podman inspect -f '{{.HostConfig.NetworkMode}}' "$CONTAINER" 2>/dev/null)
-  if { [ "$PORTS" = "{}" ] || [ "$PORTS" = "null" ] || [ -z "$PORTS" ]; } && [ "$NETMODE" != "host" ]; then
+  PORTS=$(inspect_field '{{json .HostConfig.PortBindings}}')
+  NETMODE=$(inspect_field '{{.HostConfig.NetworkMode}}')
+  # An empty answer is not a zero: it is an unread fact, and it fails the row.
+  if [ "$PORTS" = "$INSPECT_FAILED" ] || [ "$NETMODE" = "$INSPECT_FAILED" ] || [ -z "$PORTS" ] || [ -z "$NETMODE" ]; then
+    bad "container facts could not be read (podman inspect $CONTAINER failed), so published ports and network mode are unknown"
+  elif { [ "$PORTS" = "{}" ] || [ "$PORTS" = "null" ]; } && [ "$NETMODE" != "host" ]; then
     ok "no published ports and no host network mode (network=$NETMODE)"
   else
     bad "published ports or host networking present (ports=$PORTS network=$NETMODE)"
   fi
 
-  CENV=$(podman inspect -f '{{json .Config.Env}}' "$CONTAINER" 2>/dev/null)
-  CTOKENS=$(echo "$CENV" | tr ',' '\n' | tr -d '[]"' | grep -E '^[A-Za-z_]*TOKEN[A-Za-z_]*=' | cut -d= -f1 | tr '\n' ' ')
-  if [ -z "$CTOKENS" ]; then
-    ok "container environment carries no token variable"
+  CENV=$(inspect_field '{{json .Config.Env}}')
+  if [ "$CENV" = "$INSPECT_FAILED" ] || [ -z "$CENV" ]; then
+    bad "container environment could not be read (podman inspect $CONTAINER failed), so token variables are unknown"
   else
-    bad "container environment carries token variable(s): $CTOKENS"
+    CTOKENS=$(printf '%s' "$CENV" | tr ',' '\n' | tr -d '[]"' | grep -E '^[A-Za-z_]*TOKEN[A-Za-z_]*=' | cut -d= -f1 | tr '\n' ' ')
+    if [ -z "$CTOKENS" ]; then
+      ok "container environment carries no token variable"
+    else
+      bad "container environment carries token variable(s): $CTOKENS"
+    fi
   fi
 
   # The rendered runtime config is where a static issuance door would appear.
@@ -316,14 +354,18 @@ else
     ok "runtime config enables no token issuer (token_issue_path/token_issue_secret absent or empty)"
   fi
 
-  SYSCTLS=$(podman inspect -f '{{json .HostConfig.Sysctls}}' "$CONTAINER" 2>/dev/null)
-  case "$SYSCTLS" in
-    *ip_forward*) bad "net.ipv4.ip_forward is set for Babo; it does not route traffic ($SYSCTLS)" ;;
-    *)            ok "no ip_forward sysctl set (Babo does not route traffic)" ;;
-  esac
+  SYSCTLS=$(inspect_field '{{json .HostConfig.Sysctls}}')
+  if [ "$SYSCTLS" = "$INSPECT_FAILED" ] || [ -z "$SYSCTLS" ]; then
+    bad "container facts could not be read (podman inspect $CONTAINER failed), so sysctls are unknown"
+  else
+    case "$SYSCTLS" in
+      *ip_forward*) bad "net.ipv4.ip_forward is set for Babo; it does not route traffic ($SYSCTLS)" ;;
+      *)            ok "no ip_forward sysctl set (Babo does not route traffic)" ;;
+    esac
+  fi
 
-  CAPADD=$(podman inspect -f '{{json .HostConfig.CapAdd}}' "$CONTAINER" 2>/dev/null)
-  CAPDROP=$(podman inspect -f '{{json .HostConfig.CapDrop}}' "$CONTAINER" 2>/dev/null)
+  CAPADD=$(inspect_field '{{json .HostConfig.CapAdd}}')
+  CAPDROP=$(inspect_field '{{json .HostConfig.CapDrop}}')
   # podman reports the long form, CAP_NET_ADMIN; accept the short form only as
   # a spelling, never as a different privilege.
   case "$CAPADD" in
@@ -331,7 +373,9 @@ else
     '["NET_ADMIN"]')     CAPWORD=NET_ADMIN ;;
     *)                   CAPWORD="" ;;
   esac
-  if [ -n "$CAPWORD" ] && { [ "$CAPDROP" = "null" ] || [ "$CAPDROP" = "[]" ]; }; then
+  if [ "$CAPADD" = "$INSPECT_FAILED" ] || [ "$CAPDROP" = "$INSPECT_FAILED" ]; then
+    bad "container facts could not be read (podman inspect $CONTAINER failed), so the capability set is unknown"
+  elif [ -n "$CAPWORD" ] && { [ "$CAPDROP" = "null" ] || [ "$CAPDROP" = "[]" ]; }; then
     ok "capabilities are exactly $CAPWORD (container namespace only)"
   else
     bad "capability set is not exactly NET_ADMIN/CAP_NET_ADMIN (CapAdd=$CAPADD CapDrop=$CAPDROP)"
