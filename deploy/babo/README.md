@@ -165,6 +165,20 @@ the Router's rule names, and not about a grep for loopback in the image.
    effective listener — not a grep for `127.0.0.1` across the image.
 6. The image ships a built UI: `babo/web/dist/index.html` exists **inside the
    installed package**, so `pip install` did not drop it.
+7. **No token issuer in the pod.** The image bakes no token environment
+   variable, and the pod's runtime config must not set `token_issue_path` or
+   `token_issue_secret` to anything non-empty. WireGuard identity is the
+   authentication by ruling; an application token would be a second, weaker
+   door. The check fails on either, names the variable or key, and never prints
+   a value.
+
+## When the image cannot be run
+
+Every in-image probe goes through a wrapper that returns a sentinel on a
+non-zero `podman run`. A row whose probe could not run is a **FAIL** — "the
+image could not be run, so X could not be checked" — never an empty result
+compared to an empty expectation and reported as a pass. An image that cannot
+start must look broken, not clean.
 
 ## What the check proves, and what it must leave unmet
 
