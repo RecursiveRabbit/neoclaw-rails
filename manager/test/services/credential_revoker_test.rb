@@ -20,10 +20,15 @@ class CredentialRevokerTest < ActiveSupport::TestCase
   def setup
     CredentialCheckout.delete_all
     @tmp = Dir.mktmpdir
+    # Surface.forgejo_admin_token fetches from ENV with no default on purpose
+    # (no token in the repo); the suite supplies a fake one.
+    @old_token = ENV["FORGEJO_ADMIN_TOKEN"]
+    ENV["FORGEJO_ADMIN_TOKEN"] = "test-token"
   end
 
   def teardown
     CredentialRevoker.http_override = nil
+    ENV["FORGEJO_ADMIN_TOKEN"] = @old_token
     FileUtils.rm_rf(@tmp)
   end
 
