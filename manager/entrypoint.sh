@@ -209,7 +209,6 @@ if $PODMAN image exists "$BABO_IMAGE" 2>/dev/null; then
         -e "BABO_PORT=${BABO_PORT}" \
         -e "NEOCLAW_MANAGER_URL=${NEOCLAW_MANAGER_URL:-http://10.0.0.3:9200}" \
         -e "NEOCLAW_OFFICE_BACKEND=manager" \
-        -e "RAILS_ENV=production" \
         "$BABO_IMAGE" 2>&1)
     if [ $? -eq 0 ]; then
         log "Babo started: ${BABO_ID:0:12}"
