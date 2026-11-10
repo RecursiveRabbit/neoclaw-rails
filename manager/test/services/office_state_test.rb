@@ -55,10 +55,50 @@ class OfficeStateTest < ActiveSupport::TestCase
     assert_equal "frozen", state_for("a-one")[:state]
   end
 
-  test "record without a pod is dead" do
+  test "record without a pod and no stand-down on record is dead" do
     record("a-one", "alive")
     OfficeState.inventory_override = []
+    row = state_for("a-one")
+    assert_equal "dead", row[:state]
+    assert_match(/no graceful stand-down/, row[:provenance][:note])
+  end
+
+  test "a successful stand-down with no pod reads frozen, not dead" do
+    record("a-one", "inactive")
+    AuditLog.record("SESSION_PROCESSED", instance_name: "a-one", identity: "a",
+                    detail: { ended_reason: "idle" }.to_json)
+    AuditLog.record("TEARDOWN", instance_name: "a-one", identity: "a",
+                    detail: "Clean teardown")
+    OfficeState.inventory_override = []
+
+    row = state_for("a-one")
+    assert_equal "frozen", row[:state]
+    assert_equal "idle", row[:provenance][:ended_reason]
+    assert_match(/work preserved/, row[:provenance][:note])
+  end
+
+  test "context-limit ending also reads frozen" do
+    record("a-one", "inactive")
+    AuditLog.record("SESSION_PROCESSED", instance_name: "a-one", identity: "a",
+                    detail: { ended_reason: "context_limit" }.to_json)
+    OfficeState.inventory_override = []
+    assert_equal "frozen", state_for("a-one")[:state]
+  end
+
+  test "a crash ending reads dead, not frozen" do
+    record("a-one", "inactive")
+    AuditLog.record("SESSION_PROCESSED", instance_name: "a-one", identity: "a",
+                    detail: { ended_reason: "crash" }.to_json)
+    OfficeState.inventory_override = []
     assert_equal "dead", state_for("a-one")[:state]
+  end
+
+  test "stand-down in flight is unknown and names the transition" do
+    record("a-one", "freezing")
+    OfficeState.inventory_override = [{ name: "a-one", state: "running" }]
+    row = state_for("a-one")
+    assert_equal "unknown", row[:state]
+    assert_match(/stand-down in progress/, row[:provenance][:note])
   end
 
   test "no record and no pod is unknown, not invented" do

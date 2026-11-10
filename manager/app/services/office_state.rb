@@ -69,17 +69,34 @@ class OfficeState
       paused = pod_running == "paused"
 
       if pod.nil?
-        # No pod. Dead if we believed it was alive or starting; unknown when
-        # there is no opinion at all (record missing too).
+        # No pod. Three honest outcomes, not one:
+        #   frozen — the agent stood down on purpose and its work was kept
+        #   dead   — the pod is gone with no record of a graceful ending
+        #   unknown— we have no opinion at all (no pod, no record)
         if record_state.nil?
           ["unknown", { podman: "absent", record: "absent", note: "no pod and no record" }]
         else
-          ["dead", { podman: "absent", record: record_state, note: "record without pod" }]
+          ending = last_ending(container.instance_name)
+          if ending
+            reason, detail = ending
+            ["frozen", { podman: "absent", record: record_state,
+                         ended_reason: reason,
+                         note: "stood down (#{reason}); work preserved" }]
+          else
+            ["dead", { podman: "absent", record: record_state,
+                       ended_reason: nil,
+                       note: "pod gone with no graceful stand-down on record" }]
+          end
         end
       elsif paused
         ["frozen", { podman: "paused", record: record_state }]
       elsif alive_in_podman
-        if %w[alive starting].include?(record_state)
+        if record_state == "freezing"
+          # Stand-down in flight: the pod is running but the agent is closing
+          # out. Neither alive nor frozen yet; say so instead of picking.
+          ["unknown", { podman: "running", record: record_state,
+                         note: "stand-down in progress (record freezing)" }]
+        elsif %w[alive starting].include?(record_state)
           [record_state == "starting" ? "starting" : "alive",
            { podman: "running", record: record_state }]
         else
@@ -92,6 +109,20 @@ class OfficeState
         ["dead", { podman: pod_running.empty? ? "unknown" : pod_running,
                    record: record_state }]
       end
+    end
+
+    # Did this instance stand down on purpose? The discriminator is the
+    # ended_reason the session processor wrote: idle/context_limit are a
+    # graceful stand-down (work preserved); crash is not; no row at all is not.
+    def last_ending(instance_name)
+      row = AuditLog.where(instance_name: instance_name, event: "SESSION_PROCESSED")
+                    .order(created_at: :desc).first
+      return nil unless row&.detail
+
+      reason = JSON.parse(row.detail)["ended_reason"] rescue nil
+      return nil unless %w[idle context_limit].include?(reason)
+
+      [reason, row.detail]
     end
 
     def live_credentials(name)
