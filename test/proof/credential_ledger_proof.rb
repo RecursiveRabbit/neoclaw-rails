@@ -11,17 +11,17 @@
 
 require "fileutils"
 
-PASS = 0
-FAIL = 0
+$pass = 0
+$fail = 0
 $stdout.sync = true
 def ok(msg)   = (puts "PASS  #{msg}")
 def bad(msg)  = (puts "FAIL  #{msg}")
 def check(msg)
   if yield
-    PASS += 1
+    $pass += 1
     ok(msg)
   else
-    FAIL += 1
+    $fail += 1
     bad(msg)
   end
 end
@@ -122,5 +122,5 @@ service.destroy
 FileUtils.rm_rf(root)
 
 puts "---"
-puts "PASS=#{PASS} FAIL=#{FAIL}"
-exit(FAIL.zero? ? 0 : 1)
+puts "PASS=#{$pass} FAIL=#{$fail}"
+exit($fail.zero? ? 0 : 1)
