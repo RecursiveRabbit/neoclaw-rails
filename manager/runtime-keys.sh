@@ -72,6 +72,8 @@ network:
   # The Manager's HTTP port — NOT the Router's API port. The Router's own
   # listener is router.api_port (8080); Babo talks to this one (9200).
   manager_port: 9200
+  babo_port: 8843
+  babo_health_port: 18790
   agent_subnet: "10.1.0.0/16"
   user_subnet: "10.2.0.0/16"
 

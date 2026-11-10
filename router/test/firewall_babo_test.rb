@@ -14,12 +14,14 @@ require_relative "../src/firewall"
 class FirewallBaboTest < Minitest::Test
   def base_config(overrides = {})
     cfg = {
-      "router"  => { "api_port" => 8080, "babo_port" => 8843 },
+      "router"  => { "api_port" => 8080 },
       "network" => {
         "host_ip" => "10.0.0.2",
         "manager_ip" => "10.0.0.3",
         "hub_ip" => "10.0.0.4",
         "babo_ip" => "10.0.0.5",
+        "babo_port" => 8843,
+        "babo_health_port" => 18790,
         "agent_subnet" => "10.1.0.0/16",
         "user_subnet" => "10.2.0.0/16"
       }
@@ -48,7 +50,17 @@ class FirewallBaboTest < Minitest::Test
   def test_host_may_reach_only_the_babo_ui_port
     out = rules(base_config)
     assert_includes out, "ip saddr 10.0.0.2 ip daddr 10.0.0.5 tcp dport 8843 accept"
-    assert_equal 2, out.lines.size, "exactly two forward rules: host->UI, babo->Manager"
+    assert_equal 3, out.lines.size,
+                 "exactly three forward rules: host->UI, manager->health, babo->Manager"
+  end
+
+  def test_manager_may_reach_only_the_babo_health_port
+    out = rules(base_config)
+    assert_includes out, "ip saddr 10.0.0.3 ip daddr 10.0.0.5 tcp dport 18790 accept"
+    refute_includes out, "ip saddr 10.0.0.3 ip daddr 10.0.0.5 tcp dport 8843 accept",
+                    "the Manager must not be admitted to the operator UI port"
+    assert_includes rules(base_config("network" => { "babo_health_port" => 18799 })),
+                    "tcp dport 18799 accept"
   end
 
   def test_no_babo_peer_means_no_rules_at_all
@@ -71,5 +83,6 @@ class FirewallBaboTest < Minitest::Test
 
     assert_includes forward, "10.0.0.2 ip daddr 10.0.0.5 tcp dport 8843 accept"
     assert_includes forward, "ip saddr 10.0.0.5 ip daddr 10.0.0.3 tcp dport 9200 accept"
+    assert_includes forward, "ip saddr 10.0.0.3 ip daddr 10.0.0.5 tcp dport 18790 accept"
   end
 end

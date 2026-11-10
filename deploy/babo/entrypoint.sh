@@ -78,7 +78,13 @@ if [ "${BIND}" != "10.0.0.5" ]; then
 fi
 log "wireguard up (${BIND})"
 
+# Two listeners, two keys (verified by dova in source, and by me at
+# babo/channels/websocket/runtime.py:180 + babo/cli/gateway_runtime.py:1109):
+#   channels.websocket.host:port  — the SPA, /api/*, /webui/bootstrap
+#   gateway.host:port             — the gateway's own GET /health
+# Both must be bound to the WG address; each keeps its own port.
 PORT="${BABO_PORT:-8843}"
+HEALTH_PORT="${BABO_HEALTH_PORT:-18790}"
 CONFIG="${BABO_RUNTIME_CONFIG:-/run/babo/config.json}"
 mkdir -p "$(dirname "$CONFIG")"
 if [ -n "$TRUSTED" ]; then
@@ -86,10 +92,12 @@ if [ -n "$TRUSTED" ]; then
 {
   "gateway": {
     "host": "${BIND}",
-    "port": ${PORT}
+    "port": ${HEALTH_PORT}
   },
   "channels": {
     "websocket": {
+      "host": "${BIND}",
+      "port": ${PORT},
       "trusted_sources": ["${TRUSTED}"]
     }
   }
@@ -100,16 +108,26 @@ else
 {
   "gateway": {
     "host": "${BIND}",
-    "port": ${PORT}
+    "port": ${HEALTH_PORT}
+  },
+  "channels": {
+    "websocket": {
+      "host": "${BIND}",
+      "port": ${PORT}
+    }
   }
 }
 EOF
 fi
-log "runtime config: ${CONFIG} (gateway.host=${BIND}, gateway.port=${PORT})"
+log "runtime config: ${CONFIG} (websocket ${BIND}:${PORT}, health ${BIND}:${HEALTH_PORT})"
 
 # The Manager endpoint is the ONLY outbound dependency. Unreachable -> the UI
 # shows its unknown banner; nothing falls back to a local path.
 log "manager endpoint: ${NEOCLAW_MANAGER_URL:-unset}"
 log "office backend:   ${NEOCLAW_OFFICE_BACKEND:-manager}"
 
+# `babo gateway`, not `babo webui`: the webui launcher's first-run setup forced
+# channels.websocket.host back to 127.0.0.1 and could mint token_issue_secret
+# (dova, 88cc75ef). The gateway verb never runs that setup path, and the config
+# above is the whole story.
 exec babo gateway --config "$CONFIG" --port "$PORT"

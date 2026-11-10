@@ -27,7 +27,10 @@ class Firewall
     @agent_subnet = config.dig("network", "agent_subnet") || "10.1.0.0/16"
     @user_subnet = config.dig("network", "user_subnet") || "10.2.0.0/16"
     @babo_ip = config.dig("network", "babo_ip")
-    @babo_port = (config.dig("router", "babo_port") || 8843).to_i
+    @babo_port = (config.dig("network", "babo_port") || 8843).to_i
+    # The UI and /health are two listeners with two ports. The Router admits
+    # the host to the UI only; the Manager may additionally reach /health.
+    @babo_health_port = (config.dig("network", "babo_health_port") || 18790).to_i
     @services = config["services"] || {}
     @wg_port = (config.dig("router", "wg_listen_port") || 51820).to_i
     @api_port = (config.dig("router", "api_port") || 8080).to_i
@@ -103,6 +106,7 @@ class Firewall
     # an accidental permission.
     <<~RULES.strip
       ip saddr #{@host_ip} ip daddr #{@babo_ip} tcp dport #{@babo_port} accept
+      ip saddr #{@manager_ip} ip daddr #{@babo_ip} tcp dport #{@babo_health_port} accept
       ip saddr #{@babo_ip} ip daddr #{@manager_ip} tcp dport #{@manager_port} accept
     RULES
   end

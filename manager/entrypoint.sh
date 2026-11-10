@@ -198,7 +198,13 @@ fi
 # UI port. Optional: skipped if the image is absent.
 
 BABO_IMAGE="${BABO_IMAGE:-localhost/neoclaw-babo:latest}"
+# Two listeners, two ports (dova's answer, verified in source): the UI is the
+# websocket channel (channels.websocket.host/port, default 127.0.0.1:8765) and
+# /health is the gateway's own small server (gateway.host/port, default
+# 127.0.0.1:18790). The Router admits the host to the UI port only; the
+# Manager may reach the health port.
 BABO_PORT="${BABO_PORT:-8843}"
+BABO_HEALTH_PORT="${BABO_HEALTH_PORT:-18790}"
 
 # Operator-session trust for the office UI. The ONLY source the Router admits
 # to Babo's port is the host's WG address, so that is the only value this may
@@ -237,6 +243,7 @@ if $PODMAN image exists "$BABO_IMAGE" 2>/dev/null && babo_trusted_source_ok "$BA
         --cap-add NET_ADMIN \
         -v "${HOST_RUNTIME}/babo:/etc/wireguard:ro,Z" \
         -e "BABO_PORT=${BABO_PORT}" \
+        -e "BABO_HEALTH_PORT=${BABO_HEALTH_PORT}" \
         -e "BABO_TRUSTED_SOURCES=${BABO_TRUSTED_SOURCE}" \
         -e "NEOCLAW_MANAGER_URL=${NEOCLAW_MANAGER_URL:-http://10.0.0.3:9200}" \
         -e "NEOCLAW_OFFICE_BACKEND=manager" \
@@ -244,8 +251,8 @@ if $PODMAN image exists "$BABO_IMAGE" 2>/dev/null && babo_trusted_source_ok "$BA
     if [ $? -eq 0 ]; then
         log "Babo started: ${BABO_ID:0:12}"
         for i in $(seq 1 20); do
-            if curl -sf "http://10.0.0.5:${BABO_PORT}/health" >/dev/null 2>&1; then
-                log "Babo is healthy (10.0.0.5:${BABO_PORT})"
+            if curl -sf "http://10.0.0.5:${BABO_HEALTH_PORT}/health" >/dev/null 2>&1; then
+                log "Babo is healthy (health listener 10.0.0.5:${BABO_HEALTH_PORT})"
                 break
             fi
             sleep 2
