@@ -64,8 +64,11 @@ class FirewallBaboTest < Minitest::Test
     fw.init_base!
 
     assert captured, "init_base! rendered nothing"
-    forward = captured[/chain forward \{.*?\n        \}/m]
-    assert forward, "no forward chain rendered"
+    start = captured.index("chain forward {")
+    stop  = captured.index("goto agents")
+    assert start && stop && stop > start, "forward chain not delimited by 'chain forward' -> 'goto agents'"
+    forward = captured[start...stop]
+
     assert_includes forward, "10.0.0.2 ip daddr 10.0.0.5 tcp dport 8843 accept"
     assert_includes forward, "ip saddr 10.0.0.5 ip daddr 10.0.0.3 tcp dport 9200 accept"
   end
