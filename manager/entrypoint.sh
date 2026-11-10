@@ -70,6 +70,7 @@ log "wireguard up (10.0.0.3)"
 log "cleaning up stale infrastructure..."
 $PODMAN rm -f wg-router 2>/dev/null || true
 $PODMAN rm -f neoclaw-hub 2>/dev/null || true
+$PODMAN rm -f neoclaw-babo 2>/dev/null || true
 
 # =====================================================================
 # Phase 3: Start Router
@@ -184,6 +185,46 @@ done
 if [ "$HUB_HEALTHY" = "false" ]; then
     log "WARNING: Hub did not become healthy"
     $PODMAN logs --tail 20 neoclaw-hub 2>&1 || true
+fi
+
+# =====================================================================
+# Phase 6.5: Start Babo (the office control plane UI)
+# =====================================================================
+# Babo is a mesh service peer like the Hub: its own network namespace, its
+# own WG identity (10.0.0.5), no podman socket, no host bind mounts, no
+# published host port. It reaches ONLY the Manager API; the Router admits
+# ONLY the host's WG address to its UI port. Optional: skipped if the image
+# is absent.
+
+BABO_IMAGE="${BABO_IMAGE:-localhost/neoclaw-babo:latest}"
+BABO_PORT="${BABO_PORT:-8843}"
+
+if $PODMAN image exists "$BABO_IMAGE" 2>/dev/null; then
+    log "starting Babo office UI (10.0.0.5:${BABO_PORT}, host-WG-only)..."
+    BABO_ID=$($PODMAN run -d \
+        --name neoclaw-babo \
+        --hostname neoclaw-babo \
+        --cap-add NET_ADMIN \
+        -v "${HOST_RUNTIME}/babo:/etc/wireguard:ro,Z" \
+        -e "BABO_PORT=${BABO_PORT}" \
+        -e "NEOCLAW_MANAGER_URL=${NEOCLAW_MANAGER_URL:-http://10.0.0.3:9200}" \
+        -e "NEOCLAW_OFFICE_BACKEND=manager" \
+        -e "RAILS_ENV=production" \
+        "$BABO_IMAGE" 2>&1)
+    if [ $? -eq 0 ]; then
+        log "Babo started: ${BABO_ID:0:12}"
+        for i in $(seq 1 20); do
+            if curl -sf "http://10.0.0.5:${BABO_PORT}/health" >/dev/null 2>&1; then
+                log "Babo is healthy (10.0.0.5:${BABO_PORT})"
+                break
+            fi
+            sleep 2
+        done
+    else
+        log "WARNING: Babo failed to start: $BABO_ID"
+    fi
+else
+    log "Babo image absent (${BABO_IMAGE}) — office UI not started"
 fi
 
 # =====================================================================

@@ -10,7 +10,21 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_10_000100) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_10_000200) do
+  create_table "office_actions", id: :string, force: :cascade do |t|
+    t.string "handle", null: false
+    t.string "action", null: false
+    t.string "reason"
+    t.string "state", default: "pending", null: false
+    t.text "detail"
+    t.datetime "started_at"
+    t.datetime "finished_at"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["handle", "created_at"], name: "index_office_actions_on_handle_and_created_at"
+    t.index ["state"], name: "index_office_actions_on_state"
+  end
+
   create_table "credential_checkouts", id: :string, force: :cascade do |t|
     t.string "scope", null: false
     t.string "instance_name", null: false

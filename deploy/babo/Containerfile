@@ -1,0 +1,46 @@
+# Babo — the office control plane, in a pod.
+#
+# Isolation properties (matching the Manager's, minus the privileges it does
+# not need):
+#   - no podman socket, no host bind mounts, no published host port
+#   - own network namespace; WG identity 10.0.0.5 rendered per Manager boot
+#   - listens only on its WG address; the Router admits only the host's WG
+#     address (10.0.0.2) to this port
+#   - NET_ADMIN is scoped to this container's own namespace, for wg0 only
+#     (same as the Hub) — NOT host networking, NOT host firewall
+#   - NEOCLAW_MANAGER_URL is the only outbound dependency; unreachable shows
+#     the UI's `unknown` banner, there is no local fallback
+#
+# Build (on the deployment host, from a checkout of the Babo slice):
+#   podman build -t localhost/neoclaw-babo:latest -f deploy/babo/Containerfile <babo-src>
+#
+# The source must contain the office slice (`office/backend.py` with
+# ManagerBackend and StubManager, and the Office view).
+
+FROM python:3.12-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      wireguard-tools iproute2 curl tini \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY pyproject.toml ./
+COPY babo/ ./babo/
+COPY webui/ ./webui/
+RUN pip install --no-cache-dir . || pip install --no-cache-dir -e .
+
+ENV BABO_PORT=8843 \
+    NEOCLAW_OFFICE_BACKEND=manager \
+    NEOCLAW_MANAGER_URL=http://10.0.0.3:9200 \
+    PYTHONUNBUFFERED=1
+
+COPY deploy/babo/entrypoint.sh /usr/local/bin/babo-entrypoint
+RUN chmod +x /usr/local/bin/babo-entrypoint
+
+EXPOSE 8843
+
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+  CMD curl -sf "http://127.0.0.1:${BABO_PORT}/health" || exit 1
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/babo-entrypoint"]

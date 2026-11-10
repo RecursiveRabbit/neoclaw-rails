@@ -50,6 +50,19 @@ Rails.application.routes.draw do
   get  "/identities", to: "api#identities"
 
   # =================================================================
+  # Office control plane (Babo → Manager). WireGuard is the authentication;
+  # the Router admits only the host WG source to this port.
+  # =================================================================
+
+  namespace :api do
+    namespace :v1 do
+      get  "office/state",                  to: "office#state"
+      post "office/agents/:handle/actions", to: "office#create_action", as: :office_agent_actions
+      get  "office/actions/:id",            to: "office#show_action", as: :office_action
+    end
+  end
+
+  # =================================================================
   # Relay → Manager
   # =================================================================
 

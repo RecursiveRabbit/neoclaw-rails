@@ -26,6 +26,8 @@ class Firewall
     @hub_ip = config.dig("network", "hub_ip")
     @agent_subnet = config.dig("network", "agent_subnet") || "10.1.0.0/16"
     @user_subnet = config.dig("network", "user_subnet") || "10.2.0.0/16"
+    @babo_ip = config.dig("network", "babo_ip")
+    @babo_port = (config.dig("router", "babo_port") || 8843).to_i
     @services = config["services"] || {}
     @wg_port = (config.dig("router", "wg_listen_port") || 51820).to_i
     @api_port = (config.dig("router", "api_port") || 8080).to_i
@@ -55,6 +57,7 @@ class Firewall
           type filter hook forward priority 0; policy drop;
           ip saddr @blocked drop
           ct state established,related accept
+          #{babo_forward_rules}
           ip saddr #{@manager_ip} ip daddr #{@host_ip} accept
           ip saddr #{@manager_ip} ip daddr #{@agent_subnet} accept
           ip saddr #{@host_ip} ip daddr #{@manager_ip} accept
@@ -83,6 +86,19 @@ class Firewall
         }
       }
     NFT
+  end
+
+  # The office UI (Babo) is reachable ONLY from the host's WG address, and
+  # Babo may reach ONLY the Manager API. No other source or destination.
+  # Absent babo_ip (old config), the block is empty — no accidental opening.
+  def babo_forward_rules
+    return "# no babo peer configured" unless @babo_ip
+
+    <<~RULES.strip
+      ip saddr #{@host_ip} ip daddr #{@babo_ip} tcp dport #{@babo_port} accept
+      ip saddr #{@babo_ip} ip daddr #{@manager_ip} tcp dport #{@api_port} accept
+      ip saddr #{@babo_ip} ip daddr #{@host_ip} tcp dport #{@api_port} accept
+    RULES
   end
 
   # Create firewall rules for a new agent.

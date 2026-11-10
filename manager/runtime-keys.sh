@@ -41,6 +41,7 @@ render_boot_runtime() {
     ROUTER_PUBKEY=$(_gen_keypair "$RUNTIME_DIR/router/private.key")
     MANAGER_PUBKEY=$(_gen_keypair "$RUNTIME_DIR/manager/private.key")
     HUB_PUBKEY=$(_gen_keypair "$RUNTIME_DIR/hub/private.key")
+    BABO_PUBKEY=$(_gen_keypair "$RUNTIME_DIR/babo/private.key")
     BOOT_ID=$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')
 
     cat > "$RUNTIME_DIR/router/config.yml" <<EOF
@@ -56,6 +57,7 @@ network:
   host_ip: "10.0.0.2"
   manager_ip: "10.0.0.3"
   hub_ip: "10.0.0.4"
+  babo_ip: "10.0.0.5"
   agent_subnet: "10.1.0.0/16"
   user_subnet: "10.2.0.0/16"
 
@@ -69,6 +71,9 @@ peers:
   hub:
     pubkey: "${HUB_PUBKEY}"
     allowed_ips: "10.0.0.4/32"
+  babo:
+    pubkey: "${BABO_PUBKEY}"
+    allowed_ips: "10.0.0.5/32"
 EOF
 
     # Public, static fragments (baked at build time; no secrets in them).
@@ -103,6 +108,19 @@ PersistentKeepalive = 25
 EOF
     chmod 600 "$RUNTIME_DIR/hub/wg0.conf"
 
+    cat > "$RUNTIME_DIR/babo/wg0.conf" <<EOF
+[Interface]
+PrivateKey = $(cat "$RUNTIME_DIR/babo/private.key")
+Address = 10.0.0.5/32
+
+[Peer]
+PublicKey = ${ROUTER_PUBKEY}
+Endpoint = ${bridge}:${wg_port}
+AllowedIPs = 10.0.0.0/8
+PersistentKeepalive = 25
+EOF
+    chmod 600 "$RUNTIME_DIR/babo/wg0.conf"
+
     # Public handoff for the host: run.sh re-points nc-host from this.
     printf '%s\n' "$ROUTER_PUBKEY" > "$RUNTIME_DIR/router.pubkey"
     chmod 644 "$RUNTIME_DIR/router.pubkey"
@@ -112,5 +130,5 @@ EOF
 EOF
     chmod 644 "$RUNTIME_DIR/boot.json"
 
-    export ROUTER_PUBKEY MANAGER_PUBKEY HUB_PUBKEY BOOT_ID
+    export ROUTER_PUBKEY MANAGER_PUBKEY HUB_PUBKEY BABO_PUBKEY BOOT_ID
 }

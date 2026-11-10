@@ -1,0 +1,95 @@
+require "test_helper"
+
+class OfficeStateTest < ActiveSupport::TestCase
+  def setup
+    @old_boot = ENV["NC_BOOT_ID"] # unused, kept for symmetry
+    Container.delete_all
+    CredentialCheckout.delete_all
+    OfficeState.inventory_override = []
+  end
+
+  def teardown
+    OfficeState.inventory_override = nil
+    Container.delete_all
+    CredentialCheckout.delete_all
+  end
+
+  def record(name, state)
+    Container.create!(instance_name: name, identity: name.split("-").first,
+                      channel: "general", state: state, wg_address: "10.1.0.9")
+  end
+
+  def state_for(name)
+    OfficeState.as_api[:agents].find { |a| a[:handle] == name }
+  end
+
+  test "state is a closed lowercase set" do
+    record("a-one", "alive")
+    OfficeState.inventory_override = [{ name: "a-one", state: "running", ip: "10.1.0.9" }]
+
+    api = OfficeState.as_api
+    assert_equal %w[alive frozen starting dead unknown], api[:states]
+    api[:agents].each do |agent|
+      assert_includes OfficeState::STATES, agent[:state]
+      assert_equal agent[:state], agent[:state].downcase
+    end
+  end
+
+  test "podman running + record alive is alive" do
+    record("a-one", "alive")
+    OfficeState.inventory_override = [{ name: "a-one", state: "running", ip: "10.1.0.9" }]
+    row = state_for("a-one")
+    assert_equal "alive", row[:state]
+    assert_equal "running", row[:provenance][:podman]
+  end
+
+  test "record starting stays starting" do
+    record("a-one", "starting")
+    OfficeState.inventory_override = [{ name: "a-one", state: "running" }]
+    assert_equal "starting", state_for("a-one")[:state]
+  end
+
+  test "podman paused is frozen" do
+    record("a-one", "alive")
+    OfficeState.inventory_override = [{ name: "a-one", state: "paused" }]
+    assert_equal "frozen", state_for("a-one")[:state]
+  end
+
+  test "record without a pod is dead" do
+    record("a-one", "alive")
+    OfficeState.inventory_override = []
+    assert_equal "dead", state_for("a-one")[:state]
+  end
+
+  test "no record and no pod is unknown, not invented" do
+    OfficeState.inventory_override = [{ name: "ghost", state: "exited" }]
+    row = state_for("ghost")
+    assert_equal "dead", row[:state]
+  end
+
+  test "podman running but record disagrees is unknown with provenance" do
+    record("a-one", "inactive")
+    OfficeState.inventory_override = [{ name: "a-one", state: "running" }]
+    row = state_for("a-one")
+    assert_equal "unknown", row[:state]
+    assert_match(/disagrees/, row[:provenance][:note])
+  end
+
+  test "an unrecognised podman state is never reported as alive" do
+    record("a-one", "alive")
+    OfficeState.inventory_override = [{ name: "a-one", state: "weird" }]
+    assert_equal "dead", state_for("a-one")[:state]
+  end
+
+  test "live credentials are listed by id and scope, never by value" do
+    record("a-one", "alive")
+    OfficeState.inventory_override = [{ name: "a-one", state: "running" }]
+    row = CredentialCheckout.issue!(scope: "ssh-key", instance_name: "a-one",
+                                    revoke_handle: "file:/tmp/x")
+    listed = state_for("a-one")[:live_credentials]
+    assert_equal 1, listed.size
+    assert_equal row.id, listed.first[:id]
+    assert_equal "ssh-key", listed.first[:scope]
+    refute listed.first.key?(:revoke_handle)
+  end
+end
