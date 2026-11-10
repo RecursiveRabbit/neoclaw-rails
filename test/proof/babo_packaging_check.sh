@@ -128,16 +128,20 @@ fi
 # Dova's gate issues tokens only via /webui/bootstrap for trusted peers. The
 # static issue route (token_issue_path/token_issue_secret) is the other way in;
 # in a pod it must be unset, or the WG rule stops being the only door.
-ISSUE=$(run_in_image python3 -c "
+ISSUE=$(probe python3 -c "
 from babo.channels.websocket.runtime import WebSocketConfig as W
 c = W()
-print(repr(c.token_issue_path), repr(c.token_issue_secret))" 2>/dev/null)
-case "$ISSUE" in
-  "None None"|"'None' 'None'"|"'' ''") ok "no static token-issuance route configured in the image defaults" ;;
-  "")  bad "could not read token_issue_path/token_issue_secret from the image" ;;
-  *)   bad "image defaults configure a static token issue route: $ISSUE" ;;
-esac
-ENVISSUE=$(podman run --rm --entrypoint /bin/sh "$IMAGE" -c 'env' 2>/dev/null | grep -iE '(TOKEN_ISSUE|TOKEN_PATH)' || true)
+print(repr(c.token_issue_path), repr(c.token_issue_secret))")
+if [ "$ISSUE" = "$PROBE_FAILED" ]; then
+  bad "image could not be run, so the token-issuance defaults could not be read"
+else
+  case "$ISSUE" in
+    "None None"|"'None' 'None'"|"'' ''") ok "no static token-issuance route configured in the image defaults" ;;
+    "")  bad "could not read token_issue_path/token_issue_secret from the image" ;;
+    *)   bad "image defaults configure a static token issue route: $ISSUE" ;;
+  esac
+fi
+ENVISSUE=$(probe /bin/sh -c 'env' | grep -iE '(TOKEN_ISSUE|TOKEN_PATH)' || true)
 if [ -z "$ENVISSUE" ]; then
   ok "no TOKEN_ISSUE/TOKEN_PATH in the image environment"
 else
@@ -153,6 +157,8 @@ for BADVAL in "0.0.0.0/0" "10.0.0.0/8" "10.0.0.2" "::/0" "example.internal"; do
   set -e 2>/dev/null || true
   if [ "$R" -ne 0 ] && echo "$O" | grep -qF "$BADVAL"; then
     ok "refuses trusted source '$BADVAL' by name (rc=$R)"
+  elif [ -z "$O" ]; then
+    bad "image could not be run, so the trusted-source refusal for '$BADVAL' could not be checked (rc=$R)"
   else
     bad "did not refuse trusted source '$BADVAL' by name (rc=$R): $(echo "$O" | tail -1)"
   fi
