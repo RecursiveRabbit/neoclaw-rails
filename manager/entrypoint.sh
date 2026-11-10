@@ -191,10 +191,11 @@ fi
 # Phase 6.5: Start Babo (the office control plane UI)
 # =====================================================================
 # Babo is a mesh service peer like the Hub: its own network namespace, its
-# own WG identity (10.0.0.5), no podman socket, no host bind mounts, no
-# published host port. It reaches ONLY the Manager API; the Router admits
-# ONLY the host's WG address to its UI port. Optional: skipped if the image
-# is absent.
+# own WG identity (10.0.0.5), no podman socket, no published host port, and
+# exactly ONE host bind mount — this boot's runtime dir, read-only, for its
+# wg0 config and key (there is no other path to a per-boot key). It reaches
+# ONLY the Manager API; the Router admits ONLY the host's WG address to its
+# UI port. Optional: skipped if the image is absent.
 
 BABO_IMAGE="${BABO_IMAGE:-localhost/neoclaw-babo:latest}"
 BABO_PORT="${BABO_PORT:-8843}"
