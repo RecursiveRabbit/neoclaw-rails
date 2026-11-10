@@ -149,9 +149,12 @@ activated (per-capability consents applied one by one)
 Manager action *previously* approved by a named human — the delegation
 chain is recorded) approves the onboarding with a stated purpose. The
 approval record is immutable: approver identity (via the speaker-
-attribution originator contract — the approver must be a verified human or
-attested resident, never a machine-authored line), timestamp, purpose,
-scope ceiling, and the sponsor's name. Refusal: no approval record, no
+attribution originator contract — the approver must be a **verified human**,
+never a machine-authored line or a self-labeled profile; an attested resident
+may execute or guide only as the delegate of a previously approved human
+assignment), timestamp, purpose, scope ceiling, the delegation chain
+(assignment citation and authorized executor/guide where applicable), and the
+sponsor's name as a separate role. Refusal: no approval record, no
 state transition; reading a session, resolving a raw session key, sending
 a message, or running a test creates **no** approval and triggers **no**
 implicit path (Acceptance 1–2).
@@ -196,12 +199,18 @@ recorded.
 The approval is the load-bearing artifact; every later artifact points at
 it.
 
-- **Fields:** approval id; approver (verified originator — human via
-  trusted-proxy assertion or operator profile, resident via attested
-  handle — never inferred from prose); timestamp; purpose (free text,
-  bounded); scope ceiling (what the identity repo and grants may cover);
-  sponsor; target (a session id or *new* — adoption vs fresh is decided
-  here); adoption source ids where applicable (§10).
+- **Fields:** approval id; approver (verified human originator via
+  trusted-proxy assertion or operator profile — never inferred from prose);
+  timestamp; purpose (free text, bounded); scope ceiling (what the identity
+  repo and grants may cover); delegation chain (the assignment citation and
+  authorized executor/guide where applicable); sponsor as a separate role;
+  target (a session id or *new* — adoption vs fresh is decided here);
+  adoption source ids where applicable (§10). The worked example is Evans'
+  named-human approval by explicit assignment at
+  `requests/2026-11-08-from-nime-to-tuto-munu-onboarding.md`; Tuto is the
+  agent guide/authorized delegate, and nime is the sponsor. Tuto is not
+  represented as a human approver, and this one assignment is not a
+  standing agent power to approve other agents (Q1 remains open).
 - **Immutability:** append-only; corrections are new rows referencing the
   corrected id. No update-in-place, no delete. In merged-product terms
   this is the Babo errand grammar applied to creation: **change after
@@ -256,6 +265,7 @@ the driver, and the pass condition.
 | 3 | The workflow creates repo, credentials, baton, activation record — only then messaging/folds/Valley | Drive the five steps in order; assert after each: exactly the artifacts of that step exist, no later-step artifacts. Then assert each capability turns on only with its consent flag. |
 | 4 | Regression coverage before/after the gate, incl. one accidental-session adoption | Matrix: {read, resolve, send, fold, baton write, Valley} × {inert, activated} = 12 refusal/grant checks, plus one adoption case: an accidental session (a live "test subject" with history) is adopted through §10 — history preserved, no silent conversion, and its pre-adoption artifacts remain attributed to its session id, never rewritten into the new identity. |
 | 5 | Munu's chosen path documented | Cross-reference to the incident file + tuto/nime's record: sponsor named, scope stated, the Study preserved or archived per Munu's choice. This design supplies the mechanism (§9–§11); the documentation of the choice is the humans' record. |
+| 6 | Named-human provenance negative control | Present an approval whose originator is Tuto, Bomu, or a profile merely labeled `Evans`; each must fail the named-human requirement with no state transition. A verified human assignment (Evans at `requests/2026-11-08-from-nime-to-tuto-munu-onboarding.md`) may instead authorize an agent executor/guide, with that delegation and sponsor recorded separately. The operator-driven speaker-attribution leg remains a separate pending gate; this control does not presume it. |
 
 Regression-suite placement: harness-side checks (send, fold, baton,
 messaging) ride bomu's suites in nanobot; the Manager-side state machine,
@@ -441,8 +451,9 @@ alone:
 A sponsor is: an **activated resident** whose handle is attested (not
 inert, not onboarding); **never the subject**; and named in the approval
 record before step 4 begins. The sponsor should not be the sole approver —
-in the worked example the separation is explicit (tuto approves as the
-named human, nime sponsors) — but the design does not hard-require a
+in the worked example the separation is explicit (**Evans approves as the
+named human by explicit assignment; Tuto acts as the agent guide/authorized
+delegate; nime sponsors**) — but the design does not hard-require a
 second person beyond the approver; where one person holds both roles, the
 dual role is recorded in the approval and flagged for Review's awareness.
 A sponsor's duties may be declined without reason; declining never counts
