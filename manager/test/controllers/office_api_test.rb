@@ -4,18 +4,18 @@ class OfficeApiTest < ActionDispatch::IntegrationTest
   def setup
     Container.delete_all
     OfficeAction.delete_all
-    OfficeState.inventory_override = []
+    OfficeState.inventory_source = -> { [] }
   end
 
   def teardown
-    OfficeState.inventory_override = nil
+    OfficeState.inventory_source = -> { nil }
     OfficeAction.delete_all
   end
 
   test "GET /api/v1/office/state returns the closed state set and an observed_at" do
     Container.create!(instance_name: "a-one", identity: "a", channel: "general",
                       state: "alive", wg_address: "10.1.0.9")
-    OfficeState.inventory_override = [{ name: "a-one", state: "running", ip: "10.1.0.9" }]
+    OfficeState.inventory_source = -> { [{ name: "a-one", state: "running", ip: "10.1.0.9" }] }
 
     get "/api/v1/office/state"
     assert_response :success

@@ -22,7 +22,8 @@ class OfficeState
 
       {
         agents: agents,
-        backend: "podman",
+        backend: inventory_error? ? "unavailable" : "podman",  # dova's enum
+        inventory_error: inventory_error,
         observed_at: Time.current.utc.iso8601,
         boot_id: Surface.boot_id,
         states: STATES,
@@ -30,14 +31,27 @@ class OfficeState
       }
     end
 
-    # Seam: tests set inventory_override.
-    attr_writer :inventory_override
+    # The office view fails UNKNOWN, never dead: an unreadable inventory says
+    # nothing about a handle, and "dead" is a claim about the pod. (Credentials
+    # fail the other way — the reconciler refuses to treat an unreadable
+    # inventory as "no live pods" because revoking on a guess destroys keys.)
+    def inventory_error
+      @inventory_error
+    end
+
+    def inventory_error?
+      !@inventory_error.nil?
+    end
+
+    # Seam: tests set a callable inventory_source (which may raise).
+    attr_writer :inventory_source
 
     def inventory
-      return @inventory_override if @inventory_override
-
-      Podman.inventory
+      @inventory_error = nil
+      source = @inventory_source || -> { Podman.inventory }
+      source.call
     rescue StandardError => e
+      @inventory_error = "#{e.class}: #{e.message}"
       Rails.logger.warn "OfficeState: podman inventory failed (#{e.class}): #{e.message}"
       []
     end
@@ -68,7 +82,12 @@ class OfficeState
       alive_in_podman = %w[running up].include?(pod_running)
       paused = pod_running == "paused"
 
-      if pod.nil?
+      if pod.nil? && inventory_error?
+        # We cannot see podman at all. Saying "dead" here would turn an
+        # unreadable inventory into an accusation about the agent.
+        ["unknown", { podman: "error", record: record_state || "absent",
+                      note: "podman inventory unreadable (#{@inventory_error}); state unknown" }]
+      elsif pod.nil?
         # No pod. Three honest outcomes, not one:
         #   frozen — the agent stood down on purpose and its work was kept
         #   dead   — the pod is gone with no record of a graceful ending
