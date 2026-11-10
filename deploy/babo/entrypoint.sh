@@ -17,6 +17,46 @@ set -eu
 
 log() { echo "[babo] $*"; }
 
+# --- Operator-session trust (checked before anything expensive) ------------
+# The WebUI listener is the websocket channel (babo/channels/websocket/
+# runtime.py: WebSocketConfig), so the trust list belongs there, not on
+# gateway.*. Exactly one source is legitimate: the address the Router admits
+# to this port. Anything else — a bare IP, a shorter prefix, 0.0.0.0/0, ::/0,
+# a hostname, a reserved/unspecified address — is refused BY NAME rather than
+# trimmed into something that looks safer than it is.
+TRUSTED="${BABO_TRUSTED_SOURCES:-}"
+trusted_ok() {
+    case "$1" in
+        *[!0-9./]*) return 1 ;;                 # hostname or junk
+    esac
+    case "$1" in
+        */32) : ;;
+        *)    return 1 ;;                       # bare IP, /8, /0, ...
+    esac
+    local ip="${1%/32}" octet
+    local IFS=.
+    set -- $ip
+    [ $# -eq 4 ] || return 1
+    for octet in "$@"; do
+        case "$octet" in ''|*[!0-9]*) return 1 ;; esac
+        [ "$octet" -le 255 ] || return 1
+    done
+    # unspecified / loopback / multicast / reserved are not operator sources
+    case "$ip" in
+        0.*|127.*|2[2-5][0-9].*) return 1 ;;
+    esac
+    return 0
+}
+
+if [ -z "$TRUSTED" ]; then
+    log "WARNING: BABO_TRUSTED_SOURCES is unset — no operator source is trusted; the UI will only answer loopback, which nothing on the mesh can reach"
+elif ! trusted_ok "$TRUSTED"; then
+    log "FATAL: refusing to start with trusted source '${TRUSTED}' — exact IPv4 /32 required; open, shortened, reserved or malformed values are refused, not trimmed"
+    exit 1
+else
+    log "WebUI session sources: ${TRUSTED}"
+fi
+
 if [ ! -f /etc/wireguard/wg0.conf ]; then
     log "FATAL: /etc/wireguard/wg0.conf not mounted (per-boot key missing)"
     exit 1
@@ -41,7 +81,22 @@ log "wireguard up (${BIND})"
 PORT="${BABO_PORT:-8843}"
 CONFIG="${BABO_RUNTIME_CONFIG:-/run/babo/config.json}"
 mkdir -p "$(dirname "$CONFIG")"
-cat > "$CONFIG" <<EOF
+if [ -n "$TRUSTED" ]; then
+    cat > "$CONFIG" <<EOF
+{
+  "gateway": {
+    "host": "${BIND}",
+    "port": ${PORT}
+  },
+  "channels": {
+    "websocket": {
+      "trusted_sources": ["${TRUSTED}"]
+    }
+  }
+}
+EOF
+else
+    cat > "$CONFIG" <<EOF
 {
   "gateway": {
     "host": "${BIND}",
@@ -49,6 +104,7 @@ cat > "$CONFIG" <<EOF
   }
 }
 EOF
+fi
 log "runtime config: ${CONFIG} (gateway.host=${BIND}, gateway.port=${PORT})"
 
 # The Manager endpoint is the ONLY outbound dependency. Unreachable -> the UI

@@ -200,7 +200,36 @@ fi
 BABO_IMAGE="${BABO_IMAGE:-localhost/neoclaw-babo:latest}"
 BABO_PORT="${BABO_PORT:-8843}"
 
-if $PODMAN image exists "$BABO_IMAGE" 2>/dev/null; then
+# Operator-session trust for the office UI. The ONLY source the Router admits
+# to Babo's port is the host's WG address, so that is the only value this may
+# carry. Validated here, where the Router's admitted address is known, and
+# again inside the pod; a loose value is refused by name rather than trimmed
+# into something that looks safer than it is.
+HOST_WG_ADDR="${HOST_WG_IP:-10.0.0.2}"
+BABO_TRUSTED_SOURCE="${BABO_TRUSTED_SOURCE:-${HOST_WG_ADDR}/32}"
+
+babo_trusted_source_ok() {
+    local v="$1"
+    # exact IPv4 /32 only: no hostnames, no other prefixes, nothing open
+    case "$v" in
+        *[!0-9./]*) return 1 ;;                       # hostname or junk
+    esac
+    case "$v" in
+        */32) : ;;
+        *)    return 1 ;;                             # bare IP, /8, /0, …
+    esac
+    [ "$v" = "${HOST_WG_ADDR}/32" ] || return 1        # not the admitted address
+    return 0
+}
+
+if ! babo_trusted_source_ok "$BABO_TRUSTED_SOURCE"; then
+    log "FATAL: refusing to start Babo with trusted source '${BABO_TRUSTED_SOURCE}' —"
+    log "       the Router admits only ${HOST_WG_ADDR}/32 to the office UI; open or malformed values are not trimmed, they are refused"
+else
+    log "Babo trusted source: ${BABO_TRUSTED_SOURCE} (the only address the Router admits)"
+fi
+
+if $PODMAN image exists "$BABO_IMAGE" 2>/dev/null && babo_trusted_source_ok "$BABO_TRUSTED_SOURCE"; then
     log "starting Babo office UI (10.0.0.5:${BABO_PORT}, host-WG-only)..."
     BABO_ID=$($PODMAN run -d \
         --name neoclaw-babo \
@@ -208,6 +237,7 @@ if $PODMAN image exists "$BABO_IMAGE" 2>/dev/null; then
         --cap-add NET_ADMIN \
         -v "${HOST_RUNTIME}/babo:/etc/wireguard:ro,Z" \
         -e "BABO_PORT=${BABO_PORT}" \
+        -e "BABO_TRUSTED_SOURCES=${BABO_TRUSTED_SOURCE}" \
         -e "NEOCLAW_MANAGER_URL=${NEOCLAW_MANAGER_URL:-http://10.0.0.3:9200}" \
         -e "NEOCLAW_OFFICE_BACKEND=manager" \
         "$BABO_IMAGE" 2>&1)
@@ -223,6 +253,8 @@ if $PODMAN image exists "$BABO_IMAGE" 2>/dev/null; then
     else
         log "WARNING: Babo failed to start: $BABO_ID"
     fi
+elif $PODMAN image exists "$BABO_IMAGE" 2>/dev/null; then
+    log "Babo not started: invalid trusted source (see FATAL above)"
 else
     log "Babo image absent (${BABO_IMAGE}) — office UI not started"
 fi

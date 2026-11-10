@@ -104,6 +104,40 @@ else
   bad "container started with no mounted wg0.conf"
 fi
 
+# --- 3b. No alternate token-issuance door in the pod -------------------
+# Dova's gate issues tokens only via /webui/bootstrap for trusted peers. The
+# static issue route (token_issue_path/token_issue_secret) is the other way in;
+# in a pod it must be unset, or the WG rule stops being the only door.
+ISSUE=$(run_in_image python3 -c "
+from babo.channels.websocket.runtime import WebSocketConfig as W
+c = W()
+print(repr(c.token_issue_path), repr(c.token_issue_secret))" 2>/dev/null)
+case "$ISSUE" in
+  "None None"|"'None' 'None'"|"'' ''") ok "no static token-issuance route configured in the image defaults" ;;
+  "")  bad "could not read token_issue_path/token_issue_secret from the image" ;;
+  *)   bad "image defaults configure a static token issue route: $ISSUE" ;;
+esac
+ENVISSUE=$(podman run --rm --entrypoint /bin/sh "$IMAGE" -c 'env' 2>/dev/null | grep -iE '(TOKEN_ISSUE|TOKEN_PATH)' || true)
+if [ -z "$ENVISSUE" ]; then
+  ok "no TOKEN_ISSUE/TOKEN_PATH in the image environment"
+else
+  bad "image environment carries a token issuance variable: $(echo "$ENVISSUE" | tr '\n' ' ')"
+fi
+
+# --- 3c. Trusted-source handling is fail-closed in the pod -------------
+# Cheap checks first: an invalid value must be refused BEFORE anything else,
+# with the value named, and without needing a mounted wg0.conf.
+for BADVAL in "0.0.0.0/0" "10.0.0.0/8" "10.0.0.2" "::/0" "example.internal"; do
+  set +e
+  O=$(podman run --rm -e "BABO_TRUSTED_SOURCES=$BADVAL" "$IMAGE" 2>&1); R=$?
+  set -e 2>/dev/null || true
+  if [ "$R" -ne 0 ] && echo "$O" | grep -qF "$BADVAL"; then
+    ok "refuses trusted source '$BADVAL' by name (rc=$R)"
+  else
+    bad "did not refuse trusted source '$BADVAL' by name (rc=$R): $(echo "$O" | tail -1)"
+  fi
+done
+
 # --- 4. The installed package ships a built UI -------------------------
 UI=$(run_in_image python3 -c "
 import os, babo.web
@@ -132,6 +166,11 @@ ENTRY_CODE=$(run_in_image /bin/sh -c 'grep -v "^[[:space:]]*#" /usr/local/bin/ba
 if [ -z "$ENTRY_CODE" ]; then
   bad "image has no /usr/local/bin/babo-entrypoint (or it is all comments)"
 else
+  if echo "$ENTRY_CODE" | grep -q '"websocket"' && echo "$ENTRY_CODE" | grep -q '"trusted_sources"'; then
+    ok "entrypoint renders channels.websocket.trusted_sources"
+  else
+    bad "entrypoint does not render channels.websocket.trusted_sources"
+  fi
   if echo "$ENTRY_CODE" | grep -q "gateway.host" && echo "$ENTRY_CODE" | grep -q "ip -4 -o addr show dev wg0"; then
     ok "entrypoint renders gateway.host from the wg0 address"
   else
