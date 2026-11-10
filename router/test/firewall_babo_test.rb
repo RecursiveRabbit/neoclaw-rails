@@ -56,10 +56,17 @@ class FirewallBaboTest < Minitest::Test
     assert_equal "# no babo peer configured", out.strip
   end
 
+  # init_base! shells out to nft; capture the rendered text instead of running it.
   def test_babo_rules_are_in_the_forward_chain_not_input
-    cfg = base_config
-    table = Firewall.new(cfg).init_base!
-    assert_includes table, "10.0.0.2 ip daddr 10.0.0.5 tcp dport 8843 accept"
-    assert_includes table, "ip saddr 10.0.0.5 ip daddr 10.0.0.3 tcp dport 9200 accept"
+    fw = Firewall.new(base_config)
+    captured = nil
+    fw.define_singleton_method(:nft!) { |cmd| captured = cmd }
+    fw.init_base!
+
+    assert captured, "init_base! rendered nothing"
+    forward = captured[/chain forward \{.*?\n        \}/m]
+    assert forward, "no forward chain rendered"
+    assert_includes forward, "10.0.0.2 ip daddr 10.0.0.5 tcp dport 8843 accept"
+    assert_includes forward, "ip saddr 10.0.0.5 ip daddr 10.0.0.3 tcp dport 9200 accept"
   end
 end
