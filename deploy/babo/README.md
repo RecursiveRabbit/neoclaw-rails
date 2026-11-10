@@ -11,11 +11,11 @@ The exact boundaries of this slice are in the commission thread:
 sections "Munu's slice — interface and file boundaries" and "Handoff for the
 Babo-in-pod slice".
 
-**Files in this slice:** `Containerfile` (which contains the entrypoint),
-`README.md`, and `test/proof/babo_packaging_check.sh`. The entrypoint is not a
-separate file because the build context is the Babo source root and `COPY`
-cannot reach outside it — one artifact, no staged context, no second copy to
-drift.
+**Files in this slice:** `Containerfile`, `entrypoint.sh`, `README.md`, and
+`test/proof/babo_packaging_check.sh`. `entrypoint.sh` is the readable source of
+truth — lintable, diffable, `bash -n`-able. The Containerfile embeds its bytes
+as base64 (see below), and the packaging check fails if the image's copy and
+the file ever differ.
 Everything the pod touches on the host side (mount rendering, caps, the launch
 line, the Router rule) belongs to the Manager's lane, not here.
 
@@ -28,17 +28,25 @@ directory:
 podman build -t localhost/neoclaw-babo:latest -f deploy/babo/Containerfile <babo-src>
 ```
 
-The Containerfile embeds the entrypoint with a heredoc `RUN`, so the build
-needs a modern builder (podman ≥ 4.6 / buildah ≥ 1.31). If a builder without
-heredoc support is ever required, the honest fallback is a staged context
-(`deploy/` + Babo source in one directory) with the README's build line changed
-to name it — not a silent `COPY` that cannot resolve.
+The entrypoint is embedded as a **base64 blob**, not a heredoc `RUN`: the
+deployment host's buildah (1.33, podman 4.9) cannot parse Dockerfile heredocs,
+and the build must not require a newer builder than the box has. To change the
+entrypoint: edit `entrypoint.sh`, then regenerate the blob with
+`base64 -w0 deploy/babo/entrypoint.sh` and paste it into the `RUN echo … |
+base64 -d` line. The check compares the image's copy against `entrypoint.sh`
+by sha256 and fails on drift, so the two cannot silently separate.
 
-Two stages: a `oven/bun:1.2-slim` stage builds `webui/` and emits
-`babo/web/dist` (`bun install --frozen-lockfile && bun run build`); the
-`python:3.12-slim` runtime stage installs Babo with that bundle in place. The
-image therefore builds from source and does not depend on a `dist` artifact
-living anywhere outside it.
+Two stages: an `oven/bun:1.2-slim` stage builds the frontend, and the
+`python:3.12-slim` runtime stage installs Babo with that bundle in place, so
+the image builds from source and does not depend on a `dist` artifact living
+anywhere outside it.
+
+The frontend stage **mirrors the monorepo layout** (`/repo/webui`,
+`/repo/babo/channels`, `/repo/packages`) instead of flattening `webui/` into
+the root, because `webui/vite.config.ts` writes its output to
+`../babo/web/dist` resolved from its own directory. Flattened, the bundle lands
+outside the tree and the stage's own `test -f /repo/babo/web/dist/index.html`
+fails — which is the intended way to notice.
 
 ## How the Manager launches it (Phase 6.5 of `manager/entrypoint.sh` @ `ed1f6eb`)
 
@@ -144,7 +152,10 @@ the Router's rule names, and not about a grep for loopback in the image.
 2. Exactly one bind mount at run time: read-only, source under
    `$HOST_SPAWN_DIR/runtime/babo`, target `/etc/wireguard`. Any other mount is
    a failure.
-3. No published port; no `--network host`.
+3. No published port; no `--network host`. (The container's `CapAdd` reads
+   back as `CAP_NET_ADMIN` from `podman inspect`; the flag is spelled
+   `--cap-add NET_ADMIN`. Both spellings are the same single capability, and
+   the check accepts either spelling but nothing else.)
 4. The effective listener is the WG address: a probe from the host WG address
    gets `200`; a loopback probe is refused; an off-source probe is refused by
    the Router.

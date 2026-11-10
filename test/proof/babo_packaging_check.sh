@@ -56,17 +56,25 @@ ok()    { PASS=$((PASS+1));  echo "PASS   $*"; }
 bad()   { FAIL=$((FAIL+1));  echo "FAIL   $*"; }
 unmet() { UNMET=$((UNMET+1)); echo "UNMET  $*"; }
 
-run_in_image() { # entrypoint, shell command
-  podman run --rm --entrypoint "$1" "$IMAGE" -c "$2" 2>/dev/null
+run_in_image() { # entrypoint, then that program's own arguments
+  local entry="$1"; shift
+  podman run --rm --entrypoint "$entry" "$IMAGE" "$@" 2>/dev/null
 }
+
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+REPO_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
+ENTRY_SRC="$REPO_ROOT/deploy/babo/entrypoint.sh"
 
 echo "== image: $IMAGE"
 podman image exists "$IMAGE" || { echo "FAIL   image not present: $IMAGE"; exit 1; }
 
 # --- 1. No WireGuard key or config in the image ------------------------
-WG=$(run_in_image /bin/sh '
-  find / -xdev -name "wg0.conf" 2>/dev/null
-  grep -rls -- "^PrivateKey" /etc /usr/local /opt 2>/dev/null
+# Deliberately narrow, because "PrivateKey" appears in ordinary crypto library
+# sources and docs and a match there is not key material: look for WireGuard
+# config files by name, and for an actual assignment line in /etc only.
+WG=$(run_in_image /bin/sh -c '
+  find / -xdev \( -name "wg0.conf" -o -name "*.key" -path "*/wireguard/*" \) 2>/dev/null
+  grep -rls -- "^[[:space:]]*PrivateKey[[:space:]]*=" /etc 2>/dev/null
   true')
 if [ -z "$WG" ]; then
   ok "image contains no wg0.conf and no WireGuard private key"
@@ -75,7 +83,7 @@ else
 fi
 
 # --- 2. No container-runtime socket and no runtime client --------------
-RT=$(run_in_image /bin/sh '
+RT=$(run_in_image /bin/sh -c '
   ls /run/podman/podman.sock /var/run/docker.sock 2>/dev/null
   command -v podman docker ctr nerdctl 2>/dev/null
   true')
@@ -108,7 +116,7 @@ case "$UI" in
 esac
 
 # --- 5. The Manager default is not loopback ---------------------------
-MURL=$(run_in_image python3 -c "from babo.office.backend import DEFAULT_MANAGER_URL; print(DEFAULT_MANAGER_URL)" 2>/dev/null)
+MURL=$(run_in_image python3 -c "from babo.office.backend import DEFAULT_MANAGER_URL; print(DEFAULT_MANAGER_URL)")
 case "$MURL" in
   "")                 bad "could not read DEFAULT_MANAGER_URL from the image" ;;
   *127.0.0.1*|*localhost*|*"://[::1]"*) bad "Manager default is loopback: $MURL" ;;
@@ -120,7 +128,7 @@ esac
 # Assert the CODE, not the prose: comments in the entrypoint explain why there
 # is no --host flag, and a grep over the whole file would fail the image for
 # describing itself correctly.
-ENTRY_CODE=$(run_in_image /bin/sh 'grep -v "^[[:space:]]*#" /usr/local/bin/babo-entrypoint 2>/dev/null')
+ENTRY_CODE=$(run_in_image /bin/sh -c 'grep -v "^[[:space:]]*#" /usr/local/bin/babo-entrypoint 2>/dev/null')
 if [ -z "$ENTRY_CODE" ]; then
   bad "image has no /usr/local/bin/babo-entrypoint (or it is all comments)"
 else
@@ -142,6 +150,19 @@ else
       *)                bad "exec line is not 'babo gateway': $EXEC_LINE" ;;
     esac
   fi
+fi
+
+# --- 6b. The image's entrypoint matches its readable source -------------
+if [ -f "$ENTRY_SRC" ]; then
+  IMG_EP_SHA=$(run_in_image /bin/sh -c 'sha256sum /usr/local/bin/babo-entrypoint 2>/dev/null | cut -d" " -f1')
+  SRC_EP_SHA=$(sha256sum "$ENTRY_SRC" | cut -d" " -f1)
+  if [ -n "$IMG_EP_SHA" ] && [ "$IMG_EP_SHA" = "$SRC_EP_SHA" ]; then
+    ok "image entrypoint matches deploy/babo/entrypoint.sh (sha256 ${IMG_EP_SHA:0:12}…)"
+  else
+    bad "image entrypoint differs from deploy/babo/entrypoint.sh (image=${IMG_EP_SHA:-?} file=${SRC_EP_SHA:0:12}…); regenerate the base64 blob"
+  fi
+else
+  unmet "entrypoint drift check: $ENTRY_SRC not found next to this script"
 fi
 
 # --- 7-9. Run-time facts, from a live container ------------------------
@@ -190,10 +211,17 @@ else
 
   CAPADD=$(podman inspect -f '{{json .HostConfig.CapAdd}}' "$CONTAINER" 2>/dev/null)
   CAPDROP=$(podman inspect -f '{{json .HostConfig.CapDrop}}' "$CONTAINER" 2>/dev/null)
-  if [ "$CAPADD" = '["NET_ADMIN"]' ] && { [ "$CAPDROP" = "null" ] || [ "$CAPDROP" = "[]" ]; }; then
-    ok "capabilities are exactly NET_ADMIN (container namespace only)"
+  # podman reports the long form, CAP_NET_ADMIN; accept the short form only as
+  # a spelling, never as a different privilege.
+  case "$CAPADD" in
+    '["CAP_NET_ADMIN"]') CAPWORD=CAP_NET_ADMIN ;;
+    '["NET_ADMIN"]')     CAPWORD=NET_ADMIN ;;
+    *)                   CAPWORD="" ;;
+  esac
+  if [ -n "$CAPWORD" ] && { [ "$CAPDROP" = "null" ] || [ "$CAPDROP" = "[]" ]; }; then
+    ok "capabilities are exactly $CAPWORD (container namespace only)"
   else
-    bad "capability set is not exactly NET_ADMIN (CapAdd=$CAPADD CapDrop=$CAPDROP)"
+    bad "capability set is not exactly NET_ADMIN/CAP_NET_ADMIN (CapAdd=$CAPADD CapDrop=$CAPDROP)"
   fi
 fi
 

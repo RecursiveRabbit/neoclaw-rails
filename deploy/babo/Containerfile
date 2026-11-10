@@ -10,8 +10,8 @@
 #   - no writable host path; at run time exactly ONE read-only mount,
 #     /etc/wireguard, from $HOST_SPAWN_DIR/runtime/babo (per-boot key)
 #   - no published port; the app binds the WG address only
-#   - NET_ADMIN is scoped to this container's own namespace for wg0 (same as
-#     the Hub) — not host networking, not host firewall
+#   - CAP_NET_ADMIN is scoped to this container's own namespace for wg0 (same
+#     as the Hub) — not host networking, not host firewall
 #   - NEOCLAW_MANAGER_URL is the only outbound dependency; unreachable shows
 #     the UI's `unknown` banner
 #
@@ -21,16 +21,21 @@
 
 # ---------- stage 1: frontend bundle (babo/web/dist) ----------
 # babo/webui/build.py serves the built bundle from babo/web/dist, and the
-# source tree ships no dist — the image must build it. Bun's lockfile is
-# authoritative; the build script is `tsc -p tsconfig.build.json && vite build`
-# (webui/package.json), and vite writes ../babo/web/dist (webui/vite.config.ts).
+# source tree ships no dist — the image must build it. The stage mirrors the
+# monorepo layout (/repo/webui, /repo/babo, /repo/packages) because
+# webui/vite.config.ts resolves its output as `../babo/web/dist` relative to
+# its own directory; flattening webui/ to the root sends the bundle outside the
+# tree and the build then fails its own test below.
 FROM oven/bun:1.2-slim AS web
 
-WORKDIR /src
-COPY webui/package.json webui/bun.lock ./
+WORKDIR /repo
+COPY packages/ ./packages/
+COPY babo/channels ./babo/channels
+COPY webui/package.json webui/bun.lock ./webui/
+WORKDIR /repo/webui
 RUN bun install --frozen-lockfile
 COPY webui/ ./
-RUN bun run build && test -f /src/babo/web/dist/index.html
+RUN bun run build && test -f /repo/babo/web/dist/index.html
 
 # ---------- stage 2: runtime ----------
 FROM python:3.12-slim
@@ -48,85 +53,27 @@ WORKDIR /app
 COPY pyproject.toml hatch_build.py README.md LICENSE THIRD_PARTY_NOTICES.md ./
 COPY docs/ ./docs/
 COPY babo/ ./babo/
-COPY --from=web /src/babo/web/dist ./babo/web/dist
+COPY --from=web /repo/babo/web/dist ./babo/web/dist
 ENV BABO_SKIP_WEBUI_BUILD=1
 RUN pip install --no-cache-dir .
 ENV BABO_SKIP_WEBUI_BUILD=
 
-# The installed package (site-packages/babo) is what runs. Place the bundle
-# there explicitly instead of trusting the build backend's file selection, then
-# prove it: an image that installs cleanly and serves no UI must fail here, not
-# in a browser.
-RUN python3 -c "import os, shutil, babo.web; dst = os.path.join(os.path.dirname(babo.web.__file__), 'dist'); shutil.rmtree(dst, ignore_errors=True); shutil.copytree('/app/babo/web/dist', dst)" \
+# The installed package (site-packages/babo) is what runs. Resolve it from `/`,
+# not from /app: with /app on the path, `import babo.web` resolves to the source
+# tree that is about to be deleted, and the copy would delete its own source.
+# Place the bundle in the installed package, prove it, then drop the source.
+RUN cd / && python3 -c "import os, shutil, babo.web; dst = os.path.join(os.path.dirname(babo.web.__file__), 'dist'); shutil.rmtree(dst, ignore_errors=True); shutil.copytree('/app/babo/web/dist', dst)" \
  && python3 -c "import os, babo.web; p = os.path.join(os.path.dirname(babo.web.__file__), 'dist', 'index.html'); assert os.path.isfile(p) and os.path.getsize(p) > 0, p; print('web bundle:', p)" \
  && rm -rf /app/babo
 
-# The entrypoint lives here, not in a separate file: the build context is the
-# Babo source root, and COPY cannot reach outside it. One artifact, no staged
-# context, and no second copy to drift. (Heredoc RUN needs a modern builder:
-# podman >= 4.6 / buildah >= 1.31.)
-RUN cat > /usr/local/bin/babo-entrypoint <<'ENTRY'
-#!/bin/bash
-set -eu
-
-# Babo in a pod: bring up its own WG interface, make the UI bind that address
-# only, and run the gateway in the FOREGROUND (the container's main process).
-#
-# Why `babo gateway` and not `babo webui`: `babo webui` is a client launcher --
-# it starts a *background* gateway, opens (or suppresses) a browser, attaches to
-# the gateway log, and returns; with tini as PID 1 the container would exit and
-# take the service with it. `babo gateway` (no --background) runs the server in
-# this process's foreground, which is what a pod needs. Recorded deviation.
-#
-# Why a rendered config: the bind address is not a CLI flag (there is no --host);
-# it comes from config.gateway.host (babo/config/schema.py, default 127.0.0.1).
-# The bind address is the address the Router admits, so it is read from the
-# interface itself rather than hardcoded or defaulted.
-
-log() { echo "[babo] $*"; }
-
-if [ ! -f /etc/wireguard/wg0.conf ]; then
-    log "FATAL: /etc/wireguard/wg0.conf not mounted (per-boot key missing)"
-    exit 1
-fi
-
-wg-quick up wg0 || { log "FATAL: wg-quick failed"; exit 1; }
-
-# The effective bind address is a fact read from wg0, not an assumption. The
-# Router rule admits 10.0.0.5 only, so a different address is a loud failure
-# rather than a page nobody can reach.
-BIND="$(ip -4 -o addr show dev wg0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)"
-if [ -z "${BIND}" ]; then
-    log "FATAL: wg0 came up with no IPv4 address; nothing to bind"
-    exit 1
-fi
-if [ "${BIND}" != "10.0.0.5" ]; then
-    log "FATAL: wg0 address is ${BIND}, but the Router admits 10.0.0.5 only; refusing to bind an address that cannot be reached"
-    exit 1
-fi
-log "wireguard up (${BIND})"
-
-PORT="${BABO_PORT:-8843}"
-CONFIG="${BABO_RUNTIME_CONFIG:-/run/babo/config.json}"
-mkdir -p "$(dirname "$CONFIG")"
-cat > "$CONFIG" <<EOF
-{
-  "gateway": {
-    "host": "${BIND}",
-    "port": ${PORT}
-  }
-}
-EOF
-log "runtime config: ${CONFIG} (gateway.host=${BIND}, gateway.port=${PORT})"
-
-# The Manager endpoint is the ONLY outbound dependency. Unreachable -> the UI
-# shows its unknown banner; nothing falls back to a local path.
-log "manager endpoint: ${NEOCLAW_MANAGER_URL:-unset}"
-log "office backend:   ${NEOCLAW_OFFICE_BACKEND:-manager}"
-
-exec babo gateway --config "$CONFIG" --port "$PORT"
-ENTRY
-RUN chmod +x /usr/local/bin/babo-entrypoint
+# The entrypoint is embedded as base64, not a heredoc RUN: buildah 1.33 on
+# z620 (podman 4.9) cannot parse heredocs, and the build must not depend on a
+# newer builder. The readable source of truth is deploy/babo/entrypoint.sh;
+# this blob is generated from it:
+#   base64 -w0 deploy/babo/entrypoint.sh
+# and the packaging check fails if the image's copy and that file ever differ.
+RUN echo IyEvYmluL2Jhc2gKc2V0IC1ldQoKIyBCYWJvIGluIGEgcG9kOiBicmluZyB1cCBpdHMgb3duIFdHIGludGVyZmFjZSwgbWFrZSB0aGUgVUkgYmluZCB0aGF0IGFkZHJlc3MKIyBvbmx5LCBhbmQgcnVuIHRoZSBnYXRld2F5IGluIHRoZSBGT1JFR1JPVU5EICh0aGUgY29udGFpbmVyJ3MgbWFpbiBwcm9jZXNzKS4KIwojIFdoeSBgYmFibyBnYXRld2F5YCBhbmQgbm90IGBiYWJvIHdlYnVpYDogYGJhYm8gd2VidWlgIGlzIGEgY2xpZW50IGxhdW5jaGVyIC0tCiMgaXQgc3RhcnRzIGEgKmJhY2tncm91bmQqIGdhdGV3YXksIG9wZW5zIChvciBzdXBwcmVzc2VzKSBhIGJyb3dzZXIsIGF0dGFjaGVzIHRvCiMgdGhlIGdhdGV3YXkgbG9nLCBhbmQgcmV0dXJuczsgd2l0aCB0aW5pIGFzIFBJRCAxIHRoZSBjb250YWluZXIgd291bGQgZXhpdCBhbmQKIyB0YWtlIHRoZSBzZXJ2aWNlIHdpdGggaXQuIGBiYWJvIGdhdGV3YXlgIChubyAtLWJhY2tncm91bmQpIHJ1bnMgdGhlIHNlcnZlciBpbgojIHRoaXMgcHJvY2VzcydzIGZvcmVncm91bmQsIHdoaWNoIGlzIHdoYXQgYSBwb2QgbmVlZHMuIFJlY29yZGVkIGRldmlhdGlvbi4KIwojIFdoeSBhIHJlbmRlcmVkIGNvbmZpZzogdGhlIGJpbmQgYWRkcmVzcyBpcyBub3QgYSBDTEkgZmxhZyAodGhlcmUgaXMgbm8gLS1ob3N0KTsKIyBpdCBjb21lcyBmcm9tIGNvbmZpZy5nYXRld2F5Lmhvc3QgKGJhYm8vY29uZmlnL3NjaGVtYS5weSwgZGVmYXVsdCAxMjcuMC4wLjEpLgojIFRoZSBiaW5kIGFkZHJlc3MgaXMgdGhlIGFkZHJlc3MgdGhlIFJvdXRlciBhZG1pdHMsIHNvIGl0IGlzIHJlYWQgZnJvbSB0aGUKIyBpbnRlcmZhY2UgaXRzZWxmIHJhdGhlciB0aGFuIGhhcmRjb2RlZCBvciBkZWZhdWx0ZWQuCgpsb2coKSB7IGVjaG8gIltiYWJvXSAkKiI7IH0KCmlmIFsgISAtZiAvZXRjL3dpcmVndWFyZC93ZzAuY29uZiBdOyB0aGVuCiAgICBsb2cgIkZBVEFMOiAvZXRjL3dpcmVndWFyZC93ZzAuY29uZiBub3QgbW91bnRlZCAocGVyLWJvb3Qga2V5IG1pc3NpbmcpIgogICAgZXhpdCAxCmZpCgp3Zy1xdWljayB1cCB3ZzAgfHwgeyBsb2cgIkZBVEFMOiB3Zy1xdWljayBmYWlsZWQiOyBleGl0IDE7IH0KCiMgVGhlIGVmZmVjdGl2ZSBiaW5kIGFkZHJlc3MgaXMgYSBmYWN0IHJlYWQgZnJvbSB3ZzAsIG5vdCBhbiBhc3N1bXB0aW9uLiBUaGUKIyBSb3V0ZXIgcnVsZSBhZG1pdHMgMTAuMC4wLjUgb25seSwgc28gYSBkaWZmZXJlbnQgYWRkcmVzcyBpcyBhIGxvdWQgZmFpbHVyZQojIHJhdGhlciB0aGFuIGEgcGFnZSBub2JvZHkgY2FuIHJlYWNoLgpCSU5EPSIkKGlwIC00IC1vIGFkZHIgc2hvdyBkZXYgd2cwIDI+L2Rldi9udWxsIHwgYXdrICd7cHJpbnQgJDR9JyB8IGN1dCAtZC8gLWYxIHwgaGVhZCAtMSkiCmlmIFsgLXogIiR7QklORH0iIF07IHRoZW4KICAgIGxvZyAiRkFUQUw6IHdnMCBjYW1lIHVwIHdpdGggbm8gSVB2NCBhZGRyZXNzOyBub3RoaW5nIHRvIGJpbmQiCiAgICBleGl0IDEKZmkKaWYgWyAiJHtCSU5EfSIgIT0gIjEwLjAuMC41IiBdOyB0aGVuCiAgICBsb2cgIkZBVEFMOiB3ZzAgYWRkcmVzcyBpcyAke0JJTkR9LCBidXQgdGhlIFJvdXRlciBhZG1pdHMgMTAuMC4wLjUgb25seTsgcmVmdXNpbmcgdG8gYmluZCBhbiBhZGRyZXNzIHRoYXQgY2Fubm90IGJlIHJlYWNoZWQiCiAgICBleGl0IDEKZmkKbG9nICJ3aXJlZ3VhcmQgdXAgKCR7QklORH0pIgoKUE9SVD0iJHtCQUJPX1BPUlQ6LTg4NDN9IgpDT05GSUc9IiR7QkFCT19SVU5USU1FX0NPTkZJRzotL3J1bi9iYWJvL2NvbmZpZy5qc29ufSIKbWtkaXIgLXAgIiQoZGlybmFtZSAiJENPTkZJRyIpIgpjYXQgPiAiJENPTkZJRyIgPDxFT0YKewogICJnYXRld2F5IjogewogICAgImhvc3QiOiAiJHtCSU5EfSIsCiAgICAicG9ydCI6ICR7UE9SVH0KICB9Cn0KRU9GCmxvZyAicnVudGltZSBjb25maWc6ICR7Q09ORklHfSAoZ2F0ZXdheS5ob3N0PSR7QklORH0sIGdhdGV3YXkucG9ydD0ke1BPUlR9KSIKCiMgVGhlIE1hbmFnZXIgZW5kcG9pbnQgaXMgdGhlIE9OTFkgb3V0Ym91bmQgZGVwZW5kZW5jeS4gVW5yZWFjaGFibGUgLT4gdGhlIFVJCiMgc2hvd3MgaXRzIHVua25vd24gYmFubmVyOyBub3RoaW5nIGZhbGxzIGJhY2sgdG8gYSBsb2NhbCBwYXRoLgpsb2cgIm1hbmFnZXIgZW5kcG9pbnQ6ICR7TkVPQ0xBV19NQU5BR0VSX1VSTDotdW5zZXR9Igpsb2cgIm9mZmljZSBiYWNrZW5kOiAgICR7TkVPQ0xBV19PRkZJQ0VfQkFDS0VORDotbWFuYWdlcn0iCgpleGVjIGJhYm8gZ2F0ZXdheSAtLWNvbmZpZyAiJENPTkZJRyIgLS1wb3J0ICIkUE9SVCIK | base64 -d > /usr/local/bin/babo-entrypoint \
+ && chmod +x /usr/local/bin/babo-entrypoint
 
 ENV BABO_PORT=8843 \
     NEOCLAW_OFFICE_BACKEND=manager \
