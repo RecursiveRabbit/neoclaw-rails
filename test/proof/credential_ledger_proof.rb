@@ -13,12 +13,15 @@ require "fileutils"
 
 PASS = 0
 FAIL = 0
+$stdout.sync = true
 def ok(msg)   = (puts "PASS  #{msg}")
 def bad(msg)  = (puts "FAIL  #{msg}")
 def check(msg)
   if yield
+    PASS += 1
     ok(msg)
   else
+    FAIL += 1
     bad(msg)
   end
 end
@@ -95,7 +98,9 @@ puts "--- 5. unrevocable credentials are reported, never silently closed"
 CredentialCheckout.issue!(scope: "generic-token", instance_name: "proofagent-generic",
                           revoke_handle: "generic:/api/v1/tokens",
                           launch_ref: "previousboot:proofagent-generic", unrevocable: true)
+CredentialReconciler.inventory_override = ["proofagent-live"]
 gen_counts = CredentialReconciler.reconcile!
+CredentialReconciler.inventory_override = nil
 check("reconciler counted it unrevocable")         { gen_counts[:unrevocable] == 1 }
 check("unrevocable row remains open, visibly")     { CredentialCheckout.open.where(instance_name: "proofagent-generic").count == 1 }
 
