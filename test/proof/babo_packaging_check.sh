@@ -5,11 +5,7 @@
 # Runs on the deployment host (needs podman). Every line prints PASS, FAIL or
 # UNMET. UNMET is a result — a claim this script cannot prove from the inputs
 # it was given — and it is never converted into a pass by softening the
-# assertion. An image that cannot be run at all is a FAIL, never an empty pass:
-# every in-image probe goes through `probe`, which returns a sentinel on a
-# non-zero `podman run` and fails the row instead of comparing "" to "".
-#
-# The script never prints a key or a token value, never touches production
+# assertion. The script never prints a key, never touches production
 # WireGuard, and never starts anything on a shared network.
 #
 # Usage:
@@ -17,10 +13,11 @@
 #
 #   IMAGE                 default: localhost/neoclaw-babo:latest
 #   --container NAME      also inspect a RUNNING container of this image
-#                         (mount set, published ports, network mode, caps,
-#                         sysctls, environment, runtime config)
-#   --wg-probe URL        URL reachable only from the host's WG address,
-#                         e.g. http://10.0.0.2:8843/health
+#                         (mount set, published ports, network mode, caps)
+#   --wg-probe URL        the UI listener, reachable only from the host's WG
+#                         address, e.g. http://10.0.0.2:8843/
+#   --health-probe URL    the health listener on its own port (BABO_HEALTH_PORT,
+#                         default 18790), e.g. http://10.0.0.2:18790/health
 #   --loopback-probe URL  URL that must be REFUSED from the host's loopback,
 #                         e.g. http://127.0.0.1:8843/health
 #   --spawn-dir PATH      the per-boot runtime dir the mount must come from
@@ -41,6 +38,7 @@ set -u
 IMAGE="localhost/neoclaw-babo:latest"
 CONTAINER=""
 WG_PROBE=""
+HEALTH_PROBE=""
 LOOPBACK_PROBE=""
 SPAWN_DIR="${HOST_SPAWN_DIR:-/spawn}/runtime/babo"
 
@@ -48,9 +46,10 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --container) CONTAINER="${2:-}"; shift 2 ;;
     --wg-probe) WG_PROBE="${2:-}"; shift 2 ;;
+    --health-probe) HEALTH_PROBE="${2:-}"; shift 2 ;;
     --loopback-probe) LOOPBACK_PROBE="${2:-}"; shift 2 ;;
     --spawn-dir) SPAWN_DIR="${2:-}"; shift 2 ;;
-    -h|--help) sed -n '2,36p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
     -*) echo "unknown option: $1" >&2; exit 64 ;;
     *) IMAGE="$1"; shift ;;
   esac
@@ -61,14 +60,14 @@ ok()    { PASS=$((PASS+1));  echo "PASS   $*"; }
 bad()   { FAIL=$((FAIL+1));  echo "FAIL   $*"; }
 unmet() { UNMET=$((UNMET+1)); echo "UNMET  $*"; }
 
-PROBE_FAILED="__probe_failed__"
-
 run_in_image() { # entrypoint, then that program's own arguments
   local entry="$1"; shift
   podman run --rm --entrypoint "$entry" "$IMAGE" "$@"
 }
 
-# Never let "the image could not be run" look like "the image is clean".
+# Never let "the image could not be run" look like "the image is clean": a
+# non-zero `podman run` yields a sentinel, and the calling row fails.
+PROBE_FAILED="__probe_failed__"
 probe() {
   local out
   if ! out=$(run_in_image "$@" 2>/dev/null); then
@@ -115,13 +114,14 @@ else
 fi
 
 # --- 3. The entrypoint refuses to start without a mounted config -------
+set +e
 OUT3=$(podman run --rm "$IMAGE" 2>&1); RC3=$?
-if [ "$RC3" -eq 0 ]; then
-  bad "container started with no mounted wg0.conf"
-elif echo "$OUT3" | grep -q "wg0.conf not mounted"; then
+if [ "$RC3" -ne 0 ] && echo "$OUT3" | grep -q "wg0.conf not mounted"; then
   ok "container refuses to start without a mounted wg0.conf (rc=$RC3, reason stated)"
+elif [ "$RC3" -ne 0 ]; then
+  bad "container failed without the expected reason (rc=$RC3): $(echo "$OUT3" | tail -1)"
 else
-  bad "container failed before its own config check (rc=$RC3): $(echo "$OUT3" | tail -1)"
+  bad "container started with no mounted wg0.conf"
 fi
 
 # --- 3b. No alternate token-issuance door in the pod -------------------
@@ -131,21 +131,23 @@ fi
 ISSUE=$(probe python3 -c "
 from babo.channels.websocket.runtime import WebSocketConfig as W
 c = W()
-print(repr(c.token_issue_path), repr(c.token_issue_secret))")
-if [ "$ISSUE" = "$PROBE_FAILED" ]; then
-  bad "image could not be run, so the token-issuance defaults could not be read"
+print(repr(c.token_issue_path), repr(c.token_issue_secret))" 2>/dev/null)
+case "$ISSUE" in
+  "$PROBE_FAILED") bad "image could not be run, so the token defaults could not be read (podman run failed)" ;;
+  "None None"|"'None' 'None'"|"'' ''") ok "no static token-issuance route configured in the image defaults" ;;
+  "")  bad "could not read token_issue_path/token_issue_secret from the image" ;;
+  *)   bad "image defaults configure a static token issue route: $ISSUE" ;;
+esac
+ENVRAW=$(probe /bin/sh -c 'env')
+if [ "$ENVRAW" = "$PROBE_FAILED" ]; then
+  bad "image could not be run, so its environment could not be read (podman run failed)"
 else
-  case "$ISSUE" in
-    "None None"|"'None' 'None'"|"'' ''") ok "no static token-issuance route configured in the image defaults" ;;
-    "")  bad "could not read token_issue_path/token_issue_secret from the image" ;;
-    *)   bad "image defaults configure a static token issue route: $ISSUE" ;;
-  esac
-fi
-ENVISSUE=$(probe /bin/sh -c 'env' | grep -iE '(TOKEN_ISSUE|TOKEN_PATH)' || true)
-if [ -z "$ENVISSUE" ]; then
-  ok "no TOKEN_ISSUE/TOKEN_PATH in the image environment"
-else
-  bad "image environment carries a token issuance variable: $(echo "$ENVISSUE" | tr '\n' ' ')"
+  ENVISSUE=$(printf '%s\n' "$ENVRAW" | grep -iE '(TOKEN_ISSUE|TOKEN_PATH)' || true)
+  if [ -z "$ENVISSUE" ]; then
+    ok "no TOKEN_ISSUE/TOKEN_PATH in the image environment"
+  else
+    bad "image environment carries a token issuance variable: $(echo "$ENVISSUE" | tr '\n' ' ')"
+  fi
 fi
 
 # --- 3c. Trusted-source handling is fail-closed in the pod -------------
@@ -168,29 +170,23 @@ done
 UI=$(probe python3 -c "
 import os, babo.web
 p = os.path.join(os.path.dirname(babo.web.__file__), 'dist', 'index.html')
-print(p if os.path.isfile(p) and os.path.getsize(p) > 0 else 'MISSING:' + p)")
-if [ "$UI" = "$PROBE_FAILED" ]; then
-  bad "image could not be run, so the web bundle could not be checked (podman run failed)"
-else
-  case "$UI" in
-    MISSING:*) bad "installed package has no web bundle: ${UI#MISSING:}" ;;
-    *.html)    ok "installed package ships the built UI ($UI)" ;;
-    *)         bad "could not determine the web bundle path: ${UI:-<empty>}" ;;
-  esac
-fi
+print(p if os.path.isfile(p) and os.path.getsize(p) > 0 else 'MISSING:' + p)" 2>/dev/null)
+case "$UI" in
+  "$PROBE_FAILED") bad "image could not be run, so the web bundle could not be checked (podman run failed)" ;;
+  MISSING:*) bad "installed package has no web bundle: ${UI#MISSING:}" ;;
+  *.html)    ok "installed package ships the built UI ($UI)" ;;
+  *)         bad "could not determine the web bundle path: ${UI:-<empty>}" ;;
+esac
 
 # --- 5. The Manager default is not loopback ---------------------------
 MURL=$(probe python3 -c "from babo.office.backend import DEFAULT_MANAGER_URL; print(DEFAULT_MANAGER_URL)")
-if [ "$MURL" = "$PROBE_FAILED" ]; then
-  bad "image could not be run, so the Manager default could not be read (podman run failed)"
-else
-  case "$MURL" in
-    "")                 bad "could not read DEFAULT_MANAGER_URL from the image" ;;
-    *127.0.0.1*|*localhost*|*"://[::1]"*) bad "Manager default is loopback: $MURL" ;;
-    http*)              ok "Manager default is not loopback ($MURL)" ;;
-    *)                  bad "Manager default is not a URL: $MURL" ;;
-  esac
-fi
+case "$MURL" in
+  "$PROBE_FAILED") bad "image could not be run, so the Manager default could not be read (podman run failed)" ;;
+  "")                 bad "could not read DEFAULT_MANAGER_URL from the image" ;;
+  *127.0.0.1*|*localhost*|*"://[::1]"*) bad "Manager default is loopback: $MURL" ;;
+  http*)              ok "Manager default is not loopback ($MURL)" ;;
+  *)                  bad "Manager default is not a URL: $MURL" ;;
+esac
 
 # --- 6. The bind is rendered from the interface, not defaulted ---------
 # Assert the CODE, not the prose: comments in the entrypoint explain why there
@@ -207,17 +203,36 @@ else
   else
     bad "entrypoint does not render channels.websocket.trusted_sources"
   fi
-  if echo "$ENTRY_CODE" | grep -q "gateway.host" && echo "$ENTRY_CODE" | grep -q "ip -4 -o addr show dev wg0"; then
-    ok "entrypoint renders gateway.host from the wg0 address"
+  # Two listeners, two keys (dova/soro): channels.websocket.host:port serves
+  # the SPA, gateway.host:port serves GET /health. Both must be the wg0
+  # address, each on its own port. Asserting one key rots; assert both.
+  HOST_BINDS=$(echo "$ENTRY_CODE" | grep -c '"host": "${BIND}"' || true)
+  if echo "$ENTRY_CODE" | grep -q "ip -4 -o addr show dev wg0" && [ "${HOST_BINDS:-0}" -ge 2 ]; then
+    ok "entrypoint renders both listener hosts from the wg0 address (${HOST_BINDS} binds)"
   else
-    bad "entrypoint does not render the bind from the wg0 address"
+    bad "entrypoint does not render both listener hosts from the wg0 address (binds=${HOST_BINDS:-0})"
+  fi
+  if echo "$ENTRY_CODE" | grep -q 'BABO_HEALTH_PORT' && echo "$ENTRY_CODE" | grep -q '"port": ${HEALTH_PORT}'; then
+    ok "entrypoint gives the health listener its own port (BABO_HEALTH_PORT)"
+  else
+    bad "entrypoint does not give the health listener its own port (BABO_HEALTH_PORT)"
+  fi
+  if echo "$ENTRY_CODE" | grep -q '"port": ${PORT}'; then
+    ok "entrypoint gives the websocket listener the UI port (BABO_PORT)"
+  else
+    bad "entrypoint does not give the websocket listener the UI port (BABO_PORT)"
+  fi
+  if echo "$ENTRY_CODE" | grep -qE '^[[:space:]]*exec[[:space:]]+babo[[:space:]]+gateway.*--port'; then
+    bad "exec line passes --port, which overrides gateway.port (babo/cli/gateway_runtime.py) and would move the health server onto the UI port"
+  else
+    ok "exec line passes no --port; the rendered config is authoritative for both listeners"
   fi
   EXEC_LINE=$(echo "$ENTRY_CODE" | grep -E '^[[:space:]]*(exec[[:space:]]+)?babo[[:space:]]' | tail -1)
   if [ -z "$EXEC_LINE" ]; then
     bad "entrypoint has no exec line invoking babo"
   else
     case "$EXEC_LINE" in
-      *--host*) bad "exec line passes --host (the gateway CLI has no such flag): $EXEC_LINE" ;;
+      *--host*) bad "exec line passes --host (the webui/gateway CLI has no such flag): $EXEC_LINE" ;;
       *)        ok "exec line passes no --host: $EXEC_LINE" ;;
     esac
     case "$EXEC_LINE" in
@@ -242,22 +257,6 @@ else
   unmet "entrypoint drift check: $ENTRY_SRC not found next to this script"
 fi
 
-# --- 6c. No token issuer in the image or the pod ------------------------
-# Soro's token contract: WireGuard identity is the authentication by ruling, so
-# the pod must not carry a token-issuing path or secret. A token would be a
-# second, weaker door. Values are never printed — only the variable/key name.
-IMG_ENV=$(podman image inspect -f '{{json .Config.Env}}' "$IMAGE" 2>/dev/null)
-if [ -z "$IMG_ENV" ]; then
-  bad "image env could not be read (podman image inspect failed)"
-else
-  TOKEN_ENV=$(echo "$IMG_ENV" | tr ',' '\n' | tr -d '[]"' | grep -E '^[A-Za-z_]*TOKEN[A-Za-z_]*=' | cut -d= -f1 | tr '\n' ' ')
-  if [ -z "$TOKEN_ENV" ]; then
-    ok "image bakes no token environment variable"
-  else
-    bad "image bakes token environment variable(s): $TOKEN_ENV"
-  fi
-fi
-
 # --- 7-9. Run-time facts, from a live container ------------------------
 if [ -z "$CONTAINER" ]; then
   unmet "mount set: exactly one read-only bind, source under $SPAWN_DIR, target /etc/wireguard (pass --container NAME)"
@@ -265,6 +264,9 @@ if [ -z "$CONTAINER" ]; then
   unmet "capabilities: NET_ADMIN only, scoped to this container (pass --container NAME)"
   unmet "no token issuer in the pod: token_issue_path/token_issue_secret unset in the runtime config and environment (pass --container NAME)"
 else
+  if [ -z "$SPAWN_DIR" ]; then
+    unmet "mount source prefix unknown: pass --spawn-dir or set HOST_SPAWN_DIR"
+  fi
   MOUNTS=$(podman inspect -f '{{range .Mounts}}{{.Type}}|{{.Source}}|{{.Destination}}|{{.RW}}
 {{end}}' "$CONTAINER" 2>/dev/null)
   NLINES=$(printf '%s' "$MOUNTS" | grep -c '|' || true)
@@ -294,6 +296,26 @@ else
     bad "published ports or host networking present (ports=$PORTS network=$NETMODE)"
   fi
 
+  CENV=$(podman inspect -f '{{json .Config.Env}}' "$CONTAINER" 2>/dev/null)
+  CTOKENS=$(echo "$CENV" | tr ',' '\n' | tr -d '[]"' | grep -E '^[A-Za-z_]*TOKEN[A-Za-z_]*=' | cut -d= -f1 | tr '\n' ' ')
+  if [ -z "$CTOKENS" ]; then
+    ok "container environment carries no token variable"
+  else
+    bad "container environment carries token variable(s): $CTOKENS"
+  fi
+
+  # The rendered runtime config is where a static issuance door would appear.
+  # Read-only; key names only, never a value.
+  RTCFG=$(podman exec "$CONTAINER" cat /run/babo/config.json 2>/dev/null)
+  if [ -z "$RTCFG" ]; then
+    unmet "runtime config has no token_issue_path/token_issue_secret: /run/babo/config.json could not be read"
+  elif printf '%s' "$RTCFG" | grep -qE '"(token_issue_path|token_issue_secret)"[[:space:]]*:[[:space:]]*"[^"]+"'; then
+    KEYS=$(printf '%s' "$RTCFG" | grep -oE '"(token_issue_path|token_issue_secret)"' | tr -d '"' | sort -u | tr '\n' ' ')
+    bad "runtime config enables a token issuer (keys: $KEYS) — WG identity is the authentication by ruling"
+  else
+    ok "runtime config enables no token issuer (token_issue_path/token_issue_secret absent or empty)"
+  fi
+
   SYSCTLS=$(podman inspect -f '{{json .HostConfig.Sysctls}}' "$CONTAINER" 2>/dev/null)
   case "$SYSCTLS" in
     *ip_forward*) bad "net.ipv4.ip_forward is set for Babo; it does not route traffic ($SYSCTLS)" ;;
@@ -314,29 +336,6 @@ else
   else
     bad "capability set is not exactly NET_ADMIN/CAP_NET_ADMIN (CapAdd=$CAPADD CapDrop=$CAPDROP)"
   fi
-
-  CENV=$(podman inspect -f '{{json .Config.Env}}' "$CONTAINER" 2>/dev/null)
-  CTOKENS=$(echo "$CENV" | tr ',' '\n' | tr -d '[]"' | grep -E '^[A-Za-z_]*TOKEN[A-Za-z_]*=' | cut -d= -f1 | tr '\n' ' ')
-  if [ -z "$CTOKENS" ]; then
-    ok "container environment carries no token variable"
-  else
-    bad "container environment carries token variable(s): $CTOKENS"
-  fi
-
-  # The runtime config the entrypoint renders. Read-only; values are not printed.
-  RTCFG=$(podman exec "$CONTAINER" cat /run/babo/config.json 2>/dev/null)
-  if [ -z "$RTCFG" ]; then
-    unmet "no token issuer in the pod's runtime config: /run/babo/config.json could not be read (container without shell, or different path)"
-  else
-    CFG_KEYS=$(printf '%s' "$RTCFG" | grep -oE '"(token_issue_path|token_issue_secret)"[[:space:]]*:[[:space:]]*"[^"]*"' | cut -d'"' -f2 | sort -u | tr '\n' ' ')
-    if [ -z "$CFG_KEYS" ]; then
-      ok "runtime config declares no token_issue_path/token_issue_secret"
-    elif printf '%s' "$RTCFG" | grep -qE '"(token_issue_path|token_issue_secret)"[[:space:]]*:[[:space:]]*"[^"]+"'; then
-      bad "runtime config enables a token issuer (keys: $CFG_KEYS) — WG identity is the authentication by ruling"
-    else
-      ok "runtime config declares token keys but leaves them empty (keys: $CFG_KEYS)"
-    fi
-  fi
 fi
 
 # --- 10-12. Effective listener and denial ------------------------------
@@ -346,6 +345,14 @@ else
   CODE=$(curl -s -o /dev/null -m 5 -w '%{http_code}' "$WG_PROBE" || echo "000")
   if [ "$CODE" = "200" ]; then ok "host-WG probe 200 ($WG_PROBE)"
   else bad "host-WG probe returned $CODE ($WG_PROBE)"; fi
+fi
+
+if [ -z "$HEALTH_PROBE" ]; then
+  unmet "health listener answers on its own port (pass --health-probe URL, default port 18790)"
+else
+  HCODE=$(curl -s -o /dev/null -m 5 -w '%{http_code}' "$HEALTH_PROBE" || echo "000")
+  if [ "$HCODE" = "200" ]; then ok "health probe 200 ($HEALTH_PROBE)"
+  else bad "health probe returned $HCODE ($HEALTH_PROBE)"; fi
 fi
 
 if [ -z "$LOOPBACK_PROBE" ]; then

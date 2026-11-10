@@ -156,9 +156,13 @@ the Router's rule names, and not about a grep for loopback in the image.
    back as `CAP_NET_ADMIN` from `podman inspect`; the flag is spelled
    `--cap-add NET_ADMIN`. Both spellings are the same single capability, and
    the check accepts either spelling but nothing else.)
-4. The effective listener is the WG address: a probe from the host WG address
-   gets `200`; a loopback probe is refused; an off-source probe is refused by
-   the Router.
+4. **Two listeners, two keys, both on the WG address.** `channels.websocket`
+   (`host`/`port`) serves the SPA and `/api/*` on `BABO_PORT` (8843 — the port
+   the Router admits the host to); `gateway` (`host`/`port`) serves the
+   gateway's own `GET /health` on `BABO_HEALTH_PORT` (18790 — what the Manager
+   probes). A probe from the host WG address to the UI gets `200`; the health
+   listener answers on its own port; a loopback probe is refused; an off-source
+   probe is refused by the Router.
 5. `NEOCLAW_MANAGER_URL` has no loopback default (the code's default is
    `http://10.0.0.3:9200`). The image vendors a web UI with legitimate
    loopback use elsewhere, so the claim is about the Manager URL and the

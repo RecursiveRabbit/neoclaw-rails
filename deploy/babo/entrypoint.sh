@@ -130,4 +130,10 @@ log "office backend:   ${NEOCLAW_OFFICE_BACKEND:-manager}"
 # channels.websocket.host back to 127.0.0.1 and could mint token_issue_secret
 # (dova, 88cc75ef). The gateway verb never runs that setup path, and the config
 # above is the whole story.
-exec babo gateway --config "$CONFIG" --port "$PORT"
+#
+# No --port here on purpose: `babo gateway --port` OVERRIDES gateway.port
+# (babo/cli/gateway_runtime.py:440: "port = port if port is not None else
+# config.gateway.port"), so passing the UI port would move the health server
+# onto the UI port and leave 18790 unanswered. The rendered config carries both
+# ports; the CLI adds nothing.
+exec babo gateway --config "$CONFIG"
