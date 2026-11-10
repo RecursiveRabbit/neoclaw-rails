@@ -31,7 +31,7 @@ FileUtils.mkdir_p(keys_dir)
 Surface.singleton_class.send(:define_method, :ssh_keys_dir) { keys_dir }
 
 service = ServiceType.find_or_initialize_by(name: "ssh-proof")
-service.update!(provision_type: "ssh_key", wg_ip: "10.0.0.2", description: "proof")
+service.update!(provision_type: "ssh_key", wg_ip: "10.0.0.2", notes: "ledger proof")
 AgentConfig.delete_all
 AgentConfig.create!(identity: "proofagent", model: "test",
                     base_services: ["ssh-proof"])
