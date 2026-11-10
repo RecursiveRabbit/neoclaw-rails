@@ -94,10 +94,12 @@ class Firewall
   def babo_forward_rules
     return "# no babo peer configured" unless @babo_ip
 
+    # Exactly two forward rules. No host destination for Babo: the Manager API
+    # is at 10.0.0.3, and anything else Babo might want is a new decision, not
+    # an accidental permission.
     <<~RULES.strip
       ip saddr #{@host_ip} ip daddr #{@babo_ip} tcp dport #{@babo_port} accept
       ip saddr #{@babo_ip} ip daddr #{@manager_ip} tcp dport #{@api_port} accept
-      ip saddr #{@babo_ip} ip daddr #{@host_ip} tcp dport #{@api_port} accept
     RULES
   end
 
