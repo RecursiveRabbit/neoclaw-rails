@@ -66,7 +66,7 @@ podman image exists "$IMAGE" || { echo "FAIL   image not present: $IMAGE"; exit 
 # --- 1. No WireGuard key or config in the image ------------------------
 WG=$(run_in_image /bin/sh '
   find / -xdev -name "wg0.conf" 2>/dev/null
-  grep -rls -- "PrivateKey" /etc /usr/local /opt 2>/dev/null
+  grep -rls -- "^PrivateKey" /etc /usr/local /opt 2>/dev/null
   true')
 if [ -z "$WG" ]; then
   ok "image contains no wg0.conf and no WireGuard private key"
@@ -117,19 +117,30 @@ case "$MURL" in
 esac
 
 # --- 6. The bind is rendered from the interface, not defaulted ---------
-EP=$(run_in_image /bin/sh 'cat /usr/local/bin/babo-entrypoint 2>/dev/null')
-if [ -z "$EP" ]; then
-  bad "image has no /usr/local/bin/babo-entrypoint"
+# Assert the CODE, not the prose: comments in the entrypoint explain why there
+# is no --host flag, and a grep over the whole file would fail the image for
+# describing itself correctly.
+ENTRY_CODE=$(run_in_image /bin/sh 'grep -v "^[[:space:]]*#" /usr/local/bin/babo-entrypoint 2>/dev/null')
+if [ -z "$ENTRY_CODE" ]; then
+  bad "image has no /usr/local/bin/babo-entrypoint (or it is all comments)"
 else
-  if echo "$EP" | grep -q "gateway.host" && echo "$EP" | grep -q "ip -4 -o addr show dev wg0"; then
+  if echo "$ENTRY_CODE" | grep -q "gateway.host" && echo "$ENTRY_CODE" | grep -q "ip -4 -o addr show dev wg0"; then
     ok "entrypoint renders gateway.host from the wg0 address"
   else
     bad "entrypoint does not render the bind from the wg0 address"
   fi
-  if echo "$EP" | grep -qE -- "--host[ =]"; then
-    bad "entrypoint passes --host, which 'babo webui' does not accept"
+  EXEC_LINE=$(echo "$ENTRY_CODE" | grep -E '^[[:space:]]*(exec[[:space:]]+)?babo[[:space:]]' | tail -1)
+  if [ -z "$EXEC_LINE" ]; then
+    bad "entrypoint has no exec line invoking babo"
   else
-    ok "entrypoint does not rely on a --host flag"
+    case "$EXEC_LINE" in
+      *--host*) bad "exec line passes --host (the webui/gateway CLI has no such flag): $EXEC_LINE" ;;
+      *)        ok "exec line passes no --host: $EXEC_LINE" ;;
+    esac
+    case "$EXEC_LINE" in
+      *"babo gateway"*) ok "exec line runs 'babo gateway' in the foreground" ;;
+      *)                bad "exec line is not 'babo gateway': $EXEC_LINE" ;;
+    esac
   fi
 fi
 

@@ -11,8 +11,11 @@ The exact boundaries of this slice are in the commission thread:
 sections "Munu's slice — interface and file boundaries" and "Handoff for the
 Babo-in-pod slice".
 
-**Files in this directory are the whole slice:** `Containerfile`,
-`entrypoint.sh`, `README.md`, and `test/proof/babo_packaging_check.sh`.
+**Files in this slice:** `Containerfile` (which contains the entrypoint),
+`README.md`, and `test/proof/babo_packaging_check.sh`. The entrypoint is not a
+separate file because the build context is the Babo source root and `COPY`
+cannot reach outside it — one artifact, no staged context, no second copy to
+drift.
 Everything the pod touches on the host side (mount rendering, caps, the launch
 line, the Router rule) belongs to the Manager's lane, not here.
 
@@ -25,17 +28,25 @@ directory:
 podman build -t localhost/neoclaw-babo:latest -f deploy/babo/Containerfile <babo-src>
 ```
 
+The Containerfile embeds the entrypoint with a heredoc `RUN`, so the build
+needs a modern builder (podman ≥ 4.6 / buildah ≥ 1.31). If a builder without
+heredoc support is ever required, the honest fallback is a staged context
+(`deploy/` + Babo source in one directory) with the README's build line changed
+to name it — not a silent `COPY` that cannot resolve.
+
 Two stages: a `oven/bun:1.2-slim` stage builds `webui/` and emits
 `babo/web/dist` (`bun install --frozen-lockfile && bun run build`); the
 `python:3.12-slim` runtime stage installs Babo with that bundle in place. The
 image therefore builds from source and does not depend on a `dist` artifact
 living anywhere outside it.
 
-## How the Manager launches it (verbatim, from `manager/entrypoint.sh` Phase 6.5 @ `ed1f6eb`)
+## How the Manager launches it (excerpt, from `manager/entrypoint.sh` Phase 6.5 @ `ed1f6eb`)
 
-Copied from the Manager's own source, not from memory. If this block and
-`manager/entrypoint.sh` ever disagree, the Manager wins and this README is
-wrong until it is re-copied.
+**This is an excerpt, not a whole quotation.** The `podman run` invocation and
+its guard are copied verbatim from the Manager's source; the surrounding
+control flow is elided and named below rather than trimmed away silently. If
+this block and `manager/entrypoint.sh` ever disagree, the Manager wins and this
+README is wrong until it is re-copied.
 
 ```bash
 BABO_IMAGE="${BABO_IMAGE:-localhost/neoclaw-babo:latest}"
@@ -53,6 +64,12 @@ if $PODMAN image exists "$BABO_IMAGE" 2>/dev/null; then
         "$BABO_IMAGE" 2>&1)
 fi
 ```
+
+Elided from the excerpt, named so nothing goes missing quietly: the start log
+line (`log "starting Babo office UI …"`), the health branch after start
+(`if [ $? -eq 0 ] … else … WARNING …`, the warn-not-fatal probe described
+below), and the outer `else` that logs "Babo image absent …" when the image is
+not present.
 
 What that means, as source rather than assumption:
 
