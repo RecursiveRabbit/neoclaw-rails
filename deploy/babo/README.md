@@ -40,19 +40,18 @@ Two stages: a `oven/bun:1.2-slim` stage builds `webui/` and emits
 image therefore builds from source and does not depend on a `dist` artifact
 living anywhere outside it.
 
-## How the Manager launches it (excerpt, from `manager/entrypoint.sh` Phase 6.5 @ `ed1f6eb`)
+## How the Manager launches it (Phase 6.5 of `manager/entrypoint.sh` @ `ed1f6eb`)
 
-**This is an excerpt, not a whole quotation.** The `podman run` invocation and
-its guard are copied verbatim from the Manager's source; the surrounding
-control flow is elided and named below rather than trimmed away silently. If
-this block and `manager/entrypoint.sh` ever disagree, the Manager wins and this
-README is wrong until it is re-copied.
+Quoted from the file, not from a message. If this block and
+`manager/entrypoint.sh` ever disagree, the Manager wins and this README is
+wrong until it is re-copied — and the drift should be reported, not smoothed.
 
 ```bash
 BABO_IMAGE="${BABO_IMAGE:-localhost/neoclaw-babo:latest}"
 BABO_PORT="${BABO_PORT:-8843}"
 
 if $PODMAN image exists "$BABO_IMAGE" 2>/dev/null; then
+    log "starting Babo office UI (10.0.0.5:${BABO_PORT}, host-WG-only)..."
     BABO_ID=$($PODMAN run -d \
         --name neoclaw-babo \
         --hostname neoclaw-babo \
@@ -62,14 +61,29 @@ if $PODMAN image exists "$BABO_IMAGE" 2>/dev/null; then
         -e "NEOCLAW_MANAGER_URL=${NEOCLAW_MANAGER_URL:-http://10.0.0.3:9200}" \
         -e "NEOCLAW_OFFICE_BACKEND=manager" \
         "$BABO_IMAGE" 2>&1)
+    if [ $? -eq 0 ]; then
+        log "Babo started: ${BABO_ID:0:12}"
+        for i in $(seq 1 20); do
+            if curl -sf "http://10.0.0.5:${BABO_PORT}/health" >/dev/null 2>&1; then
+                log "Babo is healthy (10.0.0.5:${BABO_PORT})"
+                break
+            fi
+            sleep 2
+        done
+    else
+        log "WARNING: Babo failed to start: $BABO_ID"
+    fi
+else
+    log "Babo image absent (${BABO_IMAGE}) — office UI not started"
 fi
 ```
 
-Elided from the excerpt, named so nothing goes missing quietly: the start log
-line (`log "starting Babo office UI …"`), the health branch after start
-(`if [ $? -eq 0 ] … else … WARNING …`, the warn-not-fatal probe described
-below), and the outer `else` that logs "Babo image absent …" when the image is
-not present.
+Nothing is elided. One drift note, reported rather than smoothed: the file's
+own header comment for this phase says "no host bind mounts" while the launch
+line does exactly one read-only host bind mount (`${HOST_RUNTIME}/babo` →
+`/etc/wireguard`). The code is right and the comment is the leftover of the
+same wording error this slice corrected elsewhere; it is the Manager lane's to
+fix, and this README quotes the code.
 
 What that means, as source rather than assumption:
 
