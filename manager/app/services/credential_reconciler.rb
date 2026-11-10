@@ -44,8 +44,12 @@ class CredentialReconciler
       counts
     end
 
-    # Seam: tests stub this; production reads the real podman inventory.
+    # Seam: tests set inventory_override; production reads podman.
+    attr_writer :inventory_override
+
     def podman_inventory
+      return @inventory_override if @inventory_override
+
       Podman.inventory.map { |p| p[:name] }.compact
     end
 

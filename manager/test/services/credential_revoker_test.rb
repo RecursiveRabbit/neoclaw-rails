@@ -23,7 +23,15 @@ class CredentialRevokerTest < ActiveSupport::TestCase
   end
 
   def teardown
+    CredentialRevoker.http_override = nil
     FileUtils.rm_rf(@tmp)
+  end
+
+  def with_http(fake)
+    CredentialRevoker.http_override = fake
+    yield
+  ensure
+    CredentialRevoker.http_override = nil
   end
 
   test "revokes a forgejo user and closes its row" do
@@ -32,7 +40,7 @@ class CredentialRevokerTest < ActiveSupport::TestCase
                                     launch_ref: "boot1:alpha")
     fake = FakeHTTP.new(204)
 
-    CredentialRevoker.stub(:http, fake) do
+    with_http(fake) do
       assert_equal :revoked, CredentialRevoker.revoke(row, reason: "teardown")
     end
 
@@ -48,10 +56,10 @@ class CredentialRevokerTest < ActiveSupport::TestCase
     broken = CredentialCheckout.issue!(scope: "forgejo-user", instance_name: "gamma",
                                        revoke_handle: "forgejo:user:gamma", launch_ref: "b:gamma")
 
-    CredentialRevoker.stub(:http, FakeHTTP.new(404)) do
+    with_http(FakeHTTP.new(404)) do
       assert_equal :revoked, CredentialRevoker.revoke(gone, reason: "teardown")
     end
-    CredentialRevoker.stub(:http, FakeHTTP.new(500)) do
+    with_http(FakeHTTP.new(500)) do
       assert_equal :failed, CredentialRevoker.revoke(broken, reason: "teardown")
     end
 

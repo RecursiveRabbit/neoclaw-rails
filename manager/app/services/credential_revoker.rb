@@ -41,9 +41,11 @@ class CredentialRevoker
       end
     end
 
-    # HTTP seam — tests stub this instead of the network.
+    # HTTP seam — tests set http_override instead of the network.
+    attr_writer :http_override
+
     def http
-      @http ||= HTTPX
+      @http_override || (@http ||= HTTPX)
     end
 
     private

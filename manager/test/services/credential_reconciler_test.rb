@@ -7,7 +7,15 @@ class CredentialReconcilerTest < ActiveSupport::TestCase
   end
 
   def teardown
+    CredentialReconciler.inventory_override = nil
     FileUtils.rm_rf(@tmp)
+  end
+
+  def with_inventory(names)
+    CredentialReconciler.inventory_override = names
+    yield
+  ensure
+    CredentialReconciler.inventory_override = nil
   end
 
   def row(instance, boot, scope: "ssh-key")
@@ -21,7 +29,7 @@ class CredentialReconcilerTest < ActiveSupport::TestCase
   test "revokes rows from a previous boot whose pod is gone" do
     stale = row("gone", "oldboot")
 
-    CredentialReconciler.stub(:podman_inventory, []) do
+    with_inventory([]) do
       counts = CredentialReconciler.reconcile!
       assert_equal 1, counts[:revoked]
     end
@@ -32,7 +40,7 @@ class CredentialReconcilerTest < ActiveSupport::TestCase
   test "keeps rows from the current boot" do
     current = row("fresh", Surface.boot_id)
 
-    CredentialReconciler.stub(:podman_inventory, []) do
+    with_inventory([]) do
       counts = CredentialReconciler.reconcile!
       assert_equal 0, counts[:revoked]
     end
@@ -42,7 +50,7 @@ class CredentialReconcilerTest < ActiveSupport::TestCase
   test "keeps rows whose pod is alive even from an older boot" do
     alive = row("running", "oldboot")
 
-    CredentialReconciler.stub(:podman_inventory, [{ name: "running" }]) do
+    with_inventory(["running"]) do
       counts = CredentialReconciler.reconcile!
       assert_equal 1, counts[:kept_live]
       assert_equal 0, counts[:revoked]
