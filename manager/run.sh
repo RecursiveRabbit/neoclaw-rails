@@ -16,6 +16,20 @@ set -euo pipefail
 CONTAINER_NAME="neoclaw-manager"
 IMAGE="localhost/neoclaw-manager:latest"
 
+# --- Mesh underlay: one source, asserted before launch -----------------
+# Addresses come from manager/network.env (the single source) and the network is
+# created-if-absent and asserted by manager/mesh-network.sh. Rootless podman's
+# pasta default cannot hold a static address and cannot reach a bridge peer, so
+# the mesh rides a named user-defined network and never a host default.
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+NETWORK_ENV="${NETWORK_ENV:-${SCRIPT_DIR}/network.env}"
+[ -r "$NETWORK_ENV" ] || { echo "[manager-run] FATAL: no network source at ${NETWORK_ENV}" >&2; exit 1; }
+# shellcheck disable=SC1090
+. "$NETWORK_ENV"
+# shellcheck source=mesh-network.sh
+. "${SCRIPT_DIR}/mesh-network.sh"
+NC_MESH_NETWORK="$NC_MESH_NETWORK" ROUTER_BRIDGE_IP="$ROUTER_BRIDGE_IP" ROUTER_ENDPOINT="$ROUTER_ENDPOINT"
+
 HOST_SPAWN_DIR="/var/lib/neoclaw/spawn"
 HOST_SSH_KEYS_DIR="/var/lib/neoclaw/sftp-keys"
 HOST_DB_DIR="/var/lib/neoclaw/manager-db"
@@ -65,7 +79,7 @@ update_host_peer() {
     local pubkey
     pubkey=$(tr -d '\n' < "$pubkey_file")
     wg set nc-host peer "$pubkey" \
-        endpoint "10.88.0.20:51820" \
+        endpoint "${ROUTER_ENDPOINT}" \
         allowed-ips "10.0.0.0/8" \
         persistent-keepalive 25 2>/dev/null \
         && log "host nc-host peer re-pointed (live) → ${pubkey:0:12}..." \
@@ -82,7 +96,7 @@ Address = 10.0.0.2/32
 
 [Peer]
 PublicKey = ${pubkey}
-Endpoint = 10.88.0.20:51820
+Endpoint = ${ROUTER_ENDPOINT}
 AllowedIPs = 10.0.0.0/8
 PersistentKeepalive = 25
 EOF
@@ -120,9 +134,12 @@ podman rm -f "$CONTAINER_NAME" 2>/dev/null || true
 
 log "launching $CONTAINER_NAME..."
 
+mesh_network_ensure || { log "FATAL: mesh underlay network unusable"; exit 1; }
+
 podman run -d \
     --name "$CONTAINER_NAME" \
     --hostname "$CONTAINER_NAME" \
+    --network "${NC_MESH_NETWORK}" \
     --cap-add NET_ADMIN \
     -v "${PODMAN_SOCKET}:/run/podman/podman.sock" \
     -v "${HOST_SPAWN_DIR}:/spawn" \
@@ -134,7 +151,11 @@ podman run -d \
     -e HOST_CLAUDE_DIR="/home/hopper/.claude" \
     -e FORGEJO_ADMIN_TOKEN="$FORGEJO_ADMIN_TOKEN" \
     -e ROUTER_IMAGE="${ROUTER_IMAGE:-localhost/neoclaw-router:latest}" \
-    -e ROUTER_BRIDGE_IP="${ROUTER_BRIDGE_IP:-10.88.0.20}" \
+    -e ROUTER_BRIDGE_IP="${ROUTER_BRIDGE_IP}" \
+    -e ROUTER_ENDPOINT="${ROUTER_ENDPOINT}" \
+    -e NC_MESH_NETWORK="${NC_MESH_NETWORK}" \
+    -e NC_MESH_SUBNET="${NC_MESH_SUBNET}" \
+    -e NC_MESH_GATEWAY="${NC_MESH_GATEWAY}" \
     -e HUB_IMAGE="${HUB_IMAGE:-localhost/neoclaw-hub:latest}" \
     -e NEOCLAW_AS_TOKEN="$NEOCLAW_AS_TOKEN" \
     -e NEOCLAW_HS_TOKEN="$NEOCLAW_HS_TOKEN" \

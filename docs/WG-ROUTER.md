@@ -4,7 +4,7 @@
 
 The original design used the host kernel as a router. All WireGuard interfaces lived on the host, `ip_forward=1` was required, and the kernel could route packets between interfaces. This created two issues:
 
-1. **Bridge back door.** Agent containers had a default route through the podman bridge (10.88.0.0/16). The host was on that bridge. An agent could reach any host-local WG IP through the bridge — bypassing WireGuard authorization entirely. Fixed with an iptables INPUT rule, but the fix was a patch for a design flaw.
+1. **Bridge back door.** Agent containers had a default route through a podman bridge (the default bridge was 10.88.0.0/16; since 2026-11-10 the mesh rides a named user-defined network, subnet in `manager/network.env`). The host was on that bridge. An agent could reach any host-local WG IP through the bridge — bypassing WireGuard authorization entirely. Fixed with an iptables INPUT rule, but the fix was a patch for a design flaw.
 
 2. **Cross-interface leakage.** With forwarding enabled, any misconfiguration could allow traffic to cross between WG interfaces the host kernel happened to know about. Source-based policy routing mitigated this but added complexity.
 

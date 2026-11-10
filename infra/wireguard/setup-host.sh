@@ -83,12 +83,16 @@ done
 
 echo ""
 echo "=== Bridge back door prevention ==="
-# Block podman bridge traffic to WG address space.
-# Agents can only reach WG addresses through WireGuard, not the bridge.
+# Block mesh-underlay traffic to WG address space.
+# Agents can only reach WG addresses through WireGuard, not the mesh bridge.
 # Internet access via bridge NAT is unaffected.
-iptables -C INPUT -s 10.88.0.0/16 -d 10.0.0.0/8 -j DROP 2>/dev/null || \
-  iptables -I INPUT -s 10.88.0.0/16 -d 10.0.0.0/8 -j DROP
-echo "  iptables: DROP 10.88.0.0/16 → 10.0.0.0/8 on INPUT"
+# The subnet comes from manager/network.env (the single source).
+NETWORK_ENV="$(dirname "$0")/../../manager/network.env"
+# shellcheck disable=SC1090
+. "$NETWORK_ENV"
+iptables -C INPUT -s ${NC_MESH_SUBNET} -d 10.0.0.0/8 -j DROP 2>/dev/null || \
+  iptables -I INPUT -s ${NC_MESH_SUBNET} -d 10.0.0.0/8 -j DROP
+echo "  iptables: DROP ${NC_MESH_SUBNET} → 10.0.0.0/8 on INPUT"
 
 echo ""
 echo "=== Interface status ==="

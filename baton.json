@@ -19,7 +19,7 @@
   "architecture": {
     "topology": "Star. Router is the center. Every peer connects only to the Router. Manager is the orchestrator — launches Router and Hub on boot.",
     "address_plan": {
-      "10.0.0.1": "Router (pod, bridge IP 10.88.0.20 static)",
+      "10.0.0.1": "Router (pod, underlay IP 10.89.0.20 static; from manager/network.env, superseded 10.88.0.20)",
       "10.0.0.2": "Host (nc-host WG interface, persistent key)",
       "10.0.0.3": "Manager (pod, bridge IP dynamic)",
       "10.0.0.4": "Hub (pod, bridge IP dynamic)",
@@ -111,7 +111,7 @@
   ],
 
   "important_numbers": {
-    "router_bridge_ip": "10.88.0.20",
+    "router_bridge_ip": "10.89.0.20",
     "hub_wg_ip": "10.0.0.4",
     "hub_port": 3100,
     "manager_port": 9200,

@@ -33,6 +33,23 @@ die() { log "FATAL: $*"; exit 1; }
 
 PODMAN="podman --remote --url unix:///run/podman/podman.sock"
 
+# --- The mesh underlay: one named network, one source of addresses -----
+# The mesh peers reach each other over a USER-DEFINED podman network, not a
+# host default. Rootless podman defaults to pasta/slirp4netns, where a static
+# `--ip` is refused outright and a default-network container cannot reach a
+# bridge peer at all (both measured; see manager/network.env). The network is
+# created if absent and then ASSERTED — its subnet and gateway must equal
+# manager/network.env, or this boot refuses to start. Nothing here carries an
+# address of its own.
+NETWORK_ENV="${NETWORK_ENV:-/app/network.env}"
+[ -r "$NETWORK_ENV" ] || die "no network source at ${NETWORK_ENV} (manager/network.env must be in the image)"
+# shellcheck disable=SC1090
+. "$NETWORK_ENV"
+# shellcheck source=mesh-network.sh
+. "${MESH_NETWORK_SH:-/app/mesh-network.sh}"
+mesh_network_ensure || die "mesh underlay network unusable — refusing to start"
+log "mesh underlay: network ${NC_MESH_NETWORK} subnet ${NC_MESH_SUBNET} gateway ${NC_MESH_GATEWAY}, Router ${ROUTER_BRIDGE_IP}, endpoint ${ROUTER_ENDPOINT}"
+
 # Build config — baked at build time. Contains ROUTER_PUBLISH_WG if users configured.
 source /etc/neoclaw/build_config.sh 2>/dev/null || true
 
@@ -91,10 +108,11 @@ log "starting Router..."
 ROUTER_ID=$($PODMAN run -d \
     --name wg-router \
     --hostname wg-router \
+    --network "${NC_MESH_NETWORK}" \
     --cap-add NET_ADMIN \
     --cap-add NET_RAW \
     --sysctl net.ipv4.ip_forward=1 \
-    --ip "${ROUTER_BRIDGE_IP:-10.88.0.20}" \
+    --ip "${ROUTER_BRIDGE_IP}" \
     -v "${HOST_RUNTIME}/router:/etc/router:ro,Z" \
     $ROUTER_PUBLISH_ARGS \
     "$ROUTER_IMAGE" 2>&1) || die "Router failed to start: $ROUTER_ID"
@@ -147,6 +165,7 @@ log "starting Hub..."
 HUB_RESULT=$($PODMAN run -d \
     --name neoclaw-hub \
     --hostname neoclaw-hub \
+    --network "${NC_MESH_NETWORK}" \
     --cap-add NET_ADMIN \
     -v "${HOST_RUNTIME}/hub:/etc/wireguard:ro,Z" \
     -e "NEOCLAW_AS_TOKEN=${NEOCLAW_AS_TOKEN:-}" \
@@ -240,6 +259,7 @@ if $PODMAN image exists "$BABO_IMAGE" 2>/dev/null && babo_trusted_source_ok "$BA
     BABO_ID=$($PODMAN run -d \
         --name neoclaw-babo \
         --hostname neoclaw-babo \
+        --network "${NC_MESH_NETWORK}" \
         --cap-add NET_ADMIN \
         -v "${HOST_RUNTIME}/babo:/etc/wireguard:ro,Z" \
         -e "BABO_PORT=${BABO_PORT}" \

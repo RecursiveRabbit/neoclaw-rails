@@ -8,7 +8,7 @@
 #   input  PUBLIC_DIR         directory holding nc-host.pub, users-peers.fragment,
 #                             router-services.yml (defaults /etc/neoclaw)
 #   input  HOST_WG_PUBKEY     host's persistent public key (required)
-#   input  ROUTER_BRIDGE_IP   default 10.88.0.20
+#   input  ROUTER_BRIDGE_IP   from manager/network.env (no default here)
 #   input  ROUTER_WG_PORT     default 51820
 #   output ROUTER_PUBKEY, MANAGER_PUBKEY, HUB_PUBKEY, BOOT_ID (echoed, and in
 #          $RUNTIME_DIR/boot.json)
@@ -17,7 +17,7 @@
 
 render_boot_runtime() {
     local public_dir="${PUBLIC_DIR:-/etc/neoclaw}"
-    local bridge="${ROUTER_BRIDGE_IP:-10.88.0.20}"
+    local bridge="${ROUTER_BRIDGE_IP:?ROUTER_BRIDGE_IP is required (manager/network.env)}"
     local wg_port="${ROUTER_WG_PORT:-51820}"
 
     if [ -z "${HOST_WG_PUBKEY:-}" ]; then

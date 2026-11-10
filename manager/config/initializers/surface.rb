@@ -109,6 +109,47 @@ module Surface
       raise "router pubkey missing at #{SPAWN_DIR}/runtime/router.pubkey — Manager boot did not render it"
     end
 
+    # =================================================================
+    # Mesh underlay — ONE source
+    # =================================================================
+    #
+    # manager/network.env holds the network name, subnet, gateway, Router
+    # underlay address and WG endpoint. Nothing in the Ruby code carries a
+    # literal address: the file is the source, and an ENV override is the only
+    # way to change a value at run time (the startup assertion in
+    # manager/mesh-network.sh checks the live network against the same file).
+    #
+    # It is parsed, not required: a missing file leaves mesh_value nil so the
+    # accessor that needs it fails loudly, rather than silently falling back to
+    # a default that is no longer anyone's.
+
+    NETWORK_ENV_PATH = File.expand_path("../../network.env", __dir__)
+
+    def network_env
+        @network_env ||= begin
+            values = {}
+            if File.exist?(NETWORK_ENV_PATH)
+                File.readlines(NETWORK_ENV_PATH).each do |line|
+                    line = line.strip
+                    next if line.empty? || line.start_with?("#")
+                    key, value = line.split("=", 2)
+                    next if key.nil? || value.nil?
+
+                    values[key.strip] = value.strip.delete_prefix('"').delete_suffix('"')
+                end
+            end
+            values
+        end
+    end
+
+    def mesh_value(key)
+        ENV[key] || network_env[key]
+    end
+
+    def mesh_network = mesh_value("NC_MESH_NETWORK")
+    def mesh_subnet  = mesh_value("NC_MESH_SUBNET")
+    def mesh_gateway = mesh_value("NC_MESH_GATEWAY")
+
     # Boot id of the current Manager boot (matches the Router key in use).
     def boot_id
       JSON.parse(File.read(File.join(SPAWN_DIR, "runtime", "boot.json")))['boot_id']
@@ -116,9 +157,10 @@ module Surface
       "unknown"
     end
 
-    # Router's bridge IP + WG port. Baked into agent spawn.json.
+    # Router's underlay IP + WG port. Baked into agent spawn.json.
     def router_endpoint
-      ENV.fetch("ROUTER_ENDPOINT", "10.88.0.20:51820")
+        mesh_value("ROUTER_ENDPOINT") ||
+            raise("no ROUTER_ENDPOINT in manager/network.env — the mesh has no endpoint")
     end
 
     # =================================================================
@@ -182,7 +224,8 @@ module Surface
     end
 
     def router_bridge_ip
-      ENV.fetch("ROUTER_BRIDGE_IP", "10.88.0.20")
+        mesh_value("ROUTER_BRIDGE_IP") ||
+            raise("no ROUTER_BRIDGE_IP in manager/network.env — the Router has no address")
     end
 
     def hub_image

@@ -63,6 +63,7 @@ if $PODMAN image exists "$BABO_IMAGE" 2>/dev/null; then
     BABO_ID=$($PODMAN run -d \
         --name neoclaw-babo \
         --hostname neoclaw-babo \
+        --network "${NC_MESH_NETWORK}" \
         --cap-add NET_ADMIN \
         -v "${HOST_RUNTIME}/babo:/etc/wireguard:ro,Z" \
         -e "BABO_PORT=${BABO_PORT}" \
@@ -101,6 +102,14 @@ What that means, as source rather than assumption:
   `wg0.conf`, rendered that boot, mode `0600`.
 - **One mount only**, read-only, `:ro,Z`, target `/etc/wireguard`. No `-p`, no
   `--network host`, no socket mount, no other volumes.
+- **Joins the mesh underlay, explicitly.** `--network "${NC_MESH_NETWORK}"` —
+  the named user-defined network from `manager/network.env`, created and
+  asserted at boot. Rootless podman's default (pasta) cannot reach a bridge
+  peer at all (measured: `nc -z <router underlay> 19999` UNREACHABLE on the
+  default, REACHABLE on the named network), so an unqualified launch would
+  never complete a WireGuard handshake. This is not a service door: Babo binds
+  its listeners on its WG address and on loopback, never on `0.0.0.0`, so its
+  underlay address listens on nothing.
 - **`NET_ADMIN` only.** `--sysctl ip_forward` is *not* set for Babo: it does
   not route traffic.
 - The Manager's own health probe after start is

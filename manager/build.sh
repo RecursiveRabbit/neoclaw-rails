@@ -26,8 +26,11 @@ MANAGER_IMAGE="localhost/neoclaw-manager:latest"
 ROUTER_IMAGE="localhost/neoclaw-router:latest"
 HUB_IMAGE="localhost/neoclaw-hub:latest"
 
-ROUTER_BRIDGE_IP="10.88.0.20"
-ROUTER_WG_PORT="51820"
+# Mesh underlay addresses come from manager/network.env — the single source —
+# never from a literal here.
+# shellcheck disable=SC1090
+. "${SCRIPT_DIR}/network.env"
+ROUTER_WG_PORT="${ROUTER_ENDPOINT##*:}"
 
 # Host's persistent key (one-time setup, never regenerated)
 HOST_PUBKEY_PATH="$PROJECT_DIR/infra/wireguard/keys/nc-host.pub"

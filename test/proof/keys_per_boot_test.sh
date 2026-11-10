@@ -34,6 +34,9 @@ boot() {  # $1 = runtime dir; echoes "router manager hub boot_id"
         RUNTIME_DIR="$1"
         PUBLIC_DIR="$PUB"
         HOST_WG_PUBKEY="$(cat "$PUB/nc-host.pub")"
+        # The mesh addresses come from the same single source the Manager uses.
+        # shellcheck disable=SC1090
+        . "$REPO/manager/network.env"
         # shellcheck source=/dev/null
         source "$REPO/manager/runtime-keys.sh"
         render_boot_runtime || exit 1

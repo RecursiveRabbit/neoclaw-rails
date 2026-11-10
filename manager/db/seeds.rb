@@ -1,10 +1,10 @@
 # Seeds the Manager database with identity configs and service types.
 #
 # WG public keys and endpoints come from infra/wireguard/keys/ and infra/services.conf.
-# The endpoint uses the podman bridge gateway (10.88.0.1) because agents reach
-# host WG ports through the bridge, not the LAN.
+# The bridge gateway is the mesh underlay's host-side address, from the single
+# source in manager/network.env (parsed by Surface) — never a literal here.
 
-BRIDGE_GATEWAY = "10.88.0.1"
+BRIDGE_GATEWAY = Surface.mesh_gateway
 
 # --- Service Types ---
 # Keys read from infra at deploy time and hardcoded here.

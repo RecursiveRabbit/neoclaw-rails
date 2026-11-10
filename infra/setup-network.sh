@@ -15,6 +15,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+# Mesh underlay addresses come from the single source in manager/network.env.
+# shellcheck disable=SC1090
+. "$PROJECT_DIR/manager/network.env"
 WG_INTERFACE="nc-host"
 
 log() { echo "[setup-network] $*"; }
@@ -40,7 +44,7 @@ write_wg_config() {
 
     # Router public key — from the wg-router pod
     local router_pubkey="${ROUTER_PUBKEY:-s6MqVlEFH0X8dkh+QWSMfRHYVIZulpID6/OhEdB+6TA=}"
-    local router_endpoint="${ROUTER_ENDPOINT:-10.88.0.20:51820}"
+    local router_endpoint="${ROUTER_ENDPOINT}"
 
     cat > "/etc/wireguard/${WG_INTERFACE}.conf" <<EOF
 [Interface]
@@ -50,8 +54,10 @@ ListenPort = 51820
 
 # Block podman bridge traffic to WG address space.
 # Agents reach WG addresses through WireGuard only, not the bridge.
-PostUp = iptables -C INPUT -s 10.88.0.0/16 -d 10.0.0.0/8 -j DROP 2>/dev/null || iptables -I INPUT -s 10.88.0.0/16 -d 10.0.0.0/8 -j DROP
-PostDown = iptables -D INPUT -s 10.88.0.0/16 -d 10.0.0.0/8 -j DROP 2>/dev/null || true
+# Block mesh-underlay traffic to WG address space.
+# Agents reach WG addresses through WireGuard only, not the mesh bridge.
+PostUp = iptables -C INPUT -s ${NC_MESH_SUBNET} -d 10.0.0.0/8 -j DROP 2>/dev/null || iptables -I INPUT -s ${NC_MESH_SUBNET} -d 10.0.0.0/8 -j DROP
+PostDown = iptables -D INPUT -s ${NC_MESH_SUBNET} -d 10.0.0.0/8 -j DROP 2>/dev/null || true
 
 [Peer]
 # wg-router pod — the center of the star
@@ -154,7 +160,7 @@ verify() {
     done
 
     # iptables
-    if iptables -C INPUT -s 10.88.0.0/16 -d 10.0.0.0/8 -j DROP &>/dev/null; then
+    if iptables -C INPUT -s ${NC_MESH_SUBNET} -d 10.0.0.0/8 -j DROP &>/dev/null; then
         log "iptables bridge block: active"
     else
         log "iptables bridge block: MISSING"

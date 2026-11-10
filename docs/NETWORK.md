@@ -95,23 +95,36 @@ Table numbers match the last octet. Each table has one route:
 
 ## The Bridge Back Door
 
-Podman gives each container an `eth0` on a bridge network (10.88.0.0/16)
-with a default route to the host. Without mitigation, an agent could reach
-host-local WG addresses through the bridge, bypassing WireGuard entirely.
+A container on a podman bridge network gets an `eth0` with a default route to
+the host. Without mitigation, an agent could reach host-local WG addresses
+through the bridge, bypassing WireGuard entirely.
+
+Since 2026-11-10 the mesh underlay is a **user-defined network named in one
+place** — `manager/network.env` — rather than podman's default bridge. Its
+subnet is `NC_MESH_SUBNET` in that file (`10.89.0.0/16` at the time of
+writing); the Router's static underlay address is `ROUTER_BRIDGE_IP`
+(`10.89.0.20`) and the WG endpoint peers dial is `ROUTER_ENDPOINT`
+(`10.89.0.20:51820`). Superseded values, kept named: the previous default
+bridge at `10.88.0.0/16`, Router underlay `10.88.0.20`, endpoint
+`10.88.0.20:51820`. Rootless podman under pasta/slirp4netns refuses a static
+`--ip` outright and a default-network container cannot reach a bridge peer, so
+a named network with an asserted subnet is the only form that works.
 
 ### Fix: iptables INPUT Rule
 
 ```bash
-iptables -I INPUT -s 10.88.0.0/16 -d 10.0.0.0/16 -j DROP
+# NC_MESH_SUBNET from manager/network.env — the single source
+. manager/network.env
+iptables -I INPUT -s "$NC_MESH_SUBNET" -d 10.0.0.0/16 -j DROP
 ```
 
-This drops any traffic from the podman bridge destined for the WG address
+This drops any traffic from the mesh bridge destined for the WG address
 space. Agents can only reach WG addresses through WireGuard. Internet
 access (via the bridge's NAT gateway) is unaffected.
 
 The `/16` on the destination covers services (10.0.0.x) and the entire
-agent pool (10.0.1.x through 10.0.255.x). The podman bridge at
-10.88.0.0/16 is in a different part of 10/8, so no conflict.
+agent pool (10.0.1.x through 10.0.255.x). The mesh underlay sits in a
+separate /16 of 10/8, so there is no conflict.
 
 **Why INPUT not FORWARD:** The WG addresses are local to the host
 (assigned to its own interfaces). Traffic to them goes through the INPUT
@@ -128,10 +141,11 @@ ufw allow in on podman0 proto udp to any port 51820:51828 \
   comment "WG - neoclaw-rails agent pods"
 ```
 
-The WG handshake is a UDP packet from the pod's bridge IP (10.88.x.x)
-to the host's LAN IP (172.16.x.x) on a WG listen port. This doesn't
-touch WG addresses, so the iptables INPUT rule doesn't affect it. But
-UFW's default-deny on INPUT will block it without this allow rule.
+The WG handshake is a UDP packet from the pod's mesh underlay address
+(`NC_MESH_SUBNET`, e.g. 10.89.x.x) to the host's LAN IP (172.16.x.x) on a WG
+listen port. This doesn't touch WG addresses, so the iptables INPUT rule
+doesn't affect it. But UFW's default-deny on INPUT will block it without this
+allow rule.
 
 ## Address Space
 
@@ -140,7 +154,9 @@ UFW's default-deny on INPUT will block it without this allow rule.
   10.0.0.1-8  — Service interfaces (static, host)
   10.0.1.1+   — Agent pool (dynamic, ~65k addresses)
 
-10.88.0.0/16  — Podman default bridge (managed by podman)
+10.89.0.0/16  — Mesh underlay (user-defined podman network `neoclaw-mesh`;
+                values in manager/network.env. Superseded 2026-11-10:
+                the podman default bridge at 10.88.0.0/16)
 
 172.16.x.x    — LAN (host's physical network)
 ```
