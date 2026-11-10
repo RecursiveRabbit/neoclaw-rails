@@ -6,7 +6,8 @@
 # babo's wg0 — so there is NO published host port and no shared namespace.
 #
 # Isolation properties:
-#   - no podman socket, no writable host path; exactly ONE read-only mount,
+#   - no podman/docker socket, no container-runtime client in the image
+#   - no writable host path; at run time exactly ONE read-only mount,
 #     /etc/wireguard, from $HOST_SPAWN_DIR/runtime/babo (per-boot key)
 #   - no published port; the app binds the WG address only
 #   - NET_ADMIN is scoped to this container's own namespace for wg0 (same as
@@ -14,20 +15,22 @@
 #   - NEOCLAW_MANAGER_URL is the only outbound dependency; unreachable shows
 #     the UI's `unknown` banner
 #
-# Build (from a checkout of the Babo office slice):
+# Build (from a checkout of the Babo office slice; the build context is the
+# Babo source root, not this directory):
 #   podman build -t localhost/neoclaw-babo:latest -f deploy/babo/Containerfile <babo-src>
 
 # ---------- stage 1: frontend bundle (babo/web/dist) ----------
 # babo/webui/build.py serves the built bundle from babo/web/dist, and the
-# tree ships no dist — the image must build it. Bun lockfile is authoritative.
+# source tree ships no dist — the image must build it. Bun's lockfile is
+# authoritative; the build script is `tsc -p tsconfig.build.json && vite build`
+# (webui/package.json), and vite writes ../babo/web/dist (webui/vite.config.ts).
 FROM oven/bun:1.2-slim AS web
 
 WORKDIR /src
 COPY webui/package.json webui/bun.lock ./
 RUN bun install --frozen-lockfile
 COPY webui/ ./
-COPY tsconfig*.json* ./
-RUN bun run build
+RUN bun run build && test -f /src/babo/web/dist/index.html
 
 # ---------- stage 2: runtime ----------
 FROM python:3.12-slim
@@ -38,10 +41,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-COPY pyproject.toml ./
+# The hatch build hook (hatch_build.py) bundles docs/ into the babo-document
+# skill and REQUIRES docs/README.md — a wheel built without it fails. The
+# webui bundle comes from stage 1 and is placed where the hook expects a
+# prebuilt dist, so the hook's own UI build is skipped by env, not by luck.
+COPY pyproject.toml hatch_build.py README.md LICENSE THIRD_PARTY_NOTICES.md ./
+COPY docs/ ./docs/
 COPY babo/ ./babo/
-RUN pip install --no-cache-dir .
 COPY --from=web /src/babo/web/dist ./babo/web/dist
+ENV BABO_SKIP_WEBUI_BUILD=1
+RUN pip install --no-cache-dir .
+ENV BABO_SKIP_WEBUI_BUILD=
+
+# The installed package (site-packages/babo) is what runs. Place the bundle
+# there explicitly instead of trusting the build backend's file selection, then
+# prove it: an image that installs cleanly and serves no UI must fail here, not
+# in a browser.
+RUN python3 -c "import os, shutil, babo.web; dst = os.path.join(os.path.dirname(babo.web.__file__), 'dist'); shutil.rmtree(dst, ignore_errors=True); shutil.copytree('/app/babo/web/dist', dst)" \
+ && python3 -c "import os, babo.web; p = os.path.join(os.path.dirname(babo.web.__file__), 'dist', 'index.html'); assert os.path.isfile(p) and os.path.getsize(p) > 0, p; print('web bundle:', p)" \
+ && rm -rf /app/babo
 
 COPY deploy/babo/entrypoint.sh /usr/local/bin/babo-entrypoint
 RUN chmod +x /usr/local/bin/babo-entrypoint
@@ -51,6 +69,7 @@ ENV BABO_PORT=8843 \
     NEOCLAW_MANAGER_URL=http://10.0.0.3:9200 \
     PYTHONUNBUFFERED=1
 
+# Documentation only. Nothing is published at run time by this image.
 EXPOSE 8843
 
 # Probe the address the app actually binds. A loopback probe would only ever
