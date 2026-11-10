@@ -20,7 +20,9 @@ module Api
       # POST /api/v1/office/agents/:handle/actions  {action:, reason:}
       def create_action
         handle = params[:handle].to_s
-        action_name = params[:action_name].to_s.presence || params.dig(:action).to_s
+        # NB: params[:action] is Rails' own controller-action key — read the
+        # caller's `action` from the raw request parameters.
+        action_name = request.request_parameters["action"].to_s
 
         unless OfficeAction::ACTIONS.include?(action_name)
           return render json: { error: "unknown action '#{action_name}'",
