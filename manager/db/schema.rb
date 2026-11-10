@@ -10,7 +10,27 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_03_24_000001) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_10_000100) do
+  create_table "credential_checkouts", id: false, force: :cascade do |t|
+    t.string "id", null: false
+    t.string "scope", null: false
+    t.string "instance_name", null: false
+    t.string "launch_ref", null: false
+    t.string "revoke_handle", null: false
+    t.boolean "unrevocable", default: false, null: false
+    t.datetime "issued_at", null: false
+    t.datetime "expires_at"
+    t.datetime "revoked_at"
+    t.string "revoked_reason"
+    t.string "note"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["instance_name", "scope"], name: "index_credential_checkouts_on_instance_name_and_scope"
+    t.index ["launch_ref"], name: "index_credential_checkouts_on_launch_ref"
+    t.index ["revoked_at"], name: "index_credential_checkouts_on_revoked_at"
+    t.primary_key "id"
+  end
+
   create_table "agent_configs", force: :cascade do |t|
     t.json "base_services", default: []
     t.json "channel_overrides", default: {}

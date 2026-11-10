@@ -171,6 +171,15 @@ class Provisioner
         Rails.logger.warn "forgejo: API token creation failed for #{instance_name}"
       end
 
+      # Ledger: one row covers the user AND its API token — deleting the
+      # user revokes both, so one locator is the honest granularity.
+      CredentialCheckout.issue!(
+        scope: "forgejo-user",
+        instance_name: instance_name,
+        revoke_handle: "forgejo:user:#{instance_name}",
+        note: api_token ? "user + api token" : "user (no api token)"
+      )
+
       result = { forge_url: base_url, forge_user: instance_name }
       result[:api_token] = api_token if api_token
       result
@@ -206,6 +215,12 @@ class Provisioner
       FileUtils.mkdir_p(keys_dir)
       File.write(File.join(keys_dir, "authorized_keys"), "#{ssh_pubkey}\n")
 
+      CredentialCheckout.issue!(
+        scope: "ssh-key",
+        instance_name: instance_name,
+        revoke_handle: "file:#{keys_dir}"
+      )
+
       Rails.logger.info "ssh: authorized #{instance_name} as #{identity}"
       { host: Surface.host_wg_ip, user: identity, port: 22 }
     end
@@ -228,6 +243,11 @@ class Provisioner
 
       if resp.respond_to?(:status) && resp.status == 200
         data = JSON.parse(resp.body, symbolize_names: true)
+        CredentialCheckout.issue!(
+          scope: "valley-token",
+          instance_name: instance_name,
+          revoke_handle: "valley:token:#{valley_name}"
+        )
         Rails.logger.info "valley: token generated for #{valley_name}"
         { token: data[:token], url: Surface.valley_url }
       else
@@ -259,6 +279,11 @@ class Provisioner
 
       if resp.respond_to?(:status) && resp.status == 200
         data = JSON.parse(resp.body, symbolize_names: true)
+        CredentialCheckout.issue!(
+          scope: "vikunja-token",
+          instance_name: instance_name,
+          revoke_handle: "vikunja:token:#{identity}"
+        )
         Rails.logger.info "vikunja: token generated for #{identity}"
         { token: data[:token], url: Surface.vikunja_url, project_id: data[:project_id] }
       else
@@ -297,6 +322,16 @@ class Provisioner
 
         if [200, 201].include?(resp.status)
           data = JSON.parse(resp.body, symbolize_names: true)
+          # Generic tokens have no known revocation endpoint in this system.
+          # Record it as unrevocable so the ledger tells the truth instead of
+          # pretending a teardown closes it.
+          CredentialCheckout.issue!(
+            scope: "generic-token",
+            instance_name: instance_name,
+            revoke_handle: "generic:#{endpoint}",
+            unrevocable: true,
+            note: "no revoke endpoint configured for #{service.name}"
+          )
           return { token: data[:token] || data[:access_token], url: base_url }
         else
           raise ProvisionError, "token provision #{service.name}: #{resp.status} #{resp.body}"

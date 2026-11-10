@@ -34,6 +34,18 @@ class Orchestrator
 
     private
 
+    # A pod we cannot adopt holds credentials nobody will ever tear down.
+    # Revoke them by instance name — the ledger is keyed on it, so this works
+    # even when the Container record is gone.
+    def revoke_orphan_credentials(instance_name)
+      counts = CredentialRevoker.revoke_all(instance_name, reason: "orphan")
+      AuditLog.record("ORPHAN_CREDENTIALS_REVOKED",
+        instance_name: instance_name,
+        detail: "revoked=#{counts[:revoked]} failed=#{counts[:failed]} unrevocable=#{counts[:unrevocable]}")
+    rescue => e
+      AuditLog.record("ORPHAN_REVOKE_FAILED", instance_name: instance_name, detail: e.message)
+    end
+
     def reconcile_pod(pod)
       instance_name = pod[:name]
       Rails.logger.info "Orchestrator: reconciling #{instance_name}..."
@@ -44,6 +56,7 @@ class Orchestrator
       spawn_json = Podman.read_file(instance_name, "/run/secrets/spawn.json")
       unless spawn_json
         Rails.logger.warn "Orchestrator: #{instance_name} has no spawn.json — removing"
+        revoke_orphan_credentials(instance_name)
         Podman.stop_container(instance_name)
         return
       end
@@ -54,6 +67,7 @@ class Orchestrator
 
       unless identity && channel
         Rails.logger.warn "Orchestrator: #{instance_name} spawn.json missing identity/channel — removing"
+        revoke_orphan_credentials(instance_name)
         Podman.stop_container(instance_name)
         return
       end
@@ -64,6 +78,7 @@ class Orchestrator
       config = AgentConfig.find_by(identity: identity)
       unless config
         Rails.logger.warn "Orchestrator: no AgentConfig for '#{identity}' — removing #{instance_name}"
+        revoke_orphan_credentials(instance_name)
         Podman.stop_container(instance_name)
         return
       end

@@ -14,6 +14,12 @@ Rails.application.config.after_initialize do
       rescue => e
         Rails.logger.error "Orchestrator boot reconciliation failed: #{e.message}\n#{e.backtrace&.first(5)&.join("\n")}"
       end
+      begin
+        # After pods are adopted, close checkouts no live pod owns.
+        CredentialReconciler.reconcile!
+      rescue => e
+        Rails.logger.error "Credential reconciliation failed: #{e.message}"
+      end
     end
   end
 end

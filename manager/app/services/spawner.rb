@@ -43,6 +43,10 @@ class Spawner
       wg_keypair = generate_wg_keypair
       ssh_keypair = generate_ssh_keypair
 
+      # Relaunch: every credential from the previous launch dies with it.
+      # Work survives; secrets do not.
+      CredentialRevoker.revoke_all(instance_name, reason: "relaunch")
+
       # Register or activate — agent may not exist on a fresh Router
       # (e.g., after Manager restart where Router was rebuilt ephemeral).
       if RouterClient.registered?(instance_name)
@@ -108,6 +112,9 @@ class Spawner
       # Generate ephemeral keys
       wg_keypair = generate_wg_keypair
       ssh_keypair = generate_ssh_keypair
+
+      # A fresh spawn supersedes any earlier launch's credentials.
+      CredentialRevoker.revoke_all(instance_name, reason: "spawn")
 
       # Register or activate on the Router.
       # The Router is the sole source of truth for IP allocation.

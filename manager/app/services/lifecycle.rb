@@ -126,6 +126,15 @@ class Lifecycle
         end
       end
 
+      # Close every credential row for this instance, including any the
+      # Container record no longer lists (the record is not the ledger).
+      counts = CredentialRevoker.revoke_all(container.instance_name, reason: "teardown")
+      if counts[:failed] > 0 || counts[:unrevocable] > 0
+        AuditLog.record("CREDENTIAL_REVOKE_PARTIAL",
+          instance_name: container.instance_name,
+          detail: "revoked=#{counts[:revoked]} failed=#{counts[:failed]} unrevocable=#{counts[:unrevocable]}")
+      end
+
       # Tell the Router to freeze this agent (removes WG peer, keeps firewall rules)
       begin
         RouterClient.freeze(name: container.instance_name)
