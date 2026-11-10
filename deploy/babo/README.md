@@ -189,7 +189,9 @@ start must look broken, not clean.
 `test/proof/babo_packaging_check.sh` runs on the deployment host and prints
 `PASS`/`FAIL`/`UNMET` per line. It can prove from the image alone: facts 1, 2's
 image side (no sockets, no runtime client), the refusal in fact 3 (no config →
-no start), facts 5 and 6. It can prove from a running container
+no start), facts 5 and 6, and fact 7's image half (the image's own `Config.Env`
+swept for token variables, naming names and never values). It can prove from a
+running container
 (`--container NAME`): the mount set, the port/network-mode facts, and the
 capability set. It cannot prove the effective listener or the Router's
 off-source denial without a live boot and a second source — those stay `UNMET`

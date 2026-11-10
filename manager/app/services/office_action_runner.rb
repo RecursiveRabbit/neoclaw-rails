@@ -100,7 +100,8 @@ class OfficeActionRunner
     def rescue_agent(container)
       Lifecycle.rescue!(container)
       { state: "succeeded",
-        detail: "rescued #{container.instance_name}; workspace preserved, credentials rotated" }
+        detail: "rescued #{container.instance_name}; workspace preserved, credentials revoked " \
+                "(new credentials are minted at the next wake)" }
     rescue => e
       { state: "failed", detail: "rescue failed: #{e.class}: #{e.message}" }
     end

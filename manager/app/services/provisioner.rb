@@ -121,7 +121,7 @@ class Provisioner
 
       # 201 = created, 422 = already exists (idempotent)
       unless [201, 422].include?(resp.status)
-        raise ProvisionError, "forgejo create user: #{resp.status} #{resp.body}"
+        raise ProvisionError, "forgejo create user: #{resp.status} #{error_excerpt(resp)}"
       end
 
       # Delete any existing SSH keys for this user (stale from prior spawn)
@@ -141,7 +141,7 @@ class Provisioner
       }, token: token)
 
       unless [201, 422].include?(resp.status)
-        raise ProvisionError, "forgejo add key: #{resp.status} #{resp.body}"
+        raise ProvisionError, "forgejo add key: #{resp.status} #{error_excerpt(resp)}"
       end
 
       # Grant write access to the identity's repo
@@ -151,7 +151,7 @@ class Provisioner
         }, token: token)
 
         unless [204, 200, 422].include?(resp.status)
-          raise ProvisionError, "forgejo grant repo: #{resp.status} #{resp.body}"
+          raise ProvisionError, "forgejo grant repo: #{resp.status} #{error_excerpt(resp)}"
         end
       end
 
@@ -334,7 +334,7 @@ class Provisioner
           )
           return { token: data[:token] || data[:access_token], url: base_url }
         else
-          raise ProvisionError, "token provision #{service.name}: #{resp.status} #{resp.body}"
+          raise ProvisionError, "token provision #{service.name}: #{resp.status} #{error_excerpt(resp)}"
         end
       end
 
@@ -395,6 +395,24 @@ class Provisioner
         raise ProvisionError, "#{context}: #{error_msg}"
       end
       resp
+    end
+
+    # An error body is attacker-adjacent text: a service that errors while
+    # echoing the token it was handed would put that token in our log through
+    # the exception message. Mask the values of token-shaped keys, mask long
+    # opaque runs (hex/base64/url-safe tokens), and bound the length. The status
+    # and the shape of the body are what a reader needs; the values are not.
+    TOKENISH_KEY = /(?i)"[^"\n]{0,40}(token|secret|password|passwd|api[_-]?key|authorization)[^"\n]{0,40}"\s*:\s*"[^"]*"/.freeze
+    OPAQUE_RUN    = /[A-Za-z0-9_\-]{32,}/.freeze
+
+    def error_excerpt(resp)
+      body = resp.body.to_s
+      return "(empty body)" if body.empty?
+
+      body = body.gsub(TOKENISH_KEY) { |m| m.sub(/:\s*"[^"]*"\z/, ': "[redacted]"') }
+      body = body.gsub(OPAQUE_RUN, "[redacted]")
+      body = body[0, 160].to_s
+      body.length == 160 ? "#{body}…" : body
     end
 
     def http

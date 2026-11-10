@@ -400,12 +400,21 @@ else
 fi
 
 if [ -z "$LOOPBACK_PROBE" ]; then
-  unmet "loopback probe refused (pass --loopback-probe URL with a live boot)"
+  unmet "loopback probe got no answer (pass --loopback-probe URL with a live boot)"
 else
-  if curl -s -o /dev/null -m 3 "$LOOPBACK_PROBE"; then
+  # A DROP is not a refusal. Name what the probe actually did, because "refused"
+  # and "unanswered" are different observations even when both mean nothing is
+  # published on the host's loopback.
+  LRC=0
+  curl -s -o /dev/null -m 3 "$LOOPBACK_PROBE" || LRC=$?
+  if [ "$LRC" -eq 0 ]; then
     bad "loopback probe was ANSWERED ($LOOPBACK_PROBE); nothing should be published on the host"
+  elif [ "$LRC" -eq 7 ]; then
+    ok "loopback probe refused (connection refused, $LOOPBACK_PROBE)"
+  elif [ "$LRC" -eq 28 ]; then
+    ok "loopback probe refused or unanswered (timed out after 3s, $LOOPBACK_PROBE) — nothing is published; 'unanswered' is not 'refused'"
   else
-    ok "loopback probe refused ($LOOPBACK_PROBE)"
+    ok "loopback probe got no answer (curl exit $LRC, $LOOPBACK_PROBE)"
   fi
 fi
 
