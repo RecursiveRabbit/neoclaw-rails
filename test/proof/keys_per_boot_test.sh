@@ -69,6 +69,16 @@ eq "manager private key is 0600"  "$(stat -c %a "$A/manager/private.key")" "600"
 eq "hub private key is 0600"      "$(stat -c %a "$A/hub/private.key")" "600"
 eq "manager wg0.conf is 0600"     "$(stat -c %a "$A/manager/wg0.conf")" "600"
 
+# 2b. Babo's per-boot material exists (the empty-pubkey crash).
+check_file() { local d="$1" p="$2" m="${3:-}"; if [ -f "$p" ]; then if [ -n "$m" ] && [ "$(stat -c %a "$p")" != "$m" ]; then bad "$d (mode $(stat -c %a "$p"))"; else ok "$d"; fi; else bad "$d (missing: $p)"; fi; }
+check_file "babo runtime dir holds a private key" "$A/babo/private.key" 600
+check_file "babo wg0.conf is 0600"                "$A/babo/wg0.conf" 600
+BABOPUB=$(wg pubkey < "$A/babo/private.key" 2>/dev/null || echo "")
+ne "babo pubkey is not empty" "" "$BABOPUB"
+t  "router config carries that non-empty babo peer" grep -qx "    pubkey: \"$BABOPUB\"" "$A/router/config.yml"
+t  "router config renders the Manager HTTP port (not the Router API port)" grep -qx "  manager_port: 9200" "$A/router/config.yml"
+t  "babo wg0.conf peers with this boot's Router" grep -qx "PublicKey = $R1" "$A/babo/wg0.conf"
+
 # 3. Public handoff.
 eq "router.pubkey handoff equals this boot's Router key" "$(cat "$A/router.pubkey")" "$R1"
 t  "boot.json carries the matching Router key" grep -q "\"router_pubkey\":\"$R1\"" "$A/boot.json"

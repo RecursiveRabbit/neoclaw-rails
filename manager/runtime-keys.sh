@@ -30,7 +30,8 @@ render_boot_runtime() {
     fi
 
     rm -rf "$RUNTIME_DIR"
-    mkdir -p "$RUNTIME_DIR/router" "$RUNTIME_DIR/manager" "$RUNTIME_DIR/hub"
+    mkdir -p "$RUNTIME_DIR/router" "$RUNTIME_DIR/manager" "$RUNTIME_DIR/hub" \
+             "$RUNTIME_DIR/babo"
     chmod 700 "$RUNTIME_DIR"
 
     _gen_keypair() {  # $1 = private key path; echoes public key
@@ -43,6 +44,16 @@ render_boot_runtime() {
     HUB_PUBKEY=$(_gen_keypair "$RUNTIME_DIR/hub/private.key")
     BABO_PUBKEY=$(_gen_keypair "$RUNTIME_DIR/babo/private.key")
     BOOT_ID=$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')
+
+    # An empty peer pubkey is not a peer: the Router would register a peer it
+    # can never authenticate. Fail here, loudly, rather than render one.
+    for _k in ROUTER_PUBKEY MANAGER_PUBKEY HUB_PUBKEY BABO_PUBKEY; do
+        eval "_v=\$$_k"
+        if [ -z "$_v" ]; then
+            echo "render_boot_runtime: $_k is empty — key generation failed" >&2
+            return 1
+        fi
+    done
 
     cat > "$RUNTIME_DIR/router/config.yml" <<EOF
 router:
@@ -58,6 +69,9 @@ network:
   manager_ip: "10.0.0.3"
   hub_ip: "10.0.0.4"
   babo_ip: "10.0.0.5"
+  # The Manager's HTTP port — NOT the Router's API port. The Router's own
+  # listener is router.api_port (8080); Babo talks to this one (9200).
+  manager_port: 9200
   agent_subnet: "10.1.0.0/16"
   user_subnet: "10.2.0.0/16"
 

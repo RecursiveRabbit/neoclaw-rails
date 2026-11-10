@@ -31,6 +31,10 @@ class Firewall
     @services = config["services"] || {}
     @wg_port = (config.dig("router", "wg_listen_port") || 51820).to_i
     @api_port = (config.dig("router", "api_port") || 8080).to_i
+    # The Router's own API listener (above) is NOT the Manager's HTTP port.
+    # Two different symbols: conflating them produced a Babo rule that opened
+    # 8080 on the Manager, where nothing listens.
+    @manager_port = (config.dig("network", "manager_port") || 9200).to_i
     @lan_iface = config.dig("router", "lan_interface") || "eth0"
   end
 
@@ -99,7 +103,7 @@ class Firewall
     # an accidental permission.
     <<~RULES.strip
       ip saddr #{@host_ip} ip daddr #{@babo_ip} tcp dport #{@babo_port} accept
-      ip saddr #{@babo_ip} ip daddr #{@manager_ip} tcp dport #{@api_port} accept
+      ip saddr #{@babo_ip} ip daddr #{@manager_ip} tcp dport #{@manager_port} accept
     RULES
   end
 
