@@ -3,9 +3,9 @@ set -eu
 
 # Babo in a pod, in one of two separate-pod roles (D-12):
 #
-#   BABO_ROLE=ui       the operator's only door: its own wg0 at 10.0.0.5,
+#   BABO_ROLE=ui       the operator's only door: its own wg0 at 10.0.0.11,
 #                      user-facing listener on 8843, host /32 trusted.
-#   BABO_ROLE=manager  the deterministic core: its own wg0 at 10.0.0.6, the
+#   BABO_ROLE=manager  the deterministic core: its own wg0 at 10.0.0.12, the
 #                      container-runtime socket, and the UI /32 as its only
 #                      trusted source. Headless: no sshd, no shell path, no
 #                      user listener; the Router admits only UI -> Manager.
@@ -27,8 +27,8 @@ case "$ROLE" in
 esac
 
 case "$ROLE" in
-    ui)      EXPECT="${BABO_WG_ADDRESS:-10.0.0.5}" ; DEFAULT_TRUSTED="${BABO_TRUSTED_SOURCES:-10.0.0.2/32}" ;;
-    manager) EXPECT="${BABO_WG_ADDRESS:-10.0.0.6}" ; DEFAULT_TRUSTED="${BABO_TRUSTED_SOURCES:-10.0.0.5/32}" ;;
+    ui)      EXPECT="${BABO_WG_ADDRESS:-10.0.0.11}" ; DEFAULT_TRUSTED="${BABO_TRUSTED_SOURCES:-10.0.0.2/32}" ;;
+    manager) EXPECT="${BABO_WG_ADDRESS:-10.0.0.12}" ; DEFAULT_TRUSTED="${BABO_TRUSTED_SOURCES:-10.0.0.11/32}" ;;
 esac
 
 if [ "$ROLE" = "manager" ] && ! command -v podman >/dev/null 2>&1; then
@@ -88,7 +88,7 @@ if [ -z "$TRUSTED" ]; then
     wg-quick up wg0 || { log "FATAL: wg-quick failed"; exit 1; }
 
     # The effective bind address is a fact read from wg0, not an assumption. The
-    # Router rule admits 10.0.0.5 only, so a different address is a loud failure
+    # Router rule admits 10.0.0.11 only, so a different address is a loud failure
     # rather than a page nobody can reach.
 BIND="$(ip -4 -o addr show dev wg0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)"
 if [ -z "${BIND}" ]; then

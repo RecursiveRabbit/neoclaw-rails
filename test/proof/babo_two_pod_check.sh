@@ -46,7 +46,7 @@ case "$ui" in *"BABO_PORT=8843"*) ok "UI port is its own symbol (8843)" ;; *) ba
 case "$mgr" in *"BABO_API_PORT=8844"*) ok "Manager API port is its own symbol (8844)" ;; *) bad "Manager API port missing" ;; esac
 case "$mgr" in *"BABO_HEALTH_PORT=8844"*) ok "Manager health is on the API port (desk ruling)" ;; *) bad "Manager health is not on the API port" ;; esac
 case "$ui" in
-  *"BABO_MANAGER_HEALTH=http://10.0.0.10:8844/health"*) ok "UI health includes Manager reachability (desk ruling)" ;;
+  *"BABO_MANAGER_HEALTH=http://10.0.0.12:8844/health"*) ok "UI health includes Manager reachability (desk ruling)" ;;
   *) bad "UI has no Manager health endpoint" ;;
 esac
 
@@ -56,10 +56,15 @@ if "$RENDER" --check-address 10.0.0.9 >/dev/null 2>&1; then
 else
   ok "the renderer refuses an address claimed by a service definition (10.0.0.9)"
 fi
-if "$RENDER" --check-address 10.0.0.10 >/dev/null 2>&1; then
-  ok "the renderer accepts the Manager address (10.0.0.10 collides with neither table)"
+if "$RENDER" --check-address 10.0.0.12 >/dev/null 2>&1; then
+  ok "the renderer accepts the Manager address (10.0.0.12 collides with no service definition and is not local here)"
 else
-  bad "the renderer refuses its own Manager address"
+  addr_rc=$?
+  case "$addr_rc" in
+    3) unmet "Manager address 10.0.0.12 is this host's own address, so no Manager pod can bind it" ;;
+    4) unmet "cannot tell whether the Manager address 10.0.0.12 is local here ('ip' unavailable); unproven on this host" ;;
+    *) bad "the renderer refuses its own Manager address (exit ${addr_rc})" ;;
+  esac
 fi
 if grep -q "BABO_MESH_NETWORK" "$HERE/../../deploy/babo/mesh.env"; then
   bad "an unconsumed third network name is still declared"
@@ -68,13 +73,46 @@ else
 fi
 
 # M-3: identities from the single source.
-case "$ui" in *"BABO_WG_ADDRESS=10.0.0.5"*) ok "UI identity from the single source (10.0.0.5)" ;; *) bad "UI identity wrong" ;; esac
-if "$RENDER" --check-address 10.0.0.5 >/dev/null 2>&1; then
-  : # no collision
+case "$ui" in *"BABO_WG_ADDRESS=10.0.0.11"*) ok "UI identity from the single source (10.0.0.11, the desk's ruling)" ;; *) bad "UI identity wrong" ;; esac
+if "$RENDER" --check-address 10.0.0.11 >/dev/null 2>&1; then
+  ok "the UI address 10.0.0.11 collides with no service definition and is not local here"
 else
-  unmet "UI identity 10.0.0.5 is claimed by a legacy service definition (vikunja); the desk must rule the legacy plan superseded or renumber the UI (D-12 address question)"
+  ui_rc=$?
+  case "$ui_rc" in
+    3) unmet "UI address 10.0.0.11 is this host's own address; a peer cannot bind it here" ;;
+    4) unmet "cannot tell whether 10.0.0.11 is local here ('ip' unavailable); unproven on this host" ;;
+    *) bad "the renderer refuses the ruled UI address 10.0.0.11" ;;
+  esac
 fi
-case "$mgr" in *"BABO_WG_ADDRESS=10.0.0.10"*) ok "Manager identity from the single source (10.0.0.10)" ;; *) bad "Manager identity wrong" ;; esac
+# The desk renumbered the UI rather than stealing a service's address; this row
+# is the regression that keeps 10.0.0.5 vikunja's.
+if "$RENDER" --check-address 10.0.0.5 >/dev/null 2>&1; then
+  bad "the renderer now accepts 10.0.0.5, which the legacy table gives to vikunja"
+else
+  ok "10.0.0.5 is still refused (vikunja keeps it; the UI moved to .11)"
+fi
+# The hop's precondition: the Manager trusts the UI's address and nothing else.
+if grep -q 'BABO_TRUSTED_SOURCES:-10.0.0.11/32' "$HERE/../../deploy/babo/entrypoint.sh"; then
+  ok "the Manager's trusted peer is the UI's address (10.0.0.11)"
+else
+  bad "the Manager's trusted peer does not match the UI address; the hop would be refused"
+fi
+case "$mgr" in *"BABO_WG_ADDRESS=10.0.0.12"*) ok "Manager identity from the single source (10.0.0.12)" ;; *) bad "Manager identity wrong" ;; esac
+
+# The second negative has to be demonstrable, or it is only a claim: probe an
+# address this host actually owns. No global IPv4 address here = UNMET.
+own=$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)
+if [ -z "$own" ]; then
+  unmet "cannot demonstrate the host-local refusal: this host has no global IPv4 address"
+else
+  "$RENDER" --check-address "$own" >/dev/null 2>&1
+  own_rc=$?
+  if [ "$own_rc" -eq 3 ]; then
+    ok "the probe refuses an address this host already owns (${own} is LOCAL, not free)"
+  else
+    bad "the probe did not report ${own} as local (exit ${own_rc}); a peer could be given the host's own address"
+  fi
+fi
 
 # D12-7: socket only in the manager; no shared mount.
 case "$ui" in *"podman.sock"*) bad "babo-ui mounts the runtime socket" ;; *) ok "babo-ui mounts no runtime socket" ;; esac

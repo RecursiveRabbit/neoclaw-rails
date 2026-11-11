@@ -45,11 +45,27 @@ address_taken() { # address -> 0 when any legacy service definition claims it
   [ -r "$DEFS_CHECK" ] || return 1
   awk -v a="$1" '$2 == a {found=1} END {exit !found}' "$DEFS_CHECK"
 }
+# A table cannot answer "can a peer hold this here": the host may own the address
+# itself. z620 owns 10.0.0.10 on its LAN interface (`ip route get` -> `local ...
+# dev lo`, bomu 2026-11-11 §2), and a peer cannot bind an address the host
+# delivers locally. So the probe has two negatives, not one.
+#   0 local to this host | 1 not local | 2 cannot tell (no `ip`)
+address_local() {
+  command -v ip >/dev/null 2>&1 || return 2
+  if ip route get "$1" 2>/dev/null | grep -q ' dev lo'; then return 0; fi
+  return 1
+}
 if [ -n "${CHECK_ADDRESS:-}" ]; then
   if address_taken "$CHECK_ADDRESS"; then
     echo "TAKEN: ${CHECK_ADDRESS} is claimed by a service definition" >&2; exit 1
   fi
-  echo "FREE: ${CHECK_ADDRESS} collides with no service definition"; exit 0
+  local_rc=0
+  address_local "$CHECK_ADDRESS" || local_rc=$?
+  case "$local_rc" in
+    0) echo "LOCAL: ${CHECK_ADDRESS} is this host's own address; a peer cannot bind it" >&2; exit 3 ;;
+    2) echo "UNKNOWN: no 'ip' on this host; cannot tell whether ${CHECK_ADDRESS} is local" >&2; exit 4 ;;
+  esac
+  echo "FREE: ${CHECK_ADDRESS} collides with no service definition and is not local to this host"; exit 0
 fi
 if address_taken "$BABO_MANAGER_ADDRESS"; then
   echo "FATAL: the Manager address ${BABO_MANAGER_ADDRESS} is claimed by a service definition; N-01 forbids shipping it" >&2

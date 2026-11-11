@@ -1,11 +1,13 @@
 # Babo — the office control plane, in a pod.
 #
-# Topology (stated, because the proofs depend on it): the pod has its OWN
-# network namespace with its own wg0 at 10.0.0.5, exactly like the Hub at
-# 10.0.0.4. The host reaches it over the mesh — host wg -> Router forward ->
-# babo's wg0 — so there is NO published host port and no shared namespace.
+# Topology (stated, because the proofs depend on it): each pod has its OWN
+# network namespace with its own wg0, exactly like the Hub at 10.0.0.4. The host
+# reaches the UI over the mesh — host wg -> Router forward -> babo-ui's wg0 — so
+# there is NO published host port and no shared namespace. Under D-12 the UI is
+# 10.0.0.11 and the Manager 10.0.0.12 (see deploy/babo/mesh.env, the source).
 #
-# Isolation properties (single-container product; D-10 is UNMET — see README):
+# Isolation properties (one container per pod; D-10 is superseded by D-12 — see
+# README):
 #   - the image carries `podman-remote` and `git`. The runtime client is usable
 #     only where the runtime socket is mounted; that is this container, and no
 #     second container shares it.
@@ -85,9 +87,12 @@ ENV BABO_PORT=8843 \
 # Documentation only. Nothing is published at run time by this image.
 EXPOSE 8843
 
-# Probe the address the app actually binds. A loopback probe would only ever
-# report unhealthy and teach us to ignore it.
+# Probe the address the app actually binds, on the port its gateway health
+# listener uses (the render passes BABO_WG_ADDRESS; the UI's health port is the
+# entrypoint's default, the Manager's is its API port). A loopback probe would
+# only ever report unhealthy and teach us to ignore it; a hardcoded address
+# would report unhealthy for the role it is not.
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-  CMD curl -sf "http://10.0.0.5:${BABO_PORT}/health" || exit 1
+  CMD curl -sf "http://${BABO_WG_ADDRESS}:${BABO_HEALTH_PORT:-18790}/health" || exit 1
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/babo-entrypoint"]
