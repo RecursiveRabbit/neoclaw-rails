@@ -97,21 +97,20 @@ fix, and this README quotes the code.
 What that means, as source rather than assumption:
 
 - `HOST_RUNTIME` is `${HOST_SPAWN_DIR:-/spawn}/runtime` — a **host** path, mounted
-  read-only into `babo-core` only. The directory is
+  read-only into the product container. The directory is
   `${HOST_SPAWN_DIR}/runtime/babo` and holds `private.key` and `wg0.conf`,
   rendered that boot, mode `0600`.
-- **`babo-core` mounts**: the per-boot wg0 directory read-only at
-  `/etc/wireguard`, the podman runtime socket at its own path, and the shared
-  internal socket volume at `/run/babo/internal`. **`babo-ui` mounts**: the
-  internal socket volume only. No `-p`, no `--network host`.
-- **`NET_ADMIN` only, and only in `babo-core`.** `--sysctl ip_forward` is *not*
-  set for Babo: it does not route traffic. `babo-ui` carries no capability and
-  no runtime socket; the privilege boundary is a container boundary (D-10).
-- The two containers join one pod network namespace: core brings up wg0 and
-  binds the WG address; the UI edge binds loopback in that same namespace.
-- The image carries **`podman-remote`** (for `babo-core`) and **`git`** (the
-  product setup path, `babo found`). Neither is a second runtime: the remote
-  client is usable only where the socket is mounted, and only core has it.
+- **Mounts:** the per-boot wg0 directory read-only at `/etc/wireguard`, the
+  podman runtime socket at its own path, and the internal operator socket
+  volume at `/run/babo/internal`. No `-p`, no `--network host`.
+- **`NET_ADMIN` only.** `--sysctl ip_forward` is *not* set for Babo: it does
+  not route traffic. The capability is scoped to this container's namespace;
+  D-10's cross-container privilege boundary is not built (see below).
+- The container brings up wg0 and binds the product's listeners to the WG
+  address; the Office UI/API and the deterministic core are this one process.
+- The image carries **`podman-remote`** and **`git`** (the product setup path,
+  `babo found`). Neither is a second runtime: the remote client is usable only
+  where the socket is mounted, and that is this container.
 
 `BABO_IMAGE`, `BABO_PORT` and `BABO_TRUSTED_SOURCES` are launch-time values.
 There is no manager URL and no NeoClaw backend: the product is the manager.
@@ -148,14 +147,14 @@ the Router's rule names, and not about a grep for loopback in the image.
 ## Facts the packaging check holds it to
 
 1. The image contains no WireGuard private key and no `wg0.conf`.
-2. **Per-container mounts, not one mount.** `babo-core` mounts the per-boot
-   wg0 directory read-only (source under `$HOST_SPAWN_DIR/runtime/babo`, target
-   `/etc/wireguard`), the podman runtime socket, and the internal socket
-   volume. `babo-ui` mounts the internal socket volume **only**; a runtime
-   socket or wg0 mount in `babo-ui` is a failure.
-3. No published port; no `--network host`. `babo-core`'s `CapAdd` reads back as
-   `CAP_NET_ADMIN` from `podman inspect`; `babo-ui` has no `CAP_NET_ADMIN` and
-   no runtime socket. The privilege boundary is a container boundary (D-10).
+2. **Three mounts, all declared:** the per-boot wg0 directory read-only (source
+   under `$HOST_SPAWN_DIR/runtime/babo`, target `/etc/wireguard`), the podman
+   runtime socket, and the internal operator socket volume. Any other mount is
+   a failure.
+3. No published port; no `--network host`. The container's `CapAdd` reads back
+   as `CAP_NET_ADMIN` from `podman inspect`; the flag is spelled
+   `--cap-add NET_ADMIN`. That capability is scoped to this container. **D-10's
+   two-container privilege boundary is UNMET/deferred** — see below.
 4. **Two listeners, two keys, both on the WG address.** `channels.websocket`
    (`host`/`port`) serves the SPA and `/api/*` on `BABO_PORT` (8843 — the port
    the Router admits the host to); `gateway` (`host`/`port`) serves the
@@ -193,13 +192,14 @@ fact 3 (no config → no start), facts 5 and 6, and fact 7's image half (the
 image's own `Config.Env` swept for token variables, naming names and never
 values).
 
-`test/proof/babo_pod_shape_check.sh` proves the D-10 render from
-`deploy/babo/run-pod.sh --print` without touching a runtime: two containers by
-name, `babo-core` with the socket mount, `NET_ADMIN` and the internal operator
-socket, `babo-ui` with **neither** the socket nor `NET_ADMIN` and the same
-internal volume, one named mesh network, and no manager URL anywhere. The
-single-container rows in the older check describe the previous shape; this
-check is the one that decides D-10.
+**D-10 is UNMET and deferred.** The two-container shape (`babo-core` with the
+runtime socket, `babo-ui` without it, over an internal socket) is not built: the
+product has no core↔ui IPC, and a second container with nothing to do would be a
+hollow shell that passes an inspect check while the boundary does not exist. The
+desk has since moved the ruling further — UI and Manager as **separate pods**
+with controlled API traffic, no terminal on the Manager — and the manifest waits
+for that revised API/ledger shape. This packaging claims no split, and the
+check prints the D-10 row as UNMET rather than passing on declarations.
 
 ## Deliberate non-goals
 

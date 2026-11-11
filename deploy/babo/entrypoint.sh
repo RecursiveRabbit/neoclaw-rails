@@ -1,17 +1,14 @@
 #!/bin/bash
 set -eu
 
-# Babo in a pod, in one of two roles (D-10):
+# Babo in a pod: one product process. It brings up its own wg0, binds the WG
+# address only, holds the podman runtime socket, and serves the Office UI/API
+# from the same process. NET_ADMIN is scoped to this container's namespace.
 #
-#   BABO_ROLE=core  (default) — the product process. Brings up its own wg0,
-#   binds the WG address only, and holds the podman runtime socket. Lifecycle
-#   decisions are made here. NET_ADMIN is scoped to this container's namespace.
-#
-#   BABO_ROLE=ui — the privilege-minimal UI edge. No runtime socket, no
-#   NET_ADMIN, no wg0: it binds loopback inside the pod's shared network
-#   namespace and shares the internal socket volume. It must never be the
-#   container that can act on the runtime; if it can see the socket, it refuses
-#   to start rather than become a second holder of the privilege boundary.
+# D-10's two-container split (babo-core / babo-ui over an internal socket) is
+# NOT implemented here: the product has no core<->ui IPC, and a second container
+# with nothing to do would be a hollow shell. The split is deferred and marked
+# UNMET until that IPC exists; this render is one honest container.
 #
 # Why `babo gateway` and not `babo webui`: `babo webui` is a client launcher --
 # it starts a *background* gateway, opens (or suppresses) a browser, attaches to
@@ -19,27 +16,14 @@ set -eu
 # take the service with it. `babo gateway` (no --background) runs the server in
 # this process's foreground, which is what a pod needs. Recorded deviation.
 
-ROLE="${BABO_ROLE:-core}"
-log() { echo "[babo:${ROLE}] $*" ; }
+log() { echo "[babo] $*" ; }
 
-case "$ROLE" in
-    core|ui) : ;;
-    *) log "FATAL: BABO_ROLE must be core or ui, not '${ROLE}'"; exit 1 ;;
-esac
-
-# --- the privilege boundary refused at boot, not assumed (D-10c) -----------
-# `babo-ui` has no socket mount by construction; this check makes a render
-# that gives it one a refusal to start instead of a quiet second holder.
-if [ "$ROLE" = "ui" ] && [ -e /run/podman/podman.sock ]; then
-    log "FATAL: the runtime socket is visible in babo-ui; refusing to start a second holder of the runtime privilege"
+if [ -n "${BABO_ROLE:-}" ] && [ "${BABO_ROLE}" != "core" ]; then
+    log "FATAL: BABO_ROLE='${BABO_ROLE}' has no meaning in the single-container product; D-10's ui role is deferred"
     exit 1
 fi
-if [ "$ROLE" = "ui" ] && [ -f /etc/wireguard/wg0.conf ]; then
-    log "FATAL: wg0.conf is mounted in babo-ui; the mesh identity belongs to babo-core only"
-    exit 1
-fi
-if [ "$ROLE" = "core" ] && ! command -v podman >/dev/null 2>&1; then
-    log "FATAL: podman-remote is not installed in babo-core; every lifecycle verb would be refused"
+if ! command -v podman >/dev/null 2>&1; then
+    log "FATAL: podman-remote is not installed; every lifecycle verb would be refused"
     exit 1
 fi
 
@@ -74,8 +58,7 @@ trusted_ok() {
     return 0
 }
 
-if [ "$ROLE" = "core" ]; then
-    if [ -z "$TRUSTED" ]; then
+if [ -z "$TRUSTED" ]; then
         log "WARNING: BABO_TRUSTED_SOURCES is unset — no operator source is trusted; the UI will only answer loopback, which nothing on the mesh can reach"
     elif ! trusted_ok "$TRUSTED"; then
         log "FATAL: refusing to start with trusted source '${TRUSTED}' — exact IPv4 /32 required; open, shortened, reserved or malformed values are refused, not trimmed"
@@ -94,27 +77,16 @@ if [ "$ROLE" = "core" ]; then
     # The effective bind address is a fact read from wg0, not an assumption. The
     # Router rule admits 10.0.0.5 only, so a different address is a loud failure
     # rather than a page nobody can reach.
-    BIND="$(ip -4 -o addr show dev wg0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)"
-    if [ -z "${BIND}" ]; then
-        log "FATAL: wg0 came up with no IPv4 address; nothing to bind"
-        exit 1
-    fi
-    if [ "${BIND}" != "10.0.0.5" ]; then
-        log "FATAL: wg0 address is ${BIND}, but the Router admits 10.0.0.5 only; refusing to bind an address that cannot be reached"
-        exit 1
-    fi
-    log "wireguard up (${BIND})"
-else
-    # The UI edge has no mesh identity of its own. It binds loopback in the
-    # pod's shared network namespace; the host-WG listener belongs to core until
-    # the core<->ui internal socket has a client and server on both sides.
-    if [ -n "$TRUSTED" ]; then
-        log "FATAL: BABO_TRUSTED_SOURCES belongs to babo-core; babo-ui must not carry a mesh trust list"
-        exit 1
-    fi
-    BIND="127.0.0.1"
-    log "UI edge on loopback only (no runtime socket, no NET_ADMIN)"
+BIND="$(ip -4 -o addr show dev wg0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)"
+if [ -z "${BIND}" ]; then
+    log "FATAL: wg0 came up with no IPv4 address; nothing to bind"
+    exit 1
 fi
+if [ "${BIND}" != "10.0.0.5" ]; then
+    log "FATAL: wg0 address is ${BIND}, but the Router admits 10.0.0.5 only; refusing to bind an address that cannot be reached"
+    exit 1
+fi
+log "wireguard up (${BIND})"
 
 # Two listeners, two keys (verified by dova in source, and by me at
 # babo/channels/websocket/runtime.py:180 + babo/cli/gateway_runtime.py:1109):
@@ -127,19 +99,15 @@ CONFIG="${BABO_RUNTIME_CONFIG:-/run/babo/config.json}"
 mkdir -p "$(dirname "$CONFIG")"
 
 # The internal operator socket (dova, UI-in-pod revoke): the gateway creates it
-# on a volume both containers share; the CLI uses it for the verbs that cannot
-# come from loopback or the mesh trust list. Core serves it; the UI edge mounts
-# the directory but does not create a second listener on the same path.
-UNIX_KEY=""
-if [ "$ROLE" = "core" ]; then
-    UNIX_SOCKET="${BABO_INTERNAL_SOCKET:-/run/babo/internal/office.sock}"
-    mkdir -p "$(dirname "$UNIX_SOCKET")"
-    chmod 700 "$(dirname "$UNIX_SOCKET")"
-    UNIX_KEY=",\"unix_socket_path\": \"${UNIX_SOCKET}\""
-    log "internal operator socket: ${UNIX_SOCKET}"
-fi
+# on a volume; a CLI in the same container (or a future sidecar sharing the
+# volume) uses it for verbs that cannot come from loopback or the trust list.
+UNIX_SOCKET="${BABO_INTERNAL_SOCKET:-/run/babo/internal/office.sock}"
+mkdir -p "$(dirname "$UNIX_SOCKET")"
+chmod 700 "$(dirname "$UNIX_SOCKET")"
+UNIX_KEY=",\"unix_socket_path\": \"${UNIX_SOCKET}\""
+log "internal operator socket: ${UNIX_SOCKET}"
 
-if [ "$ROLE" = "core" ] && [ -n "$TRUSTED" ]; then
+if [ -n "$TRUSTED" ]; then
     cat > "$CONFIG" <<EOF
 {
   "gateway": {

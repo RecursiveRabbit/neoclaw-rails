@@ -311,7 +311,7 @@ fi
 
 # --- 7-9. Run-time facts, from a live container ------------------------
 if [ -z "$CONTAINER" ]; then
-  unmet "mount set: exactly one read-only bind, source under $SPAWN_DIR, target /etc/wireguard (pass --container NAME)"
+  unmet "mount set: wg0 dir read-only from $SPAWN_DIR, plus only the runtime socket and internal volume (pass --container NAME)"
   unmet "no published ports, no --network host (pass --container NAME)"
   unmet "capabilities: NET_ADMIN only, scoped to this container (pass --container NAME)"
   unmet "no token issuer in the pod: token_issue_path/token_issue_secret unset in the runtime config and environment (pass --container NAME)"
@@ -325,23 +325,38 @@ else
   if [ "$MOUNTS" = "$INSPECT_FAILED" ]; then
     bad "container facts could not be read (podman inspect $CONTAINER failed), so the mount set is unknown"
   else
-  case "$NLINES" in
-    1)
-      MTYPE=$(printf '%s\n' "$MOUNTS" | cut -d'|' -f1)
-      MSRC=$(printf '%s\n'  "$MOUNTS" | cut -d'|' -f2)
-      MDST=$(printf '%s\n'  "$MOUNTS" | cut -d'|' -f3)
-      MRW=$(printf '%s\n'   "$MOUNTS" | cut -d'|' -f4)
-      case "$MTYPE|$MDST|$MRW" in
-        "bind|/etc/wireguard|false")
-          case "$MSRC" in
-            "$SPAWN_DIR"|"$SPAWN_DIR"/*) ok "exactly one bind mount: $MSRC -> /etc/wireguard (read-only)" ;;
-            *) bad "the single mount's source is not under $SPAWN_DIR: $MSRC" ;;
-          esac ;;
-        *) bad "the single mount is not a read-only bind to /etc/wireguard: $MTYPE $MSRC -> $MDST rw=$MRW" ;;
-      esac ;;
-    0) bad "no bind mounts: the per-boot wg0.conf would be missing" ;;
-    *) bad "$NLINES mounts present; exactly one is allowed" ;;
-  esac
+  # The product container has three declared mounts: the per-boot wg0 dir, the
+  # runtime socket, and the internal operator socket volume. Every mount must be
+  # one of those; an undeclared mount is a failure, not a detail.
+  if [ "$NLINES" -eq 0 ]; then
+    bad "no bind mounts: the per-boot wg0.conf would be missing"
+  else
+    WGFOUND=0
+    while IFS='|' read -r MTYPE MSRC MDST MRW; do
+      [ -n "$MTYPE" ] || continue
+      case "$MDST" in
+        /etc/wireguard)
+          if [ "$MTYPE" = "bind" ] && [ "$MRW" = "false" ]; then
+            case "$MSRC" in
+              "$SPAWN_DIR"|"$SPAWN_DIR"/*) WGFOUND=1 ;;
+              *) bad "the wg0 mount's source is not under $SPAWN_DIR: $MSRC" ;;
+            esac
+          else
+            bad "the wg0 mount is not a read-only bind: $MTYPE $MSRC -> $MDST rw=$MRW"
+          fi ;;
+        /run/podman/podman.sock|/var/run/docker.sock)
+          case "$MRW" in false) : ;; *) bad "the runtime socket mount is writable: $MDST" ;; esac ;;
+        /run/babo/internal)
+          : ;;
+        *) bad "an undeclared mount is present: $MTYPE $MSRC -> $MDST (rw=$MRW)" ;;
+      esac
+    done <<< "$MOUNTS"
+    if [ "$WGFOUND" = "1" ]; then
+      ok "the wg0 dir is mounted read-only from $SPAWN_DIR; the other mounts are the runtime socket and the internal volume"
+    else
+      bad "no read-only /etc/wireguard mount from $SPAWN_DIR"
+    fi
+  fi
   fi
 
   PORTS=$(inspect_field '{{json .HostConfig.PortBindings}}')
