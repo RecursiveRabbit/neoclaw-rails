@@ -24,12 +24,14 @@ MGR_NAME="${BABO_MANAGER_POD:-babo-manager}"
 IMAGE="${BABO_IMAGE:-localhost/neoclaw-babo:latest}"
 SPAWN_ROOT="${HOST_SPAWN_DIR:-/spawn}/runtime"
 RUNTIME_SOCKET="${BABO_RUNTIME_SOCKET:-/run/podman/podman.sock}"
+ROUTER_CONTAINER="${BABO_ROUTER_CONTAINER:-wg-router}"
 PRINT=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --print) PRINT=1; shift ;;
     --image) IMAGE="$2"; shift 2 ;;
+    --check-address) CHECK_ADDRESS="$2"; shift 2 ;;
     -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 64 ;;
   esac
@@ -37,6 +39,22 @@ done
 
 [ "$BABO_UI_PORT" != "$BABO_API_PORT" ] || {
   echo "FATAL: UI and API ports are the same symbol value ($BABO_UI_PORT)" >&2; exit 1; }
+
+DEFS_CHECK="$HERE/../../${BABO_SERVICE_DEFINITIONS}"
+address_taken() { # address -> 0 when any legacy service definition claims it
+  [ -r "$DEFS_CHECK" ] || return 1
+  awk -v a="$1" '$2 == a {found=1} END {exit !found}' "$DEFS_CHECK"
+}
+if [ -n "${CHECK_ADDRESS:-}" ]; then
+  if address_taken "$CHECK_ADDRESS"; then
+    echo "TAKEN: ${CHECK_ADDRESS} is claimed by a service definition" >&2; exit 1
+  fi
+  echo "FREE: ${CHECK_ADDRESS} collides with no service definition"; exit 0
+fi
+if address_taken "$BABO_MANAGER_ADDRESS"; then
+  echo "FATAL: the Manager address ${BABO_MANAGER_ADDRESS} is claimed by a service definition; N-01 forbids shipping it" >&2
+  exit 1
+fi
 
 DEFS="$HERE/../../${BABO_SERVICE_DEFINITIONS}"
 EGRESS=""
@@ -77,5 +95,5 @@ run podman run -d --pod "$MGR_NAME" --name "${MGR_NAME}-app" \
   -e "BABO_RUNTIME_CONFIG=/run/babo/config.json" \
   "$IMAGE"
 
-run podman network connect "$BABO_UI_NETWORK" wg-router
-run podman network connect "$BABO_MANAGER_NETWORK" wg-router
+run podman network connect "$BABO_UI_NETWORK" "$ROUTER_CONTAINER"
+run podman network connect "$BABO_MANAGER_NETWORK" "$ROUTER_CONTAINER"

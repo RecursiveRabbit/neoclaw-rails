@@ -46,13 +46,35 @@ case "$ui" in *"BABO_PORT=8843"*) ok "UI port is its own symbol (8843)" ;; *) ba
 case "$mgr" in *"BABO_API_PORT=8844"*) ok "Manager API port is its own symbol (8844)" ;; *) bad "Manager API port missing" ;; esac
 case "$mgr" in *"BABO_HEALTH_PORT=8844"*) ok "Manager health is on the API port (desk ruling)" ;; *) bad "Manager health is not on the API port" ;; esac
 case "$ui" in
-  *"BABO_MANAGER_HEALTH=http://10.0.0.9:8844/health"*) ok "UI health includes Manager reachability (desk ruling)" ;;
+  *"BABO_MANAGER_HEALTH=http://10.0.0.10:8844/health"*) ok "UI health includes Manager reachability (desk ruling)" ;;
   *) bad "UI has no Manager health endpoint" ;;
 esac
 
+# The negative: a colliding address is refused by the renderer itself.
+if "$RENDER" --check-address 10.0.0.9 >/dev/null 2>&1; then
+  bad "the renderer accepts an address claimed by a service definition (10.0.0.9)"
+else
+  ok "the renderer refuses an address claimed by a service definition (10.0.0.9)"
+fi
+if "$RENDER" --check-address 10.0.0.10 >/dev/null 2>&1; then
+  ok "the renderer accepts the Manager address (10.0.0.10 collides with neither table)"
+else
+  bad "the renderer refuses its own Manager address"
+fi
+if grep -q "BABO_MESH_NETWORK" "$HERE/../../deploy/babo/mesh.env"; then
+  bad "an unconsumed third network name is still declared"
+else
+  ok "no unconsumed network name in the render source"
+fi
+
 # M-3: identities from the single source.
 case "$ui" in *"BABO_WG_ADDRESS=10.0.0.5"*) ok "UI identity from the single source (10.0.0.5)" ;; *) bad "UI identity wrong" ;; esac
-case "$mgr" in *"BABO_WG_ADDRESS=10.0.0.9"*) ok "Manager identity from the single source (10.0.0.9)" ;; *) bad "Manager identity wrong" ;; esac
+if "$RENDER" --check-address 10.0.0.5 >/dev/null 2>&1; then
+  : # no collision
+else
+  unmet "UI identity 10.0.0.5 is claimed by a legacy service definition (vikunja); the desk must rule the legacy plan superseded or renumber the UI (D-12 address question)"
+fi
+case "$mgr" in *"BABO_WG_ADDRESS=10.0.0.10"*) ok "Manager identity from the single source (10.0.0.10)" ;; *) bad "Manager identity wrong" ;; esac
 
 # D12-7: socket only in the manager; no shared mount.
 case "$ui" in *"podman.sock"*) bad "babo-ui mounts the runtime socket" ;; *) ok "babo-ui mounts no runtime socket" ;; esac
