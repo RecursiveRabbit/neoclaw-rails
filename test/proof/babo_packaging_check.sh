@@ -112,17 +112,36 @@ else
   bad "image contains key material (paths only): $(echo "$WG" | tr '\n' ' ')"
 fi
 
-# --- 2. No container-runtime socket and no runtime client --------------
+# --- 2. Runtime client present, socket not baked (D-10 boundary) ------
+# The image now carries `podman-remote` for `babo-core`; the privilege is bounded
+# by which container mounts the socket, which the pod shape check asserts. What
+# must NOT be in an image is a runtime socket or a second runtime daemon.
 RT=$(probe /bin/sh -c '
   ls /run/podman/podman.sock /var/run/docker.sock 2>/dev/null
-  command -v podman docker ctr nerdctl 2>/dev/null
+  printf "podman="; command -v podman 2>/dev/null || echo missing
+  printf "git="; command -v git 2>/dev/null || echo missing
+  printf "dockerd="; command -v docker ctr nerdctl dockerd 2>/dev/null || echo none
   true')
 if [ "$RT" = "$PROBE_FAILED" ]; then
-  bad "image could not be run, so the runtime-socket check did not run (podman run failed)"
-elif [ -z "$RT" ]; then
-  ok "image has no podman/docker socket and no container-runtime client"
+  bad "image could not be run, so the runtime-client check did not run (podman run failed)"
 else
-  bad "image carries a runtime socket or client: $(echo "$RT" | tr '\n' ' ')"
+  case "$RT" in
+    *"/run/podman/podman.sock"*|*"/var/run/docker.sock"*) bad "image bakes a runtime socket: $RT" ;;
+    *"podman="*) ok "image carries no runtime socket; runtime client probe: $(echo "$RT" | tr '\n' ' ')" ;;
+    *) bad "could not read the runtime-client facts: $(echo "$RT" | tr '\n' ' ')" ;;
+  esac
+  case "$RT" in
+    *"podman=missing"*) bad "podman-remote is missing; babo-core cannot act on the runtime" ;;
+    *) ok "podman-remote is installed (for babo-core)" ;;
+  esac
+  case "$RT" in
+    *"git=missing"*) bad "git is missing; the product setup path (babo found) fails" ;;
+    *) ok "git is installed (for the product setup path)" ;;
+  esac
+  case "$RT" in
+    *"dockerd="*"none"*) ok "no docker/ctr/nerdctl/dockerd in the image" ;;
+    *) bad "image carries a second container-runtime client: $(echo "$RT" | tr '\n' ' ')" ;;
+  esac
 fi
 
 # --- 3. The entrypoint refuses to start without a mounted config -------
@@ -176,6 +195,12 @@ else
     ok "image bakes no token environment variable"
   else
     bad "image bakes token variable(s): $IMG_TOKENS"
+  fi
+  IMG_MANAGER=$(printf '%s' "$IMG_ENV" | tr ',' '\n' | tr -d '[]"' | grep -E '^(NEOCLAW_MANAGER_URL|NEOCLAW_OFFICE_BACKEND)=' || true)
+  if [ -z "$IMG_MANAGER" ]; then
+    ok "image bakes no manager URL or NeoClaw backend (the product is the manager)"
+  else
+    bad "image bakes a stale manager/backend env: $(echo "$IMG_MANAGER" | tr '\n' ' ')"
   fi
 fi
 

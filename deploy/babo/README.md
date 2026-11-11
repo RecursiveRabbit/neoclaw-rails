@@ -96,35 +96,25 @@ fix, and this README quotes the code.
 
 What that means, as source rather than assumption:
 
-- `HOST_RUNTIME` is `${HOST_SPAWN_DIR:-/spawn}/runtime` — a **host** path, used
-  because the pod is created through the host's podman socket. The mounted
-  directory is `${HOST_SPAWN_DIR}/runtime/babo` and holds `private.key` and
-  `wg0.conf`, rendered that boot, mode `0600`.
-- **One mount only**, read-only, `:ro,Z`, target `/etc/wireguard`. No `-p`, no
-  `--network host`, no socket mount, no other volumes.
-- **Joins the mesh underlay, explicitly.** `--network "${NC_MESH_NETWORK}"` —
-  the named user-defined network from `manager/network.env`, created and
-  asserted at boot. Rootless podman's default (pasta) cannot reach a bridge
-  peer at all (measured: `nc -z <router underlay> 19999` UNREACHABLE on the
-  default, REACHABLE on the named network), so an unqualified launch would
-  never complete a WireGuard handshake. This is not a service door: Babo binds
-  its listeners on its WG address and on loopback, never on `0.0.0.0`, so its
-  underlay address listens on nothing.
-- **`NET_ADMIN` only.** `--sysctl ip_forward` is *not* set for Babo: it does
-  not route traffic.
-- The Manager's own health probe after start is
-  `http://10.0.0.5:${BABO_PORT}/health`, 20 tries × 2 s, **warn-not-fatal**.
-- Startup is **skipped when the image is absent**, so a Manager without Babo
-  still boots. A container that is not running is therefore not automatically a
-  fault.
-- The Manager **removes `neoclaw-babo`** in its clean-slate phase before
-  starting a new one.
+- `HOST_RUNTIME` is `${HOST_SPAWN_DIR:-/spawn}/runtime` — a **host** path, mounted
+  read-only into `babo-core` only. The directory is
+  `${HOST_SPAWN_DIR}/runtime/babo` and holds `private.key` and `wg0.conf`,
+  rendered that boot, mode `0600`.
+- **`babo-core` mounts**: the per-boot wg0 directory read-only at
+  `/etc/wireguard`, the podman runtime socket at its own path, and the shared
+  internal socket volume at `/run/babo/internal`. **`babo-ui` mounts**: the
+  internal socket volume only. No `-p`, no `--network host`.
+- **`NET_ADMIN` only, and only in `babo-core`.** `--sysctl ip_forward` is *not*
+  set for Babo: it does not route traffic. `babo-ui` carries no capability and
+  no runtime socket; the privilege boundary is a container boundary (D-10).
+- The two containers join one pod network namespace: core brings up wg0 and
+  binds the WG address; the UI edge binds loopback in that same namespace.
+- The image carries **`podman-remote`** (for `babo-core`) and **`git`** (the
+  product setup path, `babo found`). Neither is a second runtime: the remote
+  client is usable only where the socket is mounted, and only core has it.
 
-`BABO_IMAGE`, `BABO_PORT` and `NEOCLAW_MANAGER_URL` come from the Manager's
-environment. They are **as launched by this Manager boot**, not fixed at build
-time: the image's `ENV` lines are defaults for a manual run, and the check must
-read the running container's environment, not the image's, if it wants to make
-a claim about them.
+`BABO_IMAGE`, `BABO_PORT` and `BABO_TRUSTED_SOURCES` are launch-time values.
+There is no manager URL and no NeoClaw backend: the product is the manager.
 
 ## What the entrypoint does, and the deviations it records
 
@@ -158,13 +148,14 @@ the Router's rule names, and not about a grep for loopback in the image.
 ## Facts the packaging check holds it to
 
 1. The image contains no WireGuard private key and no `wg0.conf`.
-2. Exactly one bind mount at run time: read-only, source under
-   `$HOST_SPAWN_DIR/runtime/babo`, target `/etc/wireguard`. Any other mount is
-   a failure.
-3. No published port; no `--network host`. (The container's `CapAdd` reads
-   back as `CAP_NET_ADMIN` from `podman inspect`; the flag is spelled
-   `--cap-add NET_ADMIN`. Both spellings are the same single capability, and
-   the check accepts either spelling but nothing else.)
+2. **Per-container mounts, not one mount.** `babo-core` mounts the per-boot
+   wg0 directory read-only (source under `$HOST_SPAWN_DIR/runtime/babo`, target
+   `/etc/wireguard`), the podman runtime socket, and the internal socket
+   volume. `babo-ui` mounts the internal socket volume **only**; a runtime
+   socket or wg0 mount in `babo-ui` is a failure.
+3. No published port; no `--network host`. `babo-core`'s `CapAdd` reads back as
+   `CAP_NET_ADMIN` from `podman inspect`; `babo-ui` has no `CAP_NET_ADMIN` and
+   no runtime socket. The privilege boundary is a container boundary (D-10).
 4. **Two listeners, two keys, both on the WG address.** `channels.websocket`
    (`host`/`port`) serves the SPA and `/api/*` on `BABO_PORT` (8843 — the port
    the Router admits the host to); `gateway` (`host`/`port`) serves the
@@ -172,10 +163,10 @@ the Router's rule names, and not about a grep for loopback in the image.
    probes). A probe from the host WG address to the UI gets `200`; the health
    listener answers on its own port; a loopback probe is refused; an off-source
    probe is refused by the Router.
-5. `NEOCLAW_MANAGER_URL` has no loopback default (the code's default is
-   `http://10.0.0.3:9200`). The image vendors a web UI with legitimate
-   loopback use elsewhere, so the claim is about the Manager URL and the
-   effective listener — not a grep for `127.0.0.1` across the image.
+5. **No manager URL, no NeoClaw backend.** The image bakes neither
+   `NEOCLAW_MANAGER_URL` nor `NEOCLAW_OFFICE_BACKEND`, and the pod renders
+   neither. The product is the manager; the runtime socket is the only
+   capability, and it lives in `babo-core`.
 6. The image ships a built UI: `babo/web/dist/index.html` exists **inside the
    installed package**, so `pip install` did not drop it.
 7. **No token issuer in the pod.** The image bakes no token environment
@@ -196,15 +187,19 @@ start must look broken, not clean.
 ## What the check proves, and what it must leave unmet
 
 `test/proof/babo_packaging_check.sh` runs on the deployment host and prints
-`PASS`/`FAIL`/`UNMET` per line. It can prove from the image alone: facts 1, 2's
-image side (no sockets, no runtime client), the refusal in fact 3 (no config →
-no start), facts 5 and 6, and fact 7's image half (the image's own `Config.Env`
-swept for token variables, naming names and never values). It can prove from a
-running container
-(`--container NAME`): the mount set, the port/network-mode facts, and the
-capability set. It cannot prove the effective listener or the Router's
-off-source denial without a live boot and a second source — those stay `UNMET`
-with the reason, and `UNMET` is a result.
+`PASS`/`FAIL`/`UNMET` per line. It can prove from the image alone: fact 1, the
+runtime client's presence and the absence of a baked socket, the refusal in
+fact 3 (no config → no start), facts 5 and 6, and fact 7's image half (the
+image's own `Config.Env` swept for token variables, naming names and never
+values).
+
+`test/proof/babo_pod_shape_check.sh` proves the D-10 render from
+`deploy/babo/run-pod.sh --print` without touching a runtime: two containers by
+name, `babo-core` with the socket mount, `NET_ADMIN` and the internal operator
+socket, `babo-ui` with **neither** the socket nor `NET_ADMIN` and the same
+internal volume, one named mesh network, and no manager URL anywhere. The
+single-container rows in the older check describe the previous shape; this
+check is the one that decides D-10.
 
 ## Deliberate non-goals
 
