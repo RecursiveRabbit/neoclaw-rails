@@ -1,29 +1,42 @@
 #!/bin/bash
 set -eu
 
-# Babo in a pod: one product process. It brings up its own wg0, binds the WG
-# address only, holds the podman runtime socket, and serves the Office UI/API
-# from the same process. NET_ADMIN is scoped to this container's namespace.
+# Babo in a pod, in one of two separate-pod roles (D-12):
 #
-# D-10's two-container split (babo-core / babo-ui over an internal socket) is
-# NOT implemented here: the product has no core<->ui IPC, and a second container
-# with nothing to do would be a hollow shell. The split is deferred and marked
-# UNMET until that IPC exists; this render is one honest container.
+#   BABO_ROLE=ui       the operator's only door: its own wg0 at 10.0.0.5,
+#                      user-facing listener on 8843, host /32 trusted.
+#   BABO_ROLE=manager  the deterministic core: its own wg0 at 10.0.0.6, the
+#                      container-runtime socket, and the UI /32 as its only
+#                      trusted source. Headless: no sshd, no shell path, no
+#                      user listener; the Router admits only UI -> Manager.
 #
+# The pods share no mount, no volume and no network namespace; the only thing
+# between them is the wire (D12-8).
 # Why `babo gateway` and not `babo webui`: `babo webui` is a client launcher --
 # it starts a *background* gateway, opens (or suppresses) a browser, attaches to
 # the gateway log, and returns; with tini as PID 1 the container would exit and
 # take the service with it. `babo gateway` (no --background) runs the server in
 # this process's foreground, which is what a pod needs. Recorded deviation.
 
-log() { echo "[babo] $*" ; }
+ROLE="${BABO_ROLE:-manager}"
+log() { echo "[babo:${ROLE}] $*" ; }
 
-if [ -n "${BABO_ROLE:-}" ] && [ "${BABO_ROLE}" != "core" ]; then
-    log "FATAL: BABO_ROLE='${BABO_ROLE}' has no meaning in the single-container product; D-10's ui role is deferred"
+case "$ROLE" in
+    ui|manager) : ;;
+    *) log "FATAL: BABO_ROLE must be ui or manager, not '${ROLE}'"; exit 1 ;;
+esac
+
+case "$ROLE" in
+    ui)      EXPECT="${BABO_WG_ADDRESS:-10.0.0.5}" ; DEFAULT_TRUSTED="${BABO_TRUSTED_SOURCES:-10.0.0.2/32}" ;;
+    manager) EXPECT="${BABO_WG_ADDRESS:-10.0.0.6}" ; DEFAULT_TRUSTED="${BABO_TRUSTED_SOURCES:-10.0.0.5/32}" ;;
+esac
+
+if [ "$ROLE" = "manager" ] && ! command -v podman >/dev/null 2>&1; then
+    log "FATAL: podman-remote is not installed in the manager; every lifecycle verb would be refused"
     exit 1
 fi
-if ! command -v podman >/dev/null 2>&1; then
-    log "FATAL: podman-remote is not installed; every lifecycle verb would be refused"
+if [ "$ROLE" = "manager" ] && command -v sshd >/dev/null 2>&1; then
+    log "FATAL: an sshd binary is present in babo-manager; the Manager is headless by ruling"
     exit 1
 fi
 
@@ -34,7 +47,7 @@ fi
 # to this port. Anything else — a bare IP, a shorter prefix, 0.0.0.0/0, ::/0,
 # a hostname, a reserved/unspecified address — is refused BY NAME rather than
 # trimmed into something that looks safer than it is.
-TRUSTED="${BABO_TRUSTED_SOURCES:-}"
+TRUSTED="${DEFAULT_TRUSTED}"
 trusted_ok() {
     case "$1" in
         *[!0-9./]*) return 1 ;;                 # hostname or junk
@@ -82,8 +95,8 @@ if [ -z "${BIND}" ]; then
     log "FATAL: wg0 came up with no IPv4 address; nothing to bind"
     exit 1
 fi
-if [ "${BIND}" != "10.0.0.5" ]; then
-    log "FATAL: wg0 address is ${BIND}, but the Router admits 10.0.0.5 only; refusing to bind an address that cannot be reached"
+if [ "${BIND}" != "${EXPECT}" ]; then
+    log "FATAL: wg0 address is ${BIND}, but this pod's identity is ${EXPECT}; refusing to bind an address that cannot be reached"
     exit 1
 fi
 log "wireguard up (${BIND})"
@@ -101,11 +114,14 @@ mkdir -p "$(dirname "$CONFIG")"
 # The internal operator socket (dova, UI-in-pod revoke): the gateway creates it
 # on a volume; a CLI in the same container (or a future sidecar sharing the
 # volume) uses it for verbs that cannot come from loopback or the trust list.
-UNIX_SOCKET="${BABO_INTERNAL_SOCKET:-/run/babo/internal/office.sock}"
-mkdir -p "$(dirname "$UNIX_SOCKET")"
-chmod 700 "$(dirname "$UNIX_SOCKET")"
-UNIX_KEY=",\"unix_socket_path\": \"${UNIX_SOCKET}\""
-log "internal operator socket: ${UNIX_SOCKET}"
+UNIX_KEY=""
+if [ "$ROLE" = "manager" ]; then
+    UNIX_SOCKET="${BABO_INTERNAL_SOCKET:-/run/babo/internal/office.sock}"
+    mkdir -p "$(dirname "$UNIX_SOCKET")"
+    chmod 700 "$(dirname "$UNIX_SOCKET")"
+    UNIX_KEY=",\"unix_socket_path\": \"${UNIX_SOCKET}\""
+    log "internal operator socket: ${UNIX_SOCKET}"
+fi
 
 if [ -n "$TRUSTED" ]; then
     cat > "$CONFIG" <<EOF

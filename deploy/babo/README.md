@@ -192,14 +192,21 @@ fact 3 (no config → no start), facts 5 and 6, and fact 7's image half (the
 image's own `Config.Env` swept for token variables, naming names and never
 values).
 
-**D-10 is UNMET and deferred.** The two-container shape (`babo-core` with the
-runtime socket, `babo-ui` without it, over an internal socket) is not built: the
-product has no core↔ui IPC, and a second container with nothing to do would be a
-hollow shell that passes an inspect check while the boundary does not exist. The
-desk has since moved the ruling further — UI and Manager as **separate pods**
-with controlled API traffic, no terminal on the Manager — and the manifest waits
-for that revised API/ledger shape. This packaging claims no split, and the
-check prints the D-10 row as UNMET rather than passing on declarations.
+**D-10 is superseded by D-12: two separate pods.** `deploy/babo/run-pods.sh`
+renders `babo-ui` (own wg0 at 10.0.0.5, the only user-facing listener, host /32
+trusted) and `babo-manager` (own wg0 at 10.0.0.6, the runtime socket, UI /32 as
+its only trusted source, no ssh server). No shared mount, volume or network
+namespace; the only thing between them is the wire.
+
+Two gaps are named rather than dressed:
+1. the **UI→Manager API hop** is product work not yet in the tree — this render
+   gives the pods and identities, not the protocol;
+2. **D12-10's lost-response retry is core behaviour**, implemented on PR #67
+   head `17b4760b` (spawn resolves on an alive/starting pod; replay by action
+   id), and its served rows are Fettle's.
+
+`test/proof/babo_two_pod_check.sh` proves the render: two pods, UI without the
+socket, manager with it and no shared mount, headless image.
 
 ## Deliberate non-goals
 
