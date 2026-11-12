@@ -27,8 +27,10 @@ case "$ROLE" in
 esac
 
 case "$ROLE" in
-    ui)      EXPECT="${BABO_WG_ADDRESS:-10.0.0.11}" ; DEFAULT_TRUSTED="${BABO_TRUSTED_SOURCES:-10.0.0.2/32}" ;;
-    manager) EXPECT="${BABO_WG_ADDRESS:-10.0.0.12}" ; DEFAULT_TRUSTED="${BABO_TRUSTED_SOURCES:-10.0.0.11/32}" ;;
+    ui)      EXPECT="${BABO_WG_ADDRESS:-10.0.0.11}" ; DEFAULT_TRUSTED="${BABO_TRUSTED_SOURCES:-10.0.0.2/32}"
+             DEFAULT_OPERATOR="" ;;
+    manager) EXPECT="${BABO_WG_ADDRESS:-10.0.0.12}" ; DEFAULT_TRUSTED="${BABO_TRUSTED_SOURCES:-10.0.0.11/32}"
+             DEFAULT_OPERATOR="${BABO_OPERATOR_SOURCES-10.0.0.2/32}" ;;
 esac
 
 if [ "$ROLE" = "manager" ] && ! command -v podman >/dev/null 2>&1; then
@@ -79,6 +81,33 @@ if [ -z "$TRUSTED" ]; then
     else
         log "WebUI session sources: ${TRUSTED}"
     fi
+
+# --- The operator door's source ---------------------------------------------
+# Two doors, two names. `BABO_TRUSTED_SOURCES` above is THIS pod's listener
+# list: on the UI role that is the host, on the Manager role it is the UI pod.
+# `BABO_OPERATOR_SOURCES` is the host operator's address admitted to
+# `restart-ui` at the Manager. It is declared separately because they are two
+# different admissions that happen to share one address in one of the two roles;
+# collapsing them into one variable is how a UI-listener row gets read as an
+# operator-door row — the near-proof soro's checklist named.
+OPERATOR="${DEFAULT_OPERATOR}"
+if [ "$ROLE" = "manager" ]; then
+    if [ -z "$OPERATOR" ]; then
+        log "FATAL: BABO_OPERATOR_SOURCES is empty — the Manager would start with its operator door closed, and every host call would be refused as 'not the operator' rather than as 'no door here'"
+        exit 1
+    elif ! trusted_ok "$OPERATOR"; then
+        log "FATAL: refusing to start with operator source '${OPERATOR}' — exact IPv4 /32 required; open, shortened, reserved or malformed values are refused, not trimmed"
+        exit 1
+    else
+        log "operator door sources: ${OPERATOR}"
+    fi
+    # Resolved and exported so the process inherits the render's value rather
+    # than the caller's spelling or nothing. The Manager reads it through
+    # `babo.office.service.doors_from_render`, not from the config file: the
+    # config's `trusted_sources` is a listener's list, and a second list under
+    # the same word would be a second meaning for one word.
+    export BABO_OPERATOR_SOURCES="$OPERATOR"
+fi
 
     if [ ! -f /etc/wireguard/wg0.conf ]; then
         log "FATAL: /etc/wireguard/wg0.conf not mounted (per-boot key missing)"

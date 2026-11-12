@@ -201,6 +201,20 @@ renders `babo-ui` (own wg0 at `10.0.0.11`, the only user-facing listener, host
 UI's /32 as its only trusted source, no ssh server). No shared mount, volume or
 network namespace; the only thing between them is the wire.
 
+**Two doors, two names — the operator's address is declared, not borrowed
+(2026-11-12).** The Manager admits two kinds of caller: the UI pod, which is its
+listener's only trusted source (`BABO_TRUSTED_SOURCES`, `10.0.0.11/32`), and the
+host operator, whose address is admitted to `restart-ui`
+(`BABO_OPERATOR_SOURCES`, `10.0.0.2/32`). They are separate variables because they
+are separate admissions that happen to share one address in one of the two roles:
+on the UI pod the host *is* the trusted source, and reusing that name at the
+Manager would make a UI-listener row indistinguishable from an operator-door row.
+The pair is what `babo.office.service.doors_from_render` reads; a Manager that
+starts without a declared operator source is refused rather than started with the
+door closed, because a closed door answers `403` and so does a wrong principal.
+Nothing routes this yet: the Manager is an object, not a process, and the listener
+in front of the operator door is unassigned and unruled.
+
 **The addresses carry two caveats the render cannot remove (bomu, 2026-11-11).**
 Neither is a reason to change the pair; both are reasons not to call a green
 check a settled network.

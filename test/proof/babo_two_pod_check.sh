@@ -98,6 +98,14 @@ else
   bad "the Manager's trusted peer does not match the UI address; the hop would be refused"
 fi
 case "$mgr" in *"BABO_WG_ADDRESS=10.0.0.12"*) ok "Manager identity from the single source (10.0.0.12)" ;; *) bad "Manager identity wrong" ;; esac
+# The operator door's address is a declaration of its own, not the UI's trust
+# list reused. Same address, different admission: the UI listener admitting the
+# host (D12-2a) must never be read as the operator door admitting it (D12-2b).
+if grep -q 'BABO_OPERATOR_SOURCES-10.0.0.2/32' "$HERE/../../deploy/babo/entrypoint.sh"; then
+  ok "the operator door declares the host's WG address (10.0.0.2) under its own name"
+else
+  bad "the operator door has no rendered address; restart-ui would be refused from the host and the refusal would read as a bad principal"
+fi
 
 # The second negative has to be demonstrable, or it is only a claim: probe an
 # address this host actually owns. No global IPv4 address here = UNMET.
