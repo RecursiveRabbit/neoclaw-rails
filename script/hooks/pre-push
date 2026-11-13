@@ -1,0 +1,75 @@
+#!/bin/sh
+# pre-push: refuse a non-fast-forward push to a branch you are not standing on.
+#
+# The hazard this guards is not a force-push. It is `git push --all` from a stale
+# clone: the clone's local branches ride along and rewind the remote's copies of
+# them, one push, no intent, nothing in the way. That is the 2026-11-13 signature
+# (a rewind on the remote in the same second as a forward push on another branch,
+# from a clone whose HEAD sat on a third one).
+#
+# main is protected server-side and does not need this. Feature branches are not,
+# and cannot be: a blanket non-fast-forward rule would block the rebases that are
+# routine on this line. So the discriminator here is narrower than "is it a
+# rewind" - it is "is it a rewind of a branch I am not currently standing on",
+# which is the only shape the accident has and is not the shape a deliberate
+# rebase has.
+#
+#   fast-forward                                  -> allowed
+#   non-fast-forward on the checked-out branch    -> allowed, warns
+#   non-fast-forward on any other branch          -> REFUSED
+#   remote tip absent locally (stale clone)       -> REFUSED, cannot be verified
+#
+# Install per clone (hooks are not inherited from the tree):
+#     git config core.hooksPath script/hooks
+#
+# Deliberate override, for a case this cannot see:
+#     ALLOW_NON_FAST_FORWARD=1 git push --force <refspec>
+#
+# Known gap, stated so it is not mistaken for coverage: from a stale clone that
+# has the stale branch checked out, the rewind looks exactly like a rebase and is
+# allowed. Nothing client-side can tell those apart; server-side rulesets could,
+# but only by blocking the rebases too.
+
+set -u
+z40=0000000000000000000000000000000000000000
+rc=0
+
+if [ "${ALLOW_NON_FAST_FORWARD:-0}" = "1" ]; then
+    echo "pre-push: ALLOW_NON_FAST_FORWARD=1 - non-fast-forward checks skipped" >&2
+    exit 0
+fi
+
+head_ref=$(git symbolic-ref -q HEAD 2>/dev/null || true)
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+    # Deletions and new branches are not rewinds.
+    [ "$local_ref" = "(delete)" ] && continue
+    [ "$local_sha" = "$z40" ] && continue
+    [ "$remote_sha" = "$z40" ] && continue
+    case "$remote_ref" in refs/heads/*) ;; *) continue ;; esac
+
+    if git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
+        continue   # fast-forward, or the same commit
+    fi
+
+    if [ -n "$head_ref" ] && [ "$local_ref" = "$head_ref" ]; then
+        echo "pre-push: WARNING - $remote_ref would be rewritten, and it is the" >&2
+        echo "pre-push: branch you are on. Allowed as a deliberate rebase." >&2
+        continue
+    fi
+
+    if ! git cat-file -e "$remote_sha^{commit}" 2>/dev/null; then
+        echo "pre-push: REFUSED - $remote_ref" >&2
+        echo "pre-push:   the remote tip $remote_sha is not in this clone, so this" >&2
+        echo "pre-push:   push cannot be verified as a fast-forward. Fetch first." >&2
+    else
+        echo "pre-push: REFUSED - $remote_ref" >&2
+        echo "pre-push:   would rewind a branch you are not on (this clone has HEAD" >&2
+        echo "pre-push:   at ${head_ref:-<detached>}). This is the --all-from-a-stale-" >&2
+        echo "pre-push:   clone shape. Push by explicit refspec, or if you mean it:" >&2
+        echo "pre-push:   ALLOW_NON_FAST_FORWARD=1 git push --force origin <branch>" >&2
+    fi
+    rc=1
+done
+
+exit $rc
