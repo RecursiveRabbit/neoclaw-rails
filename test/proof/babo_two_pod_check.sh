@@ -98,13 +98,27 @@ else
   bad "the Manager's trusted peer does not match the UI address; the hop would be refused"
 fi
 case "$mgr" in *"BABO_WG_ADDRESS=10.0.0.12"*) ok "Manager identity from the single source (10.0.0.12)" ;; *) bad "Manager identity wrong" ;; esac
-# The operator door's address is a declaration of its own, not the UI's trust
-# list reused. Same address, different admission: the UI listener admitting the
-# host (D12-2a) must never be read as the operator door admitting it (D12-2b).
-if grep -q 'BABO_OPERATOR_SOURCES-10.0.0.2/32' "$HERE/../../deploy/babo/entrypoint.sh"; then
-  ok "the operator door declares the host's WG address (10.0.0.2) under its own name"
+# The operator door is retired (Evans, 2026-11-12: the UI is the only thing that
+# talks to the Manager). The render declares no operator source and, if one is set
+# anyway, still renders nothing onto the pod — the retirement is the render's, not
+# a default's.
+case "$mgr" in
+  *"BABO_OPERATOR_SOURCES"*) bad "the render emits an operator source; the door is retired" ;;
+  *) ok "the Manager is rendered with no operator source (the door is retired)" ;;
+esac
+case "$(BABO_OPERATOR_SOURCES=10.0.0.2/32 "$RENDER" --print 2>/dev/null | grep -E 'podman run .*--name babo-manager-app')" in
+  *"BABO_OPERATOR_SOURCES"*) bad "a configured operator source is still rendered onto the Manager" ;;
+  *) ok "a set BABO_OPERATOR_SOURCES is not rendered onto the Manager" ;;
+esac
+if grep -q 'export BABO_OPERATOR_SOURCES\|DEFAULT_OPERATOR' "$HERE/../../deploy/babo/entrypoint.sh"; then
+  bad "the entrypoint still declares or exports an operator source"
 else
-  bad "the operator door has no rendered address; restart-ui would be refused from the host and the refusal would read as a bad principal"
+  ok "the entrypoint neither defaults nor exports an operator source"
+fi
+if grep -q 'operator door: RETIRED' "$HERE/../../deploy/babo/entrypoint.sh"; then
+  ok "a set BABO_OPERATOR_SOURCES is retired out loud at start"
+else
+  bad "nothing says the operator key is retired; an ignored key would be silent"
 fi
 
 # The second negative has to be demonstrable, or it is only a claim: probe an

@@ -201,19 +201,22 @@ renders `babo-ui` (own wg0 at `10.0.0.11`, the only user-facing listener, host
 UI's /32 as its only trusted source, no ssh server). No shared mount, volume or
 network namespace; the only thing between them is the wire.
 
-**Two doors, two names — the operator's address is declared, not borrowed
-(2026-11-12).** The Manager admits two kinds of caller: the UI pod, which is its
-listener's only trusted source (`BABO_TRUSTED_SOURCES`, `10.0.0.11/32`), and the
-host operator, whose address is admitted to `restart-ui`
-(`BABO_OPERATOR_SOURCES`, `10.0.0.2/32`). They are separate variables because they
-are separate admissions that happen to share one address in one of the two roles:
-on the UI pod the host *is* the trusted source, and reusing that name at the
-Manager would make a UI-listener row indistinguishable from an operator-door row.
-The pair is what `babo.office.service.doors_from_render` reads; a Manager that
-starts without a declared operator source is refused rather than started with the
-door closed, because a closed door answers `403` and so does a wrong principal.
-Nothing routes this yet: the Manager is an object, not a process, and the listener
-in front of the operator door is unassigned and unruled.
+**One door — the operator door is retired (Evans, 2026-11-12).** The boundary
+ruling: *"the manager is not alive in this model. It has no state. It is an
+actuator for the UI, nothing else. The UI can have any connections to the manager
+you wish, but it is the only thing that talks to the manager about anything."*
+
+So the Manager admits exactly one kind of caller, the UI pod, and this render
+declares exactly one source for it (`BABO_TRUSTED_SOURCES`, `10.0.0.11/32` on the
+manager role). `BABO_OPERATOR_SOURCES` is gone: no default, no validation, no
+export. The entrypoint leaves the variable alone if someone still sets it and says
+so — *"operator door: RETIRED"* — and the Manager's constructor warns and ignores
+it, so the retirement is audible at both layers instead of silent at one. F17 is
+dead, not fixed: nobody at `10.0.0.2` talks to the Manager at all, so that address
+is now simply an address that is not the UI's.
+
+Nothing routes any of this yet: the Manager is an object built by `manager_for`,
+not a process, and the listener in front of it is unassigned and unruled.
 
 **The addresses carry two caveats the render cannot remove (bomu, 2026-11-11).**
 Neither is a reason to change the pair; both are reasons not to call a green
