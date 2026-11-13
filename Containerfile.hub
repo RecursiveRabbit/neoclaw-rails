@@ -12,6 +12,17 @@
 #   NEOCLAW_SYNAPSE_URL, NEOCLAW_SERVER_NAME
 #   NEOCLAW_MANAGER_URL, NEOCLAW_OPERATORS
 #   NEOCLAW_APPSERVICE_USER
+#
+# NEOCLAW_OPERATORS has NO DEFAULT and is the one variable a deployment can get
+# wrong without noticing: with it unset the bot refuses every `!` command and
+# names the sender in the refusal, which looks like a permission problem and is
+# a configuration problem. Comma-separated FULL Matrix IDs, `@localpart:server`:
+#
+#   NEOCLAW_OPERATORS=@evans:matrix.home
+#
+# A bare localpart (`evans`) is not an identity and matches nobody. See
+# docs/HUB-ENVIRONMENT.md for the contract, the two boot warnings, and the rest
+# of the hub's environment.
 
 FROM ruby:3.3-slim
 
