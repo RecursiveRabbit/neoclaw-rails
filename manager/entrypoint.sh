@@ -128,7 +128,7 @@ HUB_RESULT=$($PODMAN run -d \
     -e "NEOCLAW_SYNAPSE_URL=${NEOCLAW_SYNAPSE_URL:-http://10.0.0.2:8008}" \
     -e "NEOCLAW_SERVER_NAME=${NEOCLAW_SERVER_NAME:-matrix.home}" \
     -e "NEOCLAW_MANAGER_URL=${NEOCLAW_MANAGER_URL:-http://10.0.0.3:9200}" \
-    -e "NEOCLAW_OPERATORS=${NEOCLAW_OPERATORS:-evans,hopper}" \
+    -e NEOCLAW_OPERATORS \
     -e "NEOCLAW_APPSERVICE_USER=${NEOCLAW_APPSERVICE_USER:-neoclaw}" \
     -e "RAILS_ENV=production" \
     -e "SECRET_KEY_BASE=${SECRET_KEY_BASE:-$(ruby -rsecurerandom -e 'puts SecureRandom.hex(64)')}" \
