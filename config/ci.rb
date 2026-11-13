@@ -7,7 +7,9 @@ CI.run do
   step "Security: Importmap vulnerability audit", "bin/importmap audit"
   step "Security: Brakeman code analysis", "bin/brakeman --quiet --no-pager --exit-on-warn --exit-on-error"
   step "Tests: Rails", "bin/rails test"
-  step "Tests: Seeds", "env RAILS_ENV=test bin/rails db:seed:replant"
+  # No seed step: the hub app ships no database (no db/, no config/database.yml,
+  # no adapter gem), so db:seed:replant cannot run here. Named rather than dropped
+  # silently, because a step that cannot run is not the same as a step nobody needs.
 
   # Optional: Run system tests
   # step "Tests: System", "bin/rails test:system"
