@@ -3,7 +3,10 @@ require "test_helper"
 # The words, not the gate. The gate's own rows are in commands_test.rb and this file
 # must never be read as covering them: nothing here admits or refuses a command.
 class HubOperatorContractTest < ActiveSupport::TestCase
-  def self.entries(*ids)
+  # An instance helper, not a class method: a bare `entries(...)` inside a test block
+  # resolves against the instance, and `def self.entries` would be invisible there
+  # (learned from CI, run 43478908670 - six NoMethodErrors and two passing tests).
+  def entries(*ids)
     ids.to_set
   end
 
