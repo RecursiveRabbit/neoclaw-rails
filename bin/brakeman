@@ -2,6 +2,10 @@
 require "rubygems"
 require "bundler/setup"
 
-ARGV.unshift("--ensure-latest")
+# No --ensure-latest. The generated line made CI fail whenever upstream released a
+# patch: brakeman prints the version notice and exits 5 having analysed nothing, so
+# the job reports a calendar event as if it were a security result. The staleness of
+# the scanner is still a real concern and it is now nobody's job in this file - the
+# named owner is the dependabot bump (PR #38, brakeman 8.0.4 -> 8.1.0).
 
 load Gem.bin_path("brakeman", "brakeman")

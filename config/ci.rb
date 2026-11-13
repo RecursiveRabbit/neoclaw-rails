@@ -4,7 +4,9 @@ CI.run do
   step "Setup", "bin/setup --skip-server"
 
   step "Security: Gem audit", "bin/bundler-audit"
-  step "Security: Importmap vulnerability audit", "bin/importmap audit"
+  # No importmap audit: no bin/importmap, no config/importmap.rb, no package.json,
+  # so there are zero pins to audit. Same reason as the deleted CI job, written
+  # here as well so bin/ci and the workflow cannot drift apart on it.
   step "Security: Brakeman code analysis", "bin/brakeman --quiet --no-pager --exit-on-warn --exit-on-error"
   step "Tests: Rails", "bin/rails test"
   # No seed step: the hub app ships no database (no db/, no config/database.yml,

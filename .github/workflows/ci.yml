@@ -24,20 +24,16 @@ jobs:
       - name: Scan for known security vulnerabilities in gems used
         run: bin/bundler-audit
       
-  scan_js:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-
-      - name: Set up Ruby
-        uses: ruby/setup-ruby@v1
-        with:
-          bundler-cache: true
-
-      - name: Scan for security vulnerabilities in JavaScript dependencies
-        run: bin/importmap audit
+  # scan_js deleted 2026-11-13. The job ran `bin/importmap audit`, which does not
+  # exist: no `bin/importmap` binstub, no `config/importmap.rb`, no `package.json`,
+  # and therefore zero pins. There is no JavaScript dependency surface in this app
+  # for the audit to read, so the step could only ever exit 127.
+  #
+  # This is not a security scan judged unnecessary. It is a scan of a surface that
+  # is not there. The related live defect - `app/views/layouts/application.html.erb:9`
+  # calls `javascript_importmap_tags` while `importmap-rails` is declared at
+  # Gemfile:11 and never installed - is recorded as a row. If an importmap is ever
+  # wired, this job comes back with it.
 
   test:
     runs-on: ubuntu-latest
