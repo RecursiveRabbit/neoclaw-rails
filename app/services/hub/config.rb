@@ -24,8 +24,23 @@ module Hub
         ENV.fetch("NEOCLAW_HS_TOKEN")
       end
 
+      # Who may run `!` commands. EMPTY BY DEFAULT: an unconfigured hub refuses
+      # every operator command, and the refusal names the identity it rejected.
+      #
+      # Evans, 2026-11-12: "No fallbacks. Fallbacks are an illegal concept. If
+      # something about that system is failing I need to know, not have some agent
+      # smooth it over." A default owner is exactly that smoothing — two hardcoded
+      # names admitted by a bot nobody configured. The empty string below is not a
+      # fallback: it is the absence of a list, written once instead of arriving as
+      # nil at every caller.
+      #
+      # Entries are full Matrix IDs (`@localpart:server`), because a localpart is
+      # not an identity: `@evans:any.federated.server` shares `evans` with the
+      # operator and is a different person. A bare localpart here matches nobody —
+      # that fails closed, and the refusal shows the operator their own full id so
+      # the misconfiguration names itself.
       def operators
-        ENV.fetch("NEOCLAW_OPERATORS", "evans,hopper").split(",").map(&:strip).to_set
+        ENV.fetch("NEOCLAW_OPERATORS", "").split(",").map(&:strip).reject(&:empty?).to_set
       end
 
       def appservice_user
