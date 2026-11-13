@@ -22,6 +22,9 @@ class HubCommandsTest < ActiveSupport::TestCase
   end
 
   test "an unconfigured hub refuses every operator command, and names the identity" do
+    # producing line: manager/entrypoint.sh:131 and manager/run.sh:63 — `-e NEOCLAW_OPERATORS`
+    # with no value. With the variable unset on the host, neither shell sets it in the
+    # container, so the delete below is the deployment's own state and not a made one.
     ENV.delete("NEOCLAW_OPERATORS")
     assert_empty Hub::Config.operators
 
@@ -33,6 +36,8 @@ class HubCommandsTest < ActiveSupport::TestCase
   end
 
   test "a configured sender passes on its exact identity" do
+    # producing line: manager/entrypoint.sh:131 / manager/run.sh:63 — the same
+    # pass-through, with the variable set on the host by whoever deploys.
     ENV["NEOCLAW_OPERATORS"] = "@evans:matrix.home"
 
     command = Hub::Commands.parse("!freeze crew-1", sender: "@evans:matrix.home")
@@ -43,6 +48,7 @@ class HubCommandsTest < ActiveSupport::TestCase
   end
 
   test "a look-alike on another server is refused, and the refusal names it" do
+    # producing line: as above — a configured deployment, a sender from elsewhere.
     ENV["NEOCLAW_OPERATORS"] = "@evans:matrix.home"
 
     refused = Hub::Commands.parse("!freeze crew-1", sender: "@evans:evil.example")
@@ -52,9 +58,11 @@ class HubCommandsTest < ActiveSupport::TestCase
   end
 
   test "a bare localpart in the environment matches nobody, which is the safe direction" do
-    # The shape `manager/entrypoint.sh` injects today (`evans,hopper`). It must not
-    # quietly match, and the refusal shows the operator the id that was compared,
-    # so the misconfiguration names itself instead of looking like a refusal.
+    # producing line: manager/entrypoint.sh:131 / manager/run.sh:63 — the pass-through
+    # set to `evans,hopper`, the shape the shell used to inject itself. Nothing produces
+    # it now except a deployer writing it, which is why it is still worth a row: it must
+    # not quietly match, and the refusal shows the operator the id that was compared, so
+    # the misconfiguration names itself instead of looking like a refusal.
     ENV["NEOCLAW_OPERATORS"] = "evans,hopper"
 
     refused = Hub::Commands.parse("!freeze crew-1", sender: "@evans:matrix.home")
