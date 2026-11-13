@@ -6,20 +6,44 @@ module Hub
     REGISTRY = {}
 
     class << self
+      # `sender` is the full Matrix ID (`@localpart:server`), never a localpart.
+      #
+      # Three outcomes, and they are different facts:
+      #   nil            — not a command (no `!`, nothing after it, unknown verb)
+      #   { refused: }   — a command-shaped message from someone who may not run it
+      #   { name: ... }  — the command, from an operator
+      #
+      # The refusal names the identity it rejected rather than saying "not
+      # permitted": an operator who has been configured with the wrong id — a bare
+      # localpart, or their name on another server — needs to see which identity was
+      # compared, or the same silence would answer a typo and a wrong rule.
       def parse(body, sender:)
         return nil unless body.strip.start_with?("!")
-        return nil unless Config.operators.include?(sender)
 
         parts = body.strip[1..].split(nil, 2)
         return nil if parts.empty?
 
-        name = parts[0].downcase
+        name = parts[0].to_s.downcase
+        return nil if name.empty?
+
+        # The gate: empty list refuses everybody, and the comparison is the exact
+        # full ID. This runs before the registry lookup on purpose — "who are you"
+        # is not a question whose answer depends on which verb was typed.
+        unless Config.operators.include?(sender)
+          return { refused: sender, attempted: name }
+        end
+
         return nil unless REGISTRY.key?(name)
 
         { name: name, args: parts[1] || "", sender: sender }
       end
 
       def execute(command, room_id:, slug:)
+        if (rejected = command[:refused])
+          Matrix.notify(room_id, "#{rejected} is not an operator; !#{command[:attempted]} refused")
+          return
+        end
+
         handler = REGISTRY[command[:name]]
         return unless handler
 

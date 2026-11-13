@@ -206,8 +206,11 @@ module Hub
           return unless mentioned_ids.include?(@user_id)
         end
 
-        # Operator commands
-        if command = Commands.parse(body, sender: sender)
+        # Operator commands. The gate takes the raw Matrix ID: `sender` below is a
+        # localpart for routing and display, and a localpart is not an identity —
+        # `@evans:any.federated.server` carries the operator's name and is somebody
+        # else. See Commands.parse for the three outcomes, including the refusal.
+        if command = Commands.parse(body, sender: event["sender"].to_s)
           Commands.execute(command, room_id: room_id, slug: slug)
           return
         end
