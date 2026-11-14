@@ -28,6 +28,10 @@ require "test_helper"
 
 class HubGateProbeTest < ActiveSupport::TestCase
   SENDER = "@evans:matrix.home".freeze
+  # A name that exists in the organisation and is not the operator above. The
+  # empty-set row uses it so that "refuses everybody" is two identities and not
+  # one identity twice.
+  SECOND_SENDER = "@nime:matrix.home".freeze
   ROOM = "!room:matrix.home".freeze
 
   setup do
@@ -71,27 +75,45 @@ class HubGateProbeTest < ActiveSupport::TestCase
     verbs = Hub::Commands::REGISTRY.keys.sort
     refute_empty verbs, "no verbs are registered, so this probe would pass vacuously"
 
-    refusals = verbs.map { |name| Hub::Commands.parse("!#{name}", sender: SENDER) }
-    verbs.each_with_index do |name, i|
-      assert_equal({ refused: SENDER, attempted: name }, refusals[i],
-                   "!#{name} was not refused on a hub with no operators configured")
+    # Two senders, because "everybody" measured as one sender is trivially true: an
+    # empty Set answers no to whichever single name you try, and one name cannot
+    # tell that apart from a gate that would have said yes to the next one.
+    senders = [SENDER, SECOND_SENDER]
+
+    refusals = senders.map do |sender|
+      verbs.map { |name| Hub::Commands.parse("!#{name}", sender: sender) }
     end
 
-    # The decision is not the effect. Walk one refusal through execute and read
-    # what would land in the room.
+    senders.each_with_index do |sender, s|
+      verbs.each_with_index do |name, i|
+        assert_equal({ refused: sender, attempted: name }, refusals[s][i],
+                     "!#{name} from #{sender} was not refused on a hub with no operators configured")
+      end
+    end
+
+    # The decision is not the effect, and it is not one decision. Walk one refusal
+    # from EACH sender through execute and read what would land in the room.
     posts = []
-    capture_posts { |sent| Hub::Commands.execute(refusals.first, room_id: ROOM, slug: "probe"); posts = sent }
+    senders.each_with_index do |sender, s|
+      capture_posts do |sent|
+        Hub::Commands.execute(refusals[s].first, room_id: ROOM, slug: "probe")
+        posts.concat(sent)
+      end
+      assert_equal({ refused: sender, attempted: verbs.first }, refusals[s].first)
+    end
 
-    assert_equal 1, posts.size, "a refusal posts exactly once"
-    # Exactly this sentence, and nothing else. `assert_includes` measures "at
-    # least", so a fourth clause — an extra identity, a trailing hint — would pass
-    # it; the room is shown this whole notice or the row is wrong. Pinned to the
-    # verb that was actually refused rather than to a literal, because row (a)
+    assert_equal senders.size, posts.size, "each refused sender gets exactly one notice"
+    # Exactly this sentence, and nothing else, for each sender. `assert_includes`
+    # measures "at least", so a fourth clause — an extra identity, a trailing hint —
+    # would pass it; the room is shown this whole notice or the row is wrong. Pinned
+    # to the verb that was actually refused rather than to a literal, because row (a)
     # refuses the first registered verb, whatever it is.
-    assert_equal "#{SENDER} is not an operator; !#{verbs.first} refused", posts.first
+    senders.each_with_index do |sender, s|
+      assert_equal "#{sender} is not an operator; !#{verbs.first} refused", posts[s]
+    end
 
-    puts "probe (a) unconfigured: #{verbs.size} verbs refused (#{verbs.join(', ')}); " \
-         "sender=#{SENDER}; posted=#{posts.first.inspect}"
+    puts "probe (a) unconfigured: #{verbs.size} verbs x #{senders.size} senders refused " \
+         "(#{verbs.join(', ')}); senders=#{senders.join(', ')}; posted=#{posts.inspect}"
   end
 
   test "probe (b): a configured bare localpart matches nobody and warns exactly once, not per message" do

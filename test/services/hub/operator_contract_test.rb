@@ -79,4 +79,33 @@ class HubOperatorContractTest < ActiveSupport::TestCase
     assert Hub::OperatorContract.report(entries: entries("@evans:matrix.home"), logger: logger)
     assert_equal 1, logged.size, "a usable list must add no warning"
   end
+
+  # The wiring, not the words. Every row above calls `report`; none of them touches
+  # the initializer that calls it at boot, so "warns at boot" was proven for the
+  # module and unproven for the wiring.
+  #
+  # How the boot is observed, and why not the two obvious ways. The hook list is not
+  # readable: `Rails.application.config.after_initialize` called without a block RUNS
+  # the hooks, and inside a booted suite it raises from ActiveSupport's own runner
+  # ("undefined method 'call' for nil", run 43597828749 / job 132456010050). Booting a
+  # second process from here does not terminate (run 43598275411, cancelled), because
+  # this app is not built to be booted and thrown away. What is left is the artefact
+  # boot already wrote: the suite boots the app once, before any test, and that boot's
+  # warning went into this process's own log file.
+  #
+  # Covered: that boot really runs the contract, with the list unset — the state CI
+  # boots in. Not covered: the words for each state (the rows above) or the boot with
+  # a bad-but-present list (not observed here, and not claimable from one boot).
+  test "the initializer ran at boot and warned into this process's own log" do
+    if ENV["NEOCLAW_OPERATORS"].to_s.strip.empty?
+      logs = Dir[Rails.root.join("log", "*.log")]
+      refute_empty logs, "no log file under log/ — the boot log is not where this row looks, so nothing was measured"
+
+      contents = logs.map { |path| File.read(path) }.join("\n")
+      assert_includes contents, "NEOCLAW_OPERATORS is unset or empty",
+                      "boot did not run config/initializers/operator_contract.rb"
+    else
+      skip "NEOCLAW_OPERATORS is set here, so this row's state (unset at boot) is not the state CI booted in"
+    end
+  end
 end
