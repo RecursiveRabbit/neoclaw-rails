@@ -57,8 +57,20 @@ jobs:
         run: |
           fail=0
           while IFS= read -r f; do
-            if ! erb -x -T - "$f" > /dev/null 2>/tmp/erb.err; then
-              echo "::error file=$f::ERB does not compile"
+            # Two stages, because they fail differently and the first one alone lies:
+            # `erb -x` TRANSLATES the template to Ruby and does not parse the result,
+            # so a template whose embedded Ruby is not a valid statement still passes
+            # translation. The parse only happens when Ruby reads the generated file.
+            # This step's first version made exactly that mistake and printed "all ERB
+            # templates compile" over a broken template (run 43537933817).
+            if ! erb -x -T - "$f" > /tmp/erb.rb 2>/tmp/erb.err; then
+              echo "::error file=$f::erb could not translate this template"
+              sed -n '1,6p' /tmp/erb.err
+              fail=1
+              continue
+            fi
+            if ! ruby -c /tmp/erb.rb > /dev/null 2>/tmp/erb.err; then
+              echo "::error file=$f::the Ruby this template generates does not parse"
               sed -n '1,6p' /tmp/erb.err
               fail=1
             fi
