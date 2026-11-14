@@ -59,6 +59,16 @@ states are different faults and they get different words:
 | variable unset or empty | *unset — every `!` command will be refused; set it to a full Matrix ID* |
 | set to entries that cannot match | *contains N entries that cannot match any sender: "evans"* |
 
+The warning's **words** are covered by rows in `test/services/hub/operator_contract_test.rb`. The
+wiring is covered twice, and each covers a different half. One row reads this process's own
+boot log and asserts the warning is in it — that establishes that boot runs the contract, for
+the unset state CI boots in. `script/probe-boot-operator-contract.sh` boots the app three
+times in its own processes, bounded, and checks all three states, including that a usable
+list is **silent**. Neither is a unit row and neither could be: `Rails.application.config
+.after_initialize` is not a readable list, so a test cannot re-run this one hook without
+re-running every initializer's. If both are removed, this paragraph stops being true and the
+sentence above becomes a reading again.
+
 ### Where to set it
 
 Both launch paths pass it through from the environment, so an operator sets it once

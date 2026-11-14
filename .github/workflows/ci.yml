@@ -58,7 +58,18 @@ jobs:
           RAILS_ENV: test
           # RAILS_MASTER_KEY: ${{ secrets.RAILS_MASTER_KEY }}
           # REDIS_URL: redis://localhost:6379/0
-        run: bin/rails test
+        # -v: the assertion arithmetic on this line cannot be closed from counts
+        # alone. Named rows let a reader match the summary line to the source, one
+        # row at a time; a bare count cannot be audited by anybody, and a count
+        # nobody can audit is a tick with no number.
+        run: bin/rails test -v
+
+      # §7.4: the boot wiring, which no test row can reach (see the script header).
+      # Three bounded boots; a kill is reported, not hidden.
+      - name: The boot warns, measured by booting
+        env:
+          RAILS_ENV: test
+        run: script/probe-boot-operator-contract.sh
 
   system-test:
     runs-on: ubuntu-latest
