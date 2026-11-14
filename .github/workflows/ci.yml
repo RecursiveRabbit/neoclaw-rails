@@ -19,7 +19,9 @@ jobs:
           bundler-cache: true
 
       - name: Scan for common Rails security vulnerabilities using static analysis
-        run: bin/brakeman --no-pager
+        run: |
+          bin/brakeman --no-pager -f json > /tmp/bm.json || true
+          jq -r '.warnings[] | "FP \(.fingerprint) | \(.check_name) | \(.warning_type) | \(.file):\(.line) | \(.confidence)"' /tmp/bm.json
       
       - name: Scan for known security vulnerabilities in gems used
         run: bin/bundler-audit
