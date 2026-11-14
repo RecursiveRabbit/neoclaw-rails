@@ -97,11 +97,29 @@ module Hub
         "#{one_line(text[0, limit])}… (#{text.length} chars)"
       end
 
-      # Control characters are REPLACED, not stripped: stripping silently changes
-      # the value, and replacing keeps the fact that something was there. A
-      # newline in a sender must not become a second line under the bot's name.
+      # One line, and unambiguously. Every control character, both Unicode line
+      # separators, and the backslash itself are ESCAPED, not replaced:
+      #
+      #   \\   ->  \\
+      #   LF   ->  \x0A     (U+000A, and every other C0/C1 character)
+      #   U+2028 -> \u{2028} (Zl, line separator)
+      #   U+2029 -> \u{2029} (Zp, paragraph separator)
+      #
+      # A replacement character was the earlier choice and it was forgeable: a
+      # sender that literally contains U+FFFD printed the same glyph as a control
+      # character we had replaced, so the room could not tell a sanitisation from
+      # a value. Escaping the backslash in the same pass closes that: the sender's
+      # own `\x0A` comes out as `\\x0A`, which reads differently from the `\x0A` we
+      # produced for a real newline.
       def one_line(text)
-        text.gsub(/[[:cntrl:]]/, "\uFFFD")
+        text.gsub(/\\|[[:cntrl:]\u2028\u2029]/) do |char|
+          case char
+          when "\\"     then "\\\\"
+          when "\u2028" then "\\u{2028}"
+          when "\u2029" then "\\u{2029}"
+          else format("\\x%02X", char.ord)
+          end
+        end
       end
 
       def register(name, description: "", usage: "", &block)
