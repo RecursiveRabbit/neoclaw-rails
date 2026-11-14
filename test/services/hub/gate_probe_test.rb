@@ -83,8 +83,12 @@ class HubGateProbeTest < ActiveSupport::TestCase
     capture_posts { |sent| Hub::Commands.execute(refusals.first, room_id: ROOM, slug: "probe"); posts = sent }
 
     assert_equal 1, posts.size, "a refusal posts exactly once"
-    assert_includes posts.first, SENDER
-    assert_includes posts.first, "is not an operator"
+    # Exactly this sentence, and nothing else. `assert_includes` measures "at
+    # least", so a fourth clause — an extra identity, a trailing hint — would pass
+    # it; the room is shown this whole notice or the row is wrong. Pinned to the
+    # verb that was actually refused rather than to a literal, because row (a)
+    # refuses the first registered verb, whatever it is.
+    assert_equal "#{SENDER} is not an operator; !#{verbs.first} refused", posts.first
 
     puts "probe (a) unconfigured: #{verbs.size} verbs refused (#{verbs.join(', ')}); " \
          "sender=#{SENDER}; posted=#{posts.first.inspect}"
