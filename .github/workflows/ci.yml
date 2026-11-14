@@ -72,6 +72,9 @@ jobs:
             if ! ruby -c /tmp/erb.rb > /dev/null 2>/tmp/erb.err; then
               echo "::error file=$f::PARSE FAILED: $f"
               sed -n '1,6p' /tmp/erb.err
+              echo "---- first lines of the Ruby erb generated for $f ----"
+              sed -n '1,8p' /tmp/erb.rb
+              echo "---- end ----"
               fail=1
             fi
           done < <(git ls-files '*.erb')
