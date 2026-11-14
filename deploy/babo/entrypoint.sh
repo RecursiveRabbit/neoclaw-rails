@@ -119,9 +119,17 @@ log "wireguard up (${BIND})"
 # babo/channels/websocket/runtime.py:180 + babo/cli/gateway_runtime.py:1109):
 #   channels.websocket.host:port  — the SPA, /api/*, /webui/bootstrap
 #   gateway.host:port             — the gateway's own GET /health
-# Core binds both to the WG address; the UI edge binds both to loopback.
+# Core binds the websocket to the WG address; the health endpoint does NOT by
+# default — see HEALTH_ADDRESS above.
 PORT="${BABO_PORT:-8843}"
 HEALTH_PORT="${BABO_HEALTH_PORT:-18790}"
+
+# The health endpoint has no source gate. It is unauthenticated on purpose (it is
+# a liveness answer), so anything that can route to this pod can read it — and on
+# 2026-11-14 the manager's health answered 200 from an address the config's trust
+# list did not contain. Loopback is therefore the default and exposure is an
+# explicit opt-in: set BABO_HEALTH_ADDRESS to the address that must answer.
+HEALTH_ADDRESS="${BABO_HEALTH_ADDRESS:-127.0.0.1}"
 CONFIG="${BABO_RUNTIME_CONFIG:-/run/babo/config.json}"
 mkdir -p "$(dirname "$CONFIG")"
 
@@ -137,11 +145,21 @@ if [ "$ROLE" = "manager" ]; then
     log "internal operator socket: ${UNIX_SOCKET}"
 fi
 
-if [ -n "$TRUSTED" ]; then
+# `trusted_sources` gates a TCP listener. The manager role announces a unix
+# socket (unix_socket_path, above) and has no TCP listener for this field to
+# gate, so rendering it there would name a control with nothing behind it and the
+# next reader would take it for a gate. It is rendered only where a TCP surface
+# exists. Whether the UI core enforces it is a babo-core question and is not
+# established from this repository; until it is, this field is a claim the UI pod
+# makes and the manager pod does not.
+if [ "$ROLE" = "manager" ] && [ -n "$TRUSTED" ]; then
+    log "trusted_sources is NOT rendered for the manager: the channel is a unix socket (${UNIX_SOCKET:-/run/babo/internal/office.sock}), so a source list would gate no listener"
+fi
+if [ -n "$TRUSTED" ] && [ "$ROLE" != "manager" ]; then
     cat > "$CONFIG" <<EOF
 {
   "gateway": {
-    "host": "${BIND}",
+    "host": "${HEALTH_ADDRESS}",
     "port": ${HEALTH_PORT}
   },
   "channels": {
@@ -157,7 +175,7 @@ else
     cat > "$CONFIG" <<EOF
 {
   "gateway": {
-    "host": "${BIND}",
+    "host": "${HEALTH_ADDRESS}",
     "port": ${HEALTH_PORT}
   },
   "channels": {
@@ -169,7 +187,10 @@ else
 }
 EOF
 fi
-log "runtime config: ${CONFIG} (websocket ${BIND}:${PORT}, health ${BIND}:${HEALTH_PORT})"
+log "runtime config: ${CONFIG} (websocket ${BIND}:${PORT}, health ${HEALTH_ADDRESS}:${HEALTH_PORT})"
+if [ "${HEALTH_ADDRESS}" = "127.0.0.1" ]; then
+    log "health listener is loopback only; set BABO_HEALTH_ADDRESS to expose it, and know that nothing gates it"
+fi
 
 # `babo gateway`, not `babo webui`: the webui launcher's first-run setup forced
 # channels.websocket.host back to 127.0.0.1 and could mint token_issue_secret

@@ -116,7 +116,22 @@ raises rather than running with a token nobody set.
 
 ## What is deliberately not here
 
-`BABO_TRUSTED_SOURCES` and the retired `BABO_OPERATOR_SOURCES` belong to the manager
+`BABO_TRUSTED_SOURCES` and the retired `BABO_OPERATOR_SOURCES` belong to the babo
 side of the house and are documented where they are read, not in this file. The
 operator door those keys fed was retired on 2026-11-12 (Evans: *"No connection
 whatsoever… it is an actuator for the UI, nothing else"*).
+
+**`BABO_TRUSTED_SOURCES` is rendered only for the UI role.** `trusted_sources` gates a
+TCP listener, and the manager role's channel is a unix socket — so as of 2026-11-14 the
+manager no longer renders it, because a source list with no listener to gate reads as a
+control to the next person and refuses nobody. The render says so in its own log line.
+Whether the UI's core actually enforces the list is a babo-core question and is not
+established from this repository; until it is, the field is a claim the UI pod makes and
+the manager pod does not.
+
+**The health endpoint binds loopback by default** (`BABO_HEALTH_ADDRESS`, default
+`127.0.0.1`) and exposure is an explicit opt-in, because nothing gates it: it is an
+unauthenticated liveness answer. On 2026-11-14 the manager's health returned 200 to an
+address the rendered trust list did not contain. A pod that needs to answer health from
+off-loopback sets `BABO_HEALTH_ADDRESS` to that address and gets a log line saying it is
+exposed; a pod that does not, does not.
