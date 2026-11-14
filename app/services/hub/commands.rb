@@ -5,6 +5,12 @@ module Hub
   class Commands
     REGISTRY = {}
 
+    # A cap on what the room is shown, and the true length beside it. A silently
+    # clipped identity reads like the real one, which is the same fault as seating
+    # a default owner: it tells the reader something that is not so.
+    IDENTITY_MAX = 96
+    VERB_MAX = 32
+
     class << self
       # `sender` is the full Matrix ID (`@localpart:server`), never a localpart.
       #
@@ -38,9 +44,9 @@ module Hub
         { name: name, args: parts[1] || "", sender: sender }
       end
 
-      def execute(command, room_id:, slug:)
+      def execute(command, room_id:, slug:, logger: Rails.logger)
         if (rejected = command[:refused])
-          Matrix.notify(room_id, "#{rejected} is not an operator; !#{command[:attempted]} refused")
+          note_refusal(rejected, command[:attempted], room_id: room_id, logger: logger)
           return
         end
 
@@ -51,6 +57,51 @@ module Hub
         Matrix.notify(room_id, result) if result
       rescue => e
         Matrix.notify(room_id, "Command failed: #{e.message}")
+      end
+
+      # One notice per sender for the life of the process. The notice exists to
+      # show a misconfigured operator their own identity, and that fact needs
+      # saying once: a per-message post makes the Manager a relay for whoever
+      # knocks, in its own voice, at their chosen rate.
+      def notified_senders
+        @notified_senders ||= Set.new
+      end
+
+      # The notice store is process-lifetime by design, so a row that asserts the
+      # post has to start from a known state.
+      def forget_notifications!
+        notified_senders.clear
+      end
+
+      # The log gets the refusal in full: no cap, and inspected so a control
+      # character stays escaped and the line stays one line. The room gets the
+      # clipped, single-line version, because the room is the megaphone.
+      def note_refusal(sender, verb, room_id:, logger: Rails.logger)
+        logger.warn(
+          "operator refusal: sender=#{sender.to_s.inspect} verb=#{verb.to_s.inspect} " \
+          "room=#{room_id.to_s.inspect}"
+        )
+        return unless notified_senders.add?(sender.to_s)
+
+        Matrix.notify(
+          room_id,
+          "#{clip(sender, Hub::Commands::IDENTITY_MAX)} is not an operator; " \
+          "!#{clip(verb, Hub::Commands::VERB_MAX)} refused"
+        )
+      end
+
+      def clip(value, limit)
+        text = value.to_s
+        return one_line(text) if text.length <= limit
+
+        "#{one_line(text[0, limit])}… (#{text.length} chars)"
+      end
+
+      # Control characters are REPLACED, not stripped: stripping silently changes
+      # the value, and replacing keeps the fact that something was there. A
+      # newline in a sender must not become a second line under the bot's name.
+      def one_line(text)
+        text.gsub(/[[:cntrl:]]/, "\uFFFD")
       end
 
       def register(name, description: "", usage: "", &block)
