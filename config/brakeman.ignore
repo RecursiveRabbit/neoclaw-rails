@@ -1,0 +1,27 @@
+{
+  "ignored_warnings": [
+    {
+      "fingerprint": "52986a6bfbbc40adbb3ce91b7bf8562f85e1f253a98057b849c320d1881f69e9",
+      "note": "IO.popen receives an ARGV ARRAY: ['podman', '--remote', '--url', 'unix://...', 'exec', container.instance_name] + args. An array never reaches a shell — Ruby execs the first element directly and passes the rest as arguments, so no shell metacharacter is interpreted anywhere in this call. Podman's own command word comes next, so the container name is not the command being dispatched.\n\nOne component of that array is remote-influenced. Container instance names are built as \"<identity>-<channel>\" (manager/app/services/spawner.rb:202-205) and the channel is the room slug, which for a DM is \"dm-\" plus the other party's FULL Matrix ID as their homeserver reports it (app/services/hub/sync_manager.rb:340-341). The character set of that component is therefore imposed by a third party's server, not by us: this codebase validates instance_name for presence and uniqueness only (manager/app/models/container.rb:5) and applies no charset guard.\n\nA conforming modern Matrix ID cannot contain a path separator, whitespace, or a shell metacharacter, so argv injection and path traversal are both unavailable for IDs that conform. They are NOT unavailable in general: the specification carries a legacy clause permitting identifiers outside the modern grammar, and a room whose other member registered such an ID would put those characters into the slug. So this is recorded as a documented exposure whose shape is bounded by a remote homeserver's conformance — not as a shape that is safe by construction.\n\nThe remote-derived component reaches the SPAWN path (slug to instance name), not a command path. The operator gate's enumeration is built from tree identity (the ACTIONS/AGENT_DOOR/OPERATOR_DOOR literals and the frozen vocabulary rows) and is unaffected by anything in this file; no row in tests/baton depends on this argv.\n\nCaveat, and it is the one that matters for a future reader: podman_exec_as_agent (same file, :138-142) DOES hand a string to `bash -c` inside the container. Its single caller passes a literal (the git add/commit/push line at :125-126), so it is not a finding at this revision — but one literal is not a class, and a second caller passing anything derived would be a real injection regardless of this entry.\n\nATTRIBUTION: the analysis above was recovered from a reviewer (bomu) whose turns did not finish, and is written out here because his reasoning reached a conclusion and his turn ended before he could file it. The words are his work and this reviewer's transcription, not his signed judgement. Entry written by soro, 2026-11-13. Fingerprints harvested from brakeman's own JSON output against this same tree, not computed by hand.",
+      "warning_type": "Command Injection",
+      "check_name": "Execute",
+      "location": {
+        "file": "manager/app/services/session_processor.rb",
+        "line": 135
+      },
+      "confidence": "Medium"
+    },
+    {
+      "fingerprint": "7ff007f77b058561a45a5913128f8ee3024701627134daae4a2f440712d54180",
+      "note": "Same call shape as the entry above, in podman_cmd: IO.popen receives an ARGV ARRAY, so no shell is involved and podman's command word (here 'cp') is fixed, with the remote-influenced container instance name appearing as a path argument rather than as the command. One component is remote-derived and charset-bounded by a third party's homeserver rather than by this codebase; traversal is unavailable only for conforming modern IDs, and the legacy clause in the Matrix specification is the reason this is recorded as bounded rather than safe. The spawn path is where that component enters (slug to instance name); the operator gate's enumeration is built from tree identity and is untouched by this file. The `bash -c` caveat in the entry above applies to podman_exec_as_agent, not here.\n\nATTRIBUTION: recovered from a reviewer (bomu) whose turns did not finish and written out by soro, 2026-11-13 — his reasoning, transcribed; not a signed judgement by him. Fingerprint harvested from brakeman's own JSON output against this tree.",
+      "warning_type": "Command Injection",
+      "check_name": "Execute",
+      "location": {
+        "file": "manager/app/services/session_processor.rb",
+        "line": 147
+      },
+      "confidence": "Medium"
+    }
+  ],
+  "brakeman_version": "8.0.4"
+}
