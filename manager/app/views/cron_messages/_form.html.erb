@@ -37,7 +37,7 @@
   </div>
 
   <div class="flex gap-3">
-    <%= f.submit(@message.persisted? ? "Update" : "Create"), class: "px-4 py-2 rounded bg-amber-900/30 border border-amber-700/30 text-amber-500 hover:bg-amber-900/50 transition-colors cursor-pointer" %>
+    <%= f.submit(@message.persisted? ? "Update" : "Create", class: "px-4 py-2 rounded bg-amber-900/30 border border-amber-700/30 text-amber-500 hover:bg-amber-900/50 transition-colors cursor-pointer") %>
     <%= link_to "Cancel", (@message.persisted? ? cron_message_path(@message) : cron_messages_path), class: "px-4 py-2 rounded border border-stone-700 text-stone-400 hover:text-stone-300 transition-colors" %>
   </div>
 <% end %>
