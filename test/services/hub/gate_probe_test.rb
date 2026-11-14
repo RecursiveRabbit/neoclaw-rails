@@ -32,10 +32,14 @@ class HubGateProbeTest < ActiveSupport::TestCase
 
   setup do
     @saved = ENV["NEOCLAW_OPERATORS"]
+    # The refusal notice is once-per-sender for the life of the process, so a row
+    # that asserts the post has to start from a known state.
+    Hub::Commands.forget_notifications!
   end
 
   teardown do
     ENV["NEOCLAW_OPERATORS"] = @saved
+    Hub::Commands.forget_notifications!
   end
 
   # Capture what `execute` posts, without a Matrix server. Hand-rolled rather than
