@@ -64,13 +64,13 @@ jobs:
             # This step's first version made exactly that mistake and printed "all ERB
             # templates compile" over a broken template (run 43537933817).
             if ! erb -x -T - "$f" > /tmp/erb.rb 2>/tmp/erb.err; then
-              echo "::error file=$f::erb could not translate this template"
+              echo "::error file=$f::TRANSLATE FAILED: $f"
               sed -n '1,6p' /tmp/erb.err
               fail=1
               continue
             fi
             if ! ruby -c /tmp/erb.rb > /dev/null 2>/tmp/erb.err; then
-              echo "::error file=$f::the Ruby this template generates does not parse"
+              echo "::error file=$f::PARSE FAILED: $f"
               sed -n '1,6p' /tmp/erb.err
               fail=1
             fi
