@@ -128,17 +128,46 @@ mkdir -p "$(dirname "$CONFIG")"
 # The internal operator socket (dova, UI-in-pod revoke): the gateway creates it
 # on a volume; a CLI in the same container (or a future sidecar sharing the
 # volume) uses it for verbs that cannot come from loopback or the trust list.
+# The runtime serves EITHER the unix socket OR TCP — babo/channels/websocket/runtime.py
+# chooses one in an if/else — and trusted_sources is only ever consulted on the TCP
+# path (babo/webui/ws_http.py: the bootstrap route refuses a peer that is neither
+# local nor listed). A trust list rendered beside a unix socket is a label nobody
+# reads: it was in this config, announced at boot, and enforced by nothing.
+#
+# So the manager has exactly two shapes, and neither pretends:
+#
+#   default              the internal unix socket, and NO trusted_sources in the
+#                        config, because nothing on that path would check it
+#   BABO_OFFICE_TCP=1    TCP on ${BIND}:${PORT} with trusted_sources enforced, and
+#                        no socket — an explicit opt-in that says what it trades
+#
+# The UI role has no socket, so its trust list sits beside a real TCP listener and
+# is enforced there. That is the difference the flag encodes.
 UNIX_KEY=""
+TRUST_KEY=""
 if [ "$ROLE" = "manager" ]; then
-    UNIX_SOCKET="${BABO_INTERNAL_SOCKET:-/run/babo/internal/office.sock}"
-    mkdir -p "$(dirname "$UNIX_SOCKET")"
-    chmod 700 "$(dirname "$UNIX_SOCKET")"
-    UNIX_KEY=",\"unix_socket_path\": \"${UNIX_SOCKET}\""
-    log "internal operator socket: ${UNIX_SOCKET}"
+    case "${BABO_OFFICE_TCP:-}" in
+        1|true|yes)
+            if [ -z "$TRUSTED" ]; then
+                log "FATAL: BABO_OFFICE_TCP is set but no trusted source is configured; an open office door is not a trade this image offers"
+                exit 1
+            fi
+            TRUST_KEY=",\"trusted_sources\": [\"${TRUSTED}\"]"
+            log "office on TCP ${BIND}:${PORT}, admitted sources: ${TRUSTED}"
+            log "the internal unix socket is NOT created; in-container CLI verbs have no door in this shape"
+            ;;
+        *)
+            UNIX_SOCKET="${BABO_INTERNAL_SOCKET:-/run/babo/internal/office.sock}"
+            mkdir -p "$(dirname "$UNIX_SOCKET")"
+            chmod 700 "$(dirname "$UNIX_SOCKET")"
+            UNIX_KEY=",\"unix_socket_path\": \"${UNIX_SOCKET}\""
+            log "internal operator socket: ${UNIX_SOCKET}"
+            log "no trusted_sources are rendered: the runtime serves this socket, not TCP, so a trust list here would be enforced by nothing"
+            ;;
+    esac
 fi
 
-if [ -n "$TRUSTED" ]; then
-    cat > "$CONFIG" <<EOF
+cat > "$CONFIG" <<EOF
 {
   "gateway": {
     "host": "${BIND}",
@@ -147,28 +176,11 @@ if [ -n "$TRUSTED" ]; then
   "channels": {
     "websocket": {
       "host": "${BIND}",
-      "port": ${PORT},
-      "trusted_sources": ["${TRUSTED}"]${UNIX_KEY}
+      "port": ${PORT}${TRUST_KEY}${UNIX_KEY}
     }
   }
 }
 EOF
-else
-    cat > "$CONFIG" <<EOF
-{
-  "gateway": {
-    "host": "${BIND}",
-    "port": ${HEALTH_PORT}
-  },
-  "channels": {
-    "websocket": {
-      "host": "${BIND}",
-      "port": ${PORT}${UNIX_KEY}
-    }
-  }
-}
-EOF
-fi
 log "runtime config: ${CONFIG} (websocket ${BIND}:${PORT}, health ${BIND}:${HEALTH_PORT})"
 
 # `babo gateway`, not `babo webui`: the webui launcher's first-run setup forced
