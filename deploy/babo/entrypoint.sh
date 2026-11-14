@@ -119,9 +119,12 @@ log "wireguard up (${BIND})"
 # babo/channels/websocket/runtime.py:180 + babo/cli/gateway_runtime.py:1109):
 #   channels.websocket.host:port  — the SPA, /api/*, /webui/bootstrap
 #   gateway.host:port             — the gateway's own GET /health
-# Core binds both to the WG address; the UI edge binds both to loopback.
+# The websocket binds the WG address. The health endpoint does NOT by default:
+# nothing gates it (it is an unauthenticated liveness answer), so it is loopback
+# unless somebody names an address. Design and wording: soro, PR #66.
 PORT="${BABO_PORT:-8843}"
 HEALTH_PORT="${BABO_HEALTH_PORT:-18790}"
+HEALTH_ADDRESS="${BABO_HEALTH_ADDRESS:-127.0.0.1}"
 CONFIG="${BABO_RUNTIME_CONFIG:-/run/babo/config.json}"
 mkdir -p "$(dirname "$CONFIG")"
 
@@ -170,7 +173,7 @@ fi
 cat > "$CONFIG" <<EOF
 {
   "gateway": {
-    "host": "${BIND}",
+    "host": "${HEALTH_ADDRESS}",
     "port": ${HEALTH_PORT}
   },
   "channels": {
@@ -181,7 +184,12 @@ cat > "$CONFIG" <<EOF
   }
 }
 EOF
-log "runtime config: ${CONFIG} (websocket ${BIND}:${PORT}, health ${BIND}:${HEALTH_PORT})"
+log "runtime config: ${CONFIG} (websocket ${BIND}:${PORT}, health ${HEALTH_ADDRESS}:${HEALTH_PORT})"
+if [ "${HEALTH_ADDRESS}" = "127.0.0.1" ]; then
+    log "health listener is loopback only; set BABO_HEALTH_ADDRESS to expose it, and know that nothing gates it"
+else
+    log "health listener is on ${HEALTH_ADDRESS} — UNAUTHENTICATED and reachable by anything that can route here"
+fi
 
 # `babo gateway`, not `babo webui`: the webui launcher's first-run setup forced
 # channels.websocket.host back to 127.0.0.1 and could mint token_issue_secret
