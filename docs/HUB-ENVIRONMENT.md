@@ -17,6 +17,21 @@ That is the intended behaviour, not a fault — a default owner is a stranger ad
 by a bot nobody configured. It does mean a deployment that never sets this variable
 produces a bot that ignores everyone, which is why this section exists.
 
+### What the notice says, and what it deliberately does not
+
+- It names the identity that was compared, up to 96 characters, and the verb up to 32.
+  An over-long value is clipped and **marked with its true length** — `… (4096 chars)` —
+  because a silently clipped identity reads like the real one. Above the cap the whole
+  value survives only in the log.
+- Control characters, and U+2028/U+2029, are **escaped, not stripped**: a newline reaches
+  the room as the four characters `\x0A`, a literal backslash is doubled first so the
+  escapes cannot be forged, and nothing arrives as a second line under the bot's name.
+- **It speaks once per sender for the life of the process; after that the log carries it
+  alone.** A second `!freeze` from the same identity gets no second notice. That is
+  deliberate — a per-message post makes the bot a relay for whoever knocks, in its own
+  voice, at their chosen rate — but it means silence in the room is not evidence that the
+  gate is down. The full refusal, unclipped and inspected, is logged every time.
+
 ### The form
 
 Comma-separated **full Matrix IDs**, each `@localpart:server`. One line, no spaces

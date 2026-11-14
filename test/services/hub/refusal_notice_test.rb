@@ -1,4 +1,4 @@
-# The refusal notice: three rows, each built to fail against the old line.
+# The refusal notice: rows built to fail against the old line.
 #
 # `execute` used to post `"#{rejected} is not an operator; !#{attempted} refused"`
 # on every refusal. Both values are attacker-supplied — `attempted` is a body
@@ -7,11 +7,17 @@
 # Manager speak in its own voice, at their chosen rate. The gate was right; the
 # notice was a megaphone with no handle.
 #
-# The three faults, and the row that would have caught each:
+# The faults, and the row that would have caught each:
 #
-#   1. an unbounded value, clipped SILENTLY   -> row 1: 4KB verb, cap + true length
-#   2. a newline becomes a second line        -> row 2: forged sender, replace not strip
-#   3. an unconditional post per message      -> row 3: two refusals, one post
+#   1. an unbounded value, clipped SILENTLY      -> row 1: 4KB verb, cap + true length
+#   2. a newline becomes a second line           -> row 2: forged sender, escaped
+#   3. an unconditional post per message         -> row 3: two refusals, one post
+#   4. a forgeable mark on a sanitised value     -> row 4: a sender that types the escape
+#   5. U+2028/U+2029 pass a Cc matcher           -> row 5: separators escaped too
+#
+# Rows 2 and 5 assert on the CHARACTERS, not on `String#lines.size`: `lines`
+# splits on "\n" only, so it is green about a fact nobody disputes and silent
+# about the claim in the row's title.
 #
 # Inputs here are hostile on purpose. A well-formed sender and a four-letter verb
 # prove nothing about a notice that quotes strangers.
@@ -69,27 +75,68 @@ class HubRefusalNoticeTest < ActiveSupport::TestCase
     end
   end
 
-  test "a sender carrying a newline cannot forge a second line, and is replaced rather than stripped" do
+  test "a sender carrying a newline cannot forge a second line, and the log keeps the fact" do
     forged = "@evans:matrix.home\n@nime:matrix.home is not an operator; !freeze refused"
     refused = refusal("freeze", sender: forged)
     assert_equal forged, refused[:refused], "parse refuses the identity it was handed"
 
-    capture do |posts, _lines, logger|
+    capture do |posts, lines, logger|
       Hub::Commands.execute(refused, room_id: ROOM, slug: "probe", logger: logger)
 
       assert_equal 1, posts.size
       notice = posts.first
 
-      refute_match(/[\r\n]/, notice, "no control character reaches the room")
-      assert_equal 1, notice.lines.size, "the notice is exactly one line"
+      # The claim in the title, measured on characters: no carriage return, no
+      # newline, no line separator, no paragraph separator reaches the room.
+      refute_match(/[\r\n\u2028\u2029]/, notice, "no line break reaches the room")
 
-      # Replace, not strip: the control character leaves a mark, so the reader can
-      # see that something was there. Stripping would print
-      # "@evans:matrix.home@nime:matrix.home..." — a different string that looks
-      # like one identity and is two.
-      assert_includes notice, "\uFFFD", "the control character is replaced, not dropped"
-      assert_includes notice, "@evans:matrix.home\uFFFD@nime:matrix.home"
+      # Escaped, not stripped: the room can see that something was there, and the
+      # sender's text is still legible inside the sentence rather than arriving as
+      # a second utterance under the bot's name.
+      assert_includes notice, "@evans:matrix.home\\x0A@nime:matrix.home"
       refute_includes notice, "@evans:matrix.home@nime:matrix.home", "nothing was stripped"
+      refute_includes notice, "\uFFFD", "no replacement glyph is used as a mark"
+
+      # The other half, which nothing measured before: the room is sanitised on
+      # purpose, so the log is the only place the truth survives. `inspect` keeps
+      # the control character as the two characters \n.
+      assert_includes lines.first, '\\n', "the log keeps the control character escaped"
+      refute_includes lines.first, "\uFFFD", "the log did not receive a replacement"
+    end
+  end
+
+  test "an escape cannot be forged: a sender that types the escape gets its backslash escaped" do
+    # The literal four characters \ x 0 A. If the notice did not escape the
+    # backslash, this would print exactly like a real newline that had been
+    # escaped, and the room could not tell a sanitised control character from a
+    # value the sender chose.
+    typed = '@evans:matrix.home\\x0A@nime:matrix.home'
+    refused = refusal("freeze", sender: typed)
+
+    capture do |posts, _lines, logger|
+      Hub::Commands.execute(refused, room_id: ROOM, slug: "probe", logger: logger)
+
+      notice = posts.first
+      assert_includes notice, '@evans:matrix.home\\\\x0A@nime:matrix.home',
+                      "the sender's own backslash is doubled, so its escape is not ours"
+    end
+  end
+
+  test "U+2028 and U+2029 do not survive into the room" do
+    # \p{Zl} and \p{Zp}: not C0/C1 control characters, so a [[:cntrl:]] matcher
+    # lets them through, and whether a renderer breaks a line on them is a
+    # client's question. Escape them and the question does not arise.
+    refused = refusal("freeze", sender: "@evans:matrix.home\u2028@nime:matrix.home\u2029x")
+
+    capture do |posts, _lines, logger|
+      Hub::Commands.execute(refused, room_id: ROOM, slug: "probe", logger: logger)
+
+      notice = posts.first
+      refute_includes notice, "\u2028"
+      refute_includes notice, "\u2029"
+      assert_includes notice, "\\u{2028}"
+      assert_includes notice, "\\u{2029}"
+      refute_match(/[\r\n]/, notice)
     end
   end
 
