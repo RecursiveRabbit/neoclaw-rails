@@ -53,6 +53,23 @@ jobs:
         with:
           bundler-cache: true
 
+      - name: Compile every ERB template
+        run: |
+          fail=0
+          while IFS= read -r f; do
+            if ! erb -x -T - "$f" > /dev/null 2>/tmp/erb.err; then
+              echo "::error file=$f::ERB does not compile"
+              sed -n '1,6p' /tmp/erb.err
+              fail=1
+            fi
+          done < <(git ls-files '*.erb')
+          if [ "$fail" -ne 0 ]; then
+            echo "One or more templates cannot compile. A green test suite over an"
+            echo "uncompilable view is a green tick over a broken page."
+            exit 1
+          fi
+          echo "all ERB templates compile"
+
       - name: Run tests
         env:
           RAILS_ENV: test
