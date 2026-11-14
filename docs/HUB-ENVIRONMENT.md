@@ -114,6 +114,28 @@ manager/run.sh
 `NEOCLAW_AS_TOKEN` and `NEOCLAW_HS_TOKEN` have no default on purpose: `ENV.fetch`
 raises rather than running with a token nobody set.
 
+## The manager's health endpoint — loopback by default
+
+**The health endpoint binds loopback by default** (`BABO_HEALTH_ADDRESS`, default
+`127.0.0.1`) and exposure is an explicit opt-in, because nothing gates it: it is an
+unauthenticated liveness answer. On 2026-11-14 the manager's health returned 200 to an
+address the rendered trust list did not contain. A pod that needs to answer health from
+off-loopback sets `BABO_HEALTH_ADDRESS` to that address and gets a log line saying it is
+exposed; a pod that does not, does not.
+
+Design and wording: soro, PR #66 — closed 2026-11-14 with the design still inside it.
+The variable name is his; the probe change below is the part #66 did not carry.
+
+The container's own `HEALTHCHECK` curls loopback first and `BABO_HEALTH_ADDRESS` second,
+so it measures **whether the process answers**, not **how the network was configured**.
+A probe that curls the bind address reports unhealthy on the default shape — a container
+whose process is fine, going red over a variable.
+
+`BABO_TRUSTED_SOURCES` gates a TCP listener. The manager renders it only where it has
+one: with `BABO_OFFICE_TCP=1` the manager serves TCP and the list is enforced there;
+with the default unix socket the field is absent, because a trust list beside a
+transport that cannot check it is a label, not a gate.
+
 ## What is deliberately not here
 
 `BABO_TRUSTED_SOURCES` and the retired `BABO_OPERATOR_SOURCES` belong to the manager
