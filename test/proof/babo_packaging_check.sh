@@ -112,17 +112,36 @@ else
   bad "image contains key material (paths only): $(echo "$WG" | tr '\n' ' ')"
 fi
 
-# --- 2. No container-runtime socket and no runtime client --------------
+# --- 2. Runtime client present, socket not baked (D-10 boundary) ------
+# The image now carries `podman-remote` for `babo-core`; the privilege is bounded
+# by which container mounts the socket, which the pod shape check asserts. What
+# must NOT be in an image is a runtime socket or a second runtime daemon.
 RT=$(probe /bin/sh -c '
   ls /run/podman/podman.sock /var/run/docker.sock 2>/dev/null
-  command -v podman docker ctr nerdctl 2>/dev/null
+  printf "podman="; command -v podman 2>/dev/null || echo missing
+  printf "git="; command -v git 2>/dev/null || echo missing
+  printf "dockerd="; command -v docker ctr nerdctl dockerd 2>/dev/null || echo none
   true')
 if [ "$RT" = "$PROBE_FAILED" ]; then
-  bad "image could not be run, so the runtime-socket check did not run (podman run failed)"
-elif [ -z "$RT" ]; then
-  ok "image has no podman/docker socket and no container-runtime client"
+  bad "image could not be run, so the runtime-client check did not run (podman run failed)"
 else
-  bad "image carries a runtime socket or client: $(echo "$RT" | tr '\n' ' ')"
+  case "$RT" in
+    *"/run/podman/podman.sock"*|*"/var/run/docker.sock"*) bad "image bakes a runtime socket: $RT" ;;
+    *"podman="*) ok "image carries no runtime socket; runtime client probe: $(echo "$RT" | tr '\n' ' ')" ;;
+    *) bad "could not read the runtime-client facts: $(echo "$RT" | tr '\n' ' ')" ;;
+  esac
+  case "$RT" in
+    *"podman=missing"*) bad "podman-remote is missing; babo-core cannot act on the runtime" ;;
+    *) ok "podman-remote is installed (for babo-core)" ;;
+  esac
+  case "$RT" in
+    *"git=missing"*) bad "git is missing; the product setup path (babo found) fails" ;;
+    *) ok "git is installed (for the product setup path)" ;;
+  esac
+  case "$RT" in
+    *"dockerd="*"none"*) ok "no docker/ctr/nerdctl/dockerd in the image" ;;
+    *) bad "image carries a second container-runtime client: $(echo "$RT" | tr '\n' ' ')" ;;
+  esac
 fi
 
 # --- 3. The entrypoint refuses to start without a mounted config -------
@@ -176,6 +195,12 @@ else
     ok "image bakes no token environment variable"
   else
     bad "image bakes token variable(s): $IMG_TOKENS"
+  fi
+  IMG_MANAGER=$(printf '%s' "$IMG_ENV" | tr ',' '\n' | tr -d '[]"' | grep -E '^(NEOCLAW_MANAGER_URL|NEOCLAW_OFFICE_BACKEND)=' || true)
+  if [ -z "$IMG_MANAGER" ]; then
+    ok "image bakes no manager URL or NeoClaw backend (the product is the manager)"
+  else
+    bad "image bakes a stale manager/backend env: $(echo "$IMG_MANAGER" | tr '\n' ' ')"
   fi
 fi
 
@@ -286,7 +311,7 @@ fi
 
 # --- 7-9. Run-time facts, from a live container ------------------------
 if [ -z "$CONTAINER" ]; then
-  unmet "mount set: exactly one read-only bind, source under $SPAWN_DIR, target /etc/wireguard (pass --container NAME)"
+  unmet "mount set: wg0 dir read-only from $SPAWN_DIR, plus only the runtime socket and internal volume (pass --container NAME)"
   unmet "no published ports, no --network host (pass --container NAME)"
   unmet "capabilities: NET_ADMIN only, scoped to this container (pass --container NAME)"
   unmet "no token issuer in the pod: token_issue_path/token_issue_secret unset in the runtime config and environment (pass --container NAME)"
@@ -300,23 +325,38 @@ else
   if [ "$MOUNTS" = "$INSPECT_FAILED" ]; then
     bad "container facts could not be read (podman inspect $CONTAINER failed), so the mount set is unknown"
   else
-  case "$NLINES" in
-    1)
-      MTYPE=$(printf '%s\n' "$MOUNTS" | cut -d'|' -f1)
-      MSRC=$(printf '%s\n'  "$MOUNTS" | cut -d'|' -f2)
-      MDST=$(printf '%s\n'  "$MOUNTS" | cut -d'|' -f3)
-      MRW=$(printf '%s\n'   "$MOUNTS" | cut -d'|' -f4)
-      case "$MTYPE|$MDST|$MRW" in
-        "bind|/etc/wireguard|false")
-          case "$MSRC" in
-            "$SPAWN_DIR"|"$SPAWN_DIR"/*) ok "exactly one bind mount: $MSRC -> /etc/wireguard (read-only)" ;;
-            *) bad "the single mount's source is not under $SPAWN_DIR: $MSRC" ;;
-          esac ;;
-        *) bad "the single mount is not a read-only bind to /etc/wireguard: $MTYPE $MSRC -> $MDST rw=$MRW" ;;
-      esac ;;
-    0) bad "no bind mounts: the per-boot wg0.conf would be missing" ;;
-    *) bad "$NLINES mounts present; exactly one is allowed" ;;
-  esac
+  # The product container has three declared mounts: the per-boot wg0 dir, the
+  # runtime socket, and the internal operator socket volume. Every mount must be
+  # one of those; an undeclared mount is a failure, not a detail.
+  if [ "$NLINES" -eq 0 ]; then
+    bad "no bind mounts: the per-boot wg0.conf would be missing"
+  else
+    WGFOUND=0
+    while IFS='|' read -r MTYPE MSRC MDST MRW; do
+      [ -n "$MTYPE" ] || continue
+      case "$MDST" in
+        /etc/wireguard)
+          if [ "$MTYPE" = "bind" ] && [ "$MRW" = "false" ]; then
+            case "$MSRC" in
+              "$SPAWN_DIR"|"$SPAWN_DIR"/*) WGFOUND=1 ;;
+              *) bad "the wg0 mount's source is not under $SPAWN_DIR: $MSRC" ;;
+            esac
+          else
+            bad "the wg0 mount is not a read-only bind: $MTYPE $MSRC -> $MDST rw=$MRW"
+          fi ;;
+        /run/podman/podman.sock|/var/run/docker.sock)
+          case "$MRW" in false) : ;; *) bad "the runtime socket mount is writable: $MDST" ;; esac ;;
+        /run/babo/internal)
+          : ;;
+        *) bad "an undeclared mount is present: $MTYPE $MSRC -> $MDST (rw=$MRW)" ;;
+      esac
+    done <<< "$MOUNTS"
+    if [ "$WGFOUND" = "1" ]; then
+      ok "the wg0 dir is mounted read-only from $SPAWN_DIR; the other mounts are the runtime socket and the internal volume"
+    else
+      bad "no read-only /etc/wireguard mount from $SPAWN_DIR"
+    fi
+  fi
   fi
 
   PORTS=$(inspect_field '{{json .HostConfig.PortBindings}}')

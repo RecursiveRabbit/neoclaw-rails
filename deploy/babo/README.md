@@ -1,8 +1,9 @@
 # Babo in a pod — the office control plane
 
 Babo runs as a mesh service peer, not as a host process: its own network
-namespace, its own WireGuard identity (`10.0.0.5`), no container-runtime
-socket, no writable host path, no published port. The host reaches its UI over
+namespace, its own WireGuard identity (D-12: `10.0.0.11` for the UI, `10.0.0.12`
+for the Manager), no container-runtime socket in the UI, no writable host path,
+no published port. The host reaches its UI over
 the mesh; the Router admits only the host's WG address (`10.0.0.2`) to the UI
 port, and Babo may reach only the Manager API (`10.0.0.3:9200`).
 
@@ -96,42 +97,32 @@ fix, and this README quotes the code.
 
 What that means, as source rather than assumption:
 
-- `HOST_RUNTIME` is `${HOST_SPAWN_DIR:-/spawn}/runtime` — a **host** path, used
-  because the pod is created through the host's podman socket. The mounted
-  directory is `${HOST_SPAWN_DIR}/runtime/babo` and holds `private.key` and
-  `wg0.conf`, rendered that boot, mode `0600`.
-- **One mount only**, read-only, `:ro,Z`, target `/etc/wireguard`. No `-p`, no
-  `--network host`, no socket mount, no other volumes.
-- **Joins the mesh underlay, explicitly.** `--network "${NC_MESH_NETWORK}"` —
-  the named user-defined network from `manager/network.env`, created and
-  asserted at boot. Rootless podman's default (pasta) cannot reach a bridge
-  peer at all (measured: `nc -z <router underlay> 19999` UNREACHABLE on the
-  default, REACHABLE on the named network), so an unqualified launch would
-  never complete a WireGuard handshake. This is not a service door: Babo binds
-  its listeners on its WG address and on loopback, never on `0.0.0.0`, so its
-  underlay address listens on nothing.
+- `HOST_RUNTIME` is `${HOST_SPAWN_DIR:-/spawn}/runtime` — a **host** path, mounted
+  read-only into the product container. The directory is
+  `${HOST_SPAWN_DIR}/runtime/babo` and holds `private.key` and `wg0.conf`,
+  rendered that boot, mode `0600`.
+- **Mounts:** the per-boot wg0 directory read-only at `/etc/wireguard`, the
+  podman runtime socket at its own path, and the internal operator socket
+  volume at `/run/babo/internal`. No `-p`, no `--network host`.
 - **`NET_ADMIN` only.** `--sysctl ip_forward` is *not* set for Babo: it does
-  not route traffic.
-- The Manager's own health probe after start is
-  `http://10.0.0.5:${BABO_PORT}/health`, 20 tries × 2 s, **warn-not-fatal**.
-- Startup is **skipped when the image is absent**, so a Manager without Babo
-  still boots. A container that is not running is therefore not automatically a
-  fault.
-- The Manager **removes `neoclaw-babo`** in its clean-slate phase before
-  starting a new one.
+  not route traffic. The capability is scoped to this container's namespace;
+  D-10's cross-container privilege boundary is not built (see below).
+- The container brings up wg0 and binds the product's listeners to the WG
+  address; the Office UI/API and the deterministic core are this one process.
+- The image carries **`podman-remote`** and **`git`** (the product setup path,
+  `babo found`). Neither is a second runtime: the remote client is usable only
+  where the socket is mounted, and that is this container.
 
-`BABO_IMAGE`, `BABO_PORT` and `NEOCLAW_MANAGER_URL` come from the Manager's
-environment. They are **as launched by this Manager boot**, not fixed at build
-time: the image's `ENV` lines are defaults for a manual run, and the check must
-read the running container's environment, not the image's, if it wants to make
-a claim about them.
+`BABO_IMAGE`, `BABO_PORT` and `BABO_TRUSTED_SOURCES` are launch-time values.
+There is no manager URL and no NeoClaw backend: the product is the manager.
 
 ## What the entrypoint does, and the deviations it records
 
 1. Refuses to start without a mounted `/etc/wireguard/wg0.conf`.
 2. `wg-quick up wg0`, then reads the interface's IPv4 address and **fails**
-   if it is not `10.0.0.5` — the Router admits that address only, so a
-   different address is unreachable by design and should be loud.
+   if it is not the address the render passed (`BABO_WG_ADDRESS`; D-12: UI
+   `10.0.0.11`, Manager `10.0.0.12`) — the Router admits that address only, so
+   a different address is unreachable by design and should be loud.
 3. Renders `/run/babo/config.json` with `gateway.host=<wg0 address>` and
    `gateway.port=$BABO_PORT`, then runs the server in the **foreground**.
 
@@ -158,13 +149,15 @@ the Router's rule names, and not about a grep for loopback in the image.
 ## Facts the packaging check holds it to
 
 1. The image contains no WireGuard private key and no `wg0.conf`.
-2. Exactly one bind mount at run time: read-only, source under
-   `$HOST_SPAWN_DIR/runtime/babo`, target `/etc/wireguard`. Any other mount is
+2. **Three mounts, all declared:** the per-boot wg0 directory read-only (source
+   under `$HOST_SPAWN_DIR/runtime/babo`, target `/etc/wireguard`), the podman
+   runtime socket, and the internal operator socket volume. Any other mount is
    a failure.
-3. No published port; no `--network host`. (The container's `CapAdd` reads
-   back as `CAP_NET_ADMIN` from `podman inspect`; the flag is spelled
-   `--cap-add NET_ADMIN`. Both spellings are the same single capability, and
-   the check accepts either spelling but nothing else.)
+3. No published port; no `--network host`. The container's `CapAdd` reads back
+   as `CAP_NET_ADMIN` from `podman inspect`; the flag is spelled
+   `--cap-add NET_ADMIN`. That capability is scoped to this container. The two
+   containers are the two D-12 pods: separate namespaces, separate underlays,
+   no shared mount (D-10's same-pod shape is superseded — see below).
 4. **Two listeners, two keys, both on the WG address.** `channels.websocket`
    (`host`/`port`) serves the SPA and `/api/*` on `BABO_PORT` (8843 — the port
    the Router admits the host to); `gateway` (`host`/`port`) serves the
@@ -172,10 +165,10 @@ the Router's rule names, and not about a grep for loopback in the image.
    probes). A probe from the host WG address to the UI gets `200`; the health
    listener answers on its own port; a loopback probe is refused; an off-source
    probe is refused by the Router.
-5. `NEOCLAW_MANAGER_URL` has no loopback default (the code's default is
-   `http://10.0.0.3:9200`). The image vendors a web UI with legitimate
-   loopback use elsewhere, so the claim is about the Manager URL and the
-   effective listener — not a grep for `127.0.0.1` across the image.
+5. **No manager URL, no NeoClaw backend.** The image bakes neither
+   `NEOCLAW_MANAGER_URL` nor `NEOCLAW_OFFICE_BACKEND`, and the pod renders
+   neither. The product is the manager; the runtime socket is the only
+   capability, and it lives in `babo-core`.
 6. The image ships a built UI: `babo/web/dist/index.html` exists **inside the
    installed package**, so `pip install` did not drop it.
 7. **No token issuer in the pod.** The image bakes no token environment
@@ -196,15 +189,72 @@ start must look broken, not clean.
 ## What the check proves, and what it must leave unmet
 
 `test/proof/babo_packaging_check.sh` runs on the deployment host and prints
-`PASS`/`FAIL`/`UNMET` per line. It can prove from the image alone: facts 1, 2's
-image side (no sockets, no runtime client), the refusal in fact 3 (no config →
-no start), facts 5 and 6, and fact 7's image half (the image's own `Config.Env`
-swept for token variables, naming names and never values). It can prove from a
-running container
-(`--container NAME`): the mount set, the port/network-mode facts, and the
-capability set. It cannot prove the effective listener or the Router's
-off-source denial without a live boot and a second source — those stay `UNMET`
-with the reason, and `UNMET` is a result.
+`PASS`/`FAIL`/`UNMET` per line. It can prove from the image alone: fact 1, the
+runtime client's presence and the absence of a baked socket, the refusal in
+fact 3 (no config → no start), facts 5 and 6, and fact 7's image half (the
+image's own `Config.Env` swept for token variables, naming names and never
+values).
+
+**D-10 is superseded by D-12: two separate pods.** `deploy/babo/run-pods.sh`
+renders `babo-ui` (own wg0 at `10.0.0.11`, the only user-facing listener, host
+/32 trusted) and `babo-manager` (own wg0 at `10.0.0.12`, the runtime socket, the
+UI's /32 as its only trusted source, no ssh server). No shared mount, volume or
+network namespace; the only thing between them is the wire.
+
+**One door — the operator door is retired (Evans, 2026-11-12).** The boundary
+ruling: *"the manager is not alive in this model. It has no state. It is an
+actuator for the UI, nothing else. The UI can have any connections to the manager
+you wish, but it is the only thing that talks to the manager about anything."*
+
+So the Manager admits exactly one kind of caller, the UI pod, and this render
+declares exactly one source for it (`BABO_TRUSTED_SOURCES`, `10.0.0.11/32` on the
+manager role). `BABO_OPERATOR_SOURCES` is gone: no default, no validation, no
+export. The entrypoint leaves the variable alone if someone still sets it and says
+so — *"operator door: RETIRED"* — and the Manager's constructor warns and ignores
+it, so the retirement is audible at both layers instead of silent at one. F17 is
+dead, not fixed: nobody at `10.0.0.2` talks to the Manager at all, so that address
+is now simply an address that is not the UI's.
+
+Nothing routes any of this yet: the Manager is an object built by `manager_for`,
+not a process, and the listener in front of it is unassigned and unruled.
+
+**The addresses carry two caveats the render cannot remove (bomu, 2026-11-11).**
+Neither is a reason to change the pair; both are reasons not to call a green
+check a settled network.
+
+1. **A connected `/24` shadows the mesh for host-sourced rows.** If the
+   deployment host's LAN interface is in `10.0.0.0/24` (z620 is: `enp1s0 inet
+   10.0.0.10/24`), the kernel picks the LAN route for every `10.0.0.x`
+   destination, not the WireGuard one. Host → UI, host → Manager and every
+   host-WG probe then leave by the wrong interface, and a row that times out
+   because of that is **not** a refusal. The proof host must either have a LAN
+   outside `10.0.0.0/24`, or the `/32` route override
+   (`ip route add 10.0.0.11/32 dev wg0`) must be recorded as instrumentation and
+   its removal captured.
+2. **The LAN is DHCP-served.** `.11` and `.12` are unallocated in
+   `infra/services.conf` and not local on the hosts checked so far — that is a
+   statement about the repository, not about the wire. A lease can take either
+   address, and with caveat 1 in force a lease collision becomes a mesh
+   collision. Until the DHCP pool excludes this range or the addresses are
+   reserved, treat "free" as "free at the time of the check".
+
+`--check-address` therefore makes two negatives, not one: it refuses a service
+definition's address (`TAKEN`, exit 1) **and** an address this host already owns
+(`LOCAL`, exit 3 — a peer cannot bind what the host delivers to `lo`); when `ip`
+is unavailable it says `UNKNOWN` (exit 4) rather than guessing. `10.0.0.10` is
+refused on z620 for exactly that reason, which is how the desk's first pair was
+caught.
+
+Two gaps are named rather than dressed:
+1. the **UI→Manager API hop** is product work not yet in the tree — this render
+   gives the pods and identities, not the protocol;
+2. **D12-10's lost-response retry is core behaviour**, implemented on PR #67
+   head `6a7cd0cb` (spawn resolves on an alive/starting pod, in the decision and
+   again in the executor; replay by action id), together with L-10's
+   `restart-ui`; its served rows are Fettle's.
+
+`test/proof/babo_two_pod_check.sh` proves the render: two pods, UI without the
+socket, manager with it and no shared mount, headless image.
 
 ## Deliberate non-goals
 
