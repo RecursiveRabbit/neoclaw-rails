@@ -90,7 +90,7 @@ module Cove
         steps << sudo("nsenter", "-t", pid, "-n", "ip", "addr", "add", "#{pod_ip}/32", "dev", "wg0")
         steps << sudo("nsenter", "-t", pid, "-n", "ip", "link", "set", "wg0", "up")
         steps << sudo("nsenter", "-t", pid, "-n", "ip", "route", "add", "default", "dev", "wg0")
-        failed = steps.reject(&:ok?).reject { |s| s.argv[1, 3] == ["ip", "link", "del", iface] }
+        failed = steps.reject(&:ok?).reject { |s| s.argv[1, 4] == ["ip", "link", "del", iface] }
         unless failed.empty?
           # leave nothing half-built
           detach(sheet_slug)
