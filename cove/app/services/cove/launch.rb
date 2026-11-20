@@ -59,7 +59,8 @@ module Cove
             router_transport: Plan.router_transport,
             router_port: Plan.router_port,
             wg_net: Plan.wg_net,
-            listen_port: port
+            listen_port: port,
+            router_addr: Plan.router_ip
           )
         ensure
           Keys.discard(key) # the pod's private key does not outlive this call

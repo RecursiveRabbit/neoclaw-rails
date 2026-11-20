@@ -88,7 +88,7 @@ module Cove
       # harness passes nothing and gets the on-disk keypair instead.
       def attach(sheet_slug:, pod_ip:, image:, command: [], router_pub:, private_key: nil,
                  router_transport: ROUTER_TRANSPORT, router_port: ROUTER_PORT, wg_net: WG_NET,
-                 listen_port: 0)
+                 listen_port: 0, router_addr: ROUTER_ADDR)
         priv, pub = if private_key
                       [private_key.to_s, Keys.pubkey_of(File.read(private_key))]
                     else
@@ -118,7 +118,7 @@ module Cove
         steps << sudo("wg", "set", iface, "private-key", priv, "listen-port", listen_port.to_s)
         steps << sudo("wg", "set", iface, "peer", router_pub,
                       "endpoint", "#{router_transport}:#{router_port}",
-                      "allowed-ips", wg_net, "persistent-keepalive", "15")
+                      "allowed-ips", wg_net, "persistent-keepalive", "5")
         steps << sudo("ip", "link", "set", iface, "up")
         # the move
         steps << sudo("ip", "link", "set", iface, "netns", pid)
@@ -144,6 +144,14 @@ module Cove
           detach(sheet_slug)
           raise Cove::DocumentError, "attach #{sheet_slug}: #{failed.map(&:to_s).join('; ')}"
         end
+
+        # Commission the tunnel: make the peer speak once, from inside its own
+        # namespace. A peer that has never sent a packet has no endpoint as far as the
+        # Router is concerned, and a peer with no endpoint is answered "no route to
+        # host" — so "the pod is attached" is not the same claim as "the tunnel is
+        # up", and only the second one is worth returning. The echo is allowed to
+        # fail: it is here to cause a handshake, not to prove one.
+        sudo("nsenter", "-t", pid, "-n", "ping", "-c", "1", "-W", "2", router_addr)
 
         { pod: pod, pid: pid.to_i, pubkey: pub, pod_ip: pod_ip, iface: "wg0" }
       end
