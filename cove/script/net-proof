@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# Proof for Cove::Network, against a real Router. Apparatus.
+#
+#   1. the ref's spike apparatus stands up a Router, a service and two pods
+#   2. THIS script attaches a third pod using Cove::Network (the class, not the script)
+#   3. a permit is added on the Router for that pod only
+#   4. the pod must reach the service and nothing else
+#   5. detach, and the kernel is asked whether anything is left
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+SLUG=proof
+POD_IP=10.90.1.20
+SVC=10.90.0.10
+PORT=8080
+W=/tmp/spike-wg
+
+log() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
+ok()  { printf '   \033[32mok\033[0m   %s\n' "$*"; }
+die() { printf '   \033[31mFAIL\033[0m %s\n' "$*" >&2; exit 1; }
+
+log "1. router + service from the apparatus"
+./script/spike-tunnel.sh >/tmp/netproof-spike.log 2>&1 || { tail -20 /tmp/netproof-spike.log; die "apparatus did not come up"; }
+ok "router up, service up on $SVC:$PORT"
+
+log "2. attach a pod with Cove::Network"
+ruby -Ilib -e '
+  require "pathname"
+  require "cove/state"
+  require "cove/network"
+  facts = Cove::Network.attach(
+    sheet_slug: ARGV[0], pod_ip: ARGV[1],
+    image: "docker.io/library/alpine:3.20", command: ["sleep", "infinity"],
+    router_pub: File.read(ARGV[2]).strip
+  )
+  File.write("/tmp/netproof-facts.json", facts.to_json)
+  puts facts.inspect
+' "$SLUG" "$POD_IP" "$W/router.pub" || die "attach failed"
+PUB=$(ruby -rjson -e 'print JSON.parse(File.read("/tmp/netproof-facts.json"))["pubkey"]')
+ok "attached, pod pubkey $PUB"
+
+log "3. one permit on the Router, for this pod only"
+sudo podman exec spk-router sh -c "
+  wg set wg0 peer $PUB allowed-ips $POD_IP/32
+  ip route add $POD_IP/32 dev wg0
+  iptables -A FORWARD -s $POD_IP/32 -d $SVC/32 -p tcp --dport $PORT -j ACCEPT
+  iptables -A FORWARD -s $SVC/32 -d $POD_IP/32 -p tcp --sport $PORT -j ACCEPT
+" || die "router permit failed"
+ok "permit written"
+
+log "4. reachability: service yes, everything else no"
+PID=$(ruby -rjson -e 'print JSON.parse(File.read("/tmp/netproof-facts.json"))["pid"]')
+sudo nsenter -t "$PID" -n wget -q -O /dev/null -T4 "http://$SVC:$PORT/" >/dev/null 2>&1
+RC=$?; [ "$RC" = 0 ] && ok "pod -> permitted service (rc=0)" || die "pod could not reach the service (rc=$RC)"
+sudo nsenter -t "$PID" -n wget -q -O /dev/null -T4 http://1.1.1.1/ >/dev/null 2>&1
+[ $? -ne 0 ] && ok "pod -> internet refused" || die "pod reached the internet"
+sudo nsenter -t "$PID" -n wget -q -O /dev/null -T3 http://10.90.1.11:8080/ >/dev/null 2>&1
+[ $? -ne 0 ] && ok "pod -> another pod refused" || die "pod reached another pod"
+echo "--- interfaces in the pod:"
+sudo nsenter -t "$PID" -n ip -br addr
+echo "--- what the service saw:"
+sudo podman logs spk-s 2>&1 | tail -1
+
+log "5. detach, then ask the kernel what is left"
+ruby -Ilib -e '
+  require "pathname"; require "cove/state"; require "cove/network"
+  Cove::Network.detach(ARGV[0])
+  left = Cove::Network.leftovers(ARGV[0])
+  puts left.inspect
+  exit(left.values.any? ? 1 : 0)
+' "$SLUG" || die "leftovers after destroy"
+ok "no interface, no pod, no key"
+
+log "6. the sheet does not inherit: attach again gets a NEW keypair"
+ruby -Ilib -e '
+  require "pathname"; require "cove/state"; require "cove/network"
+  a = Cove::Network.keypair(ARGV[0])[1]
+  Cove::Network.detach(ARGV[0])
+  b = Cove::Network.keypair(ARGV[0])[1]
+  puts "first=#{a[0,12]} second=#{b[0,12]}"
+  exit(a == b ? 1 : 0)
+' "$SLUG" || die "key survived destroy"
+
+log "cleaning the apparatus"
+./script/spike-tunnel.sh clean >/dev/null 2>&1 || true
+echo "ALL CHECKS PASSED"
