@@ -110,6 +110,14 @@ module Cove
           "--label", "cove.managed=1",
           "--label", "cove.router=1",
           "-v", "#{Cove.state_dir}:#{MOUNT}:ro",
+          # router.rb takes the file as ARGV[0] or COVE_ROUTER_CONF, and its own KEY
+          # default is /etc/cove/router.key — which is not where the Manager keeps the
+          # key. Measured: the Router ran, refused every file with "no router private
+          # key at /etc/cove/router.key", and sat there being a pod that had
+          # programmed nothing. Both paths are said out loud here.
+          "-e", "COVE_ROUTER_CONF=#{CONF}",
+          "-e", "COVE_ROUTER_KEY=#{KEY}",
+          "-e", "COVE_ROUTER_IFACE=wg0",
           "--entrypoint", "/bin/sh",
           IMAGE, "-c", WATCH
         ]
