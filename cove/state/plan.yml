@@ -1,0 +1,26 @@
+# Cove's addressing plan, as data.
+#
+# The acceptance suite addresses this plan by literal: 10.99.0.1 is the Router,
+# 10.99.1.x services, 10.99.2.x agents. Change it here and the suite must change
+# with it — which is the point of the numbers living in a document.
+#
+# Written by hand, once, because a plan is a decision and not a default.
+network: 10.99.0.0/16
+router:
+  # /16, not /32: see lib/cove/plan.rb. The Router's own address is the only
+  # connected route it will ever have, and a star with no route to its peers
+  # forwards nothing.
+  address: 10.99.0.1/16
+  listen: 51820
+  transport: 10.89.4.2
+underlay:
+  network: cove-underlay
+  subnet: 10.89.4.0/24
+  gateway: 10.89.4.1
+host:
+  address: 10.99.0.3
+pools:
+  agent: 10.99.2
+  service: 10.99.1
+first_host: 10
+last_host: 250

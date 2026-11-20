@@ -11,6 +11,12 @@ require "shellwords"
 # or by a newer Manager — does not lose fields this build has never heard of.
 module Cove
   class Sheet
+    # A sheet is an agent unless it says otherwise. `kind` decides one thing only:
+    # which pool the address comes from. It is not a capability and not a type —
+    # a service-kind sheet is still a pod this Manager launches, peers and permits.
+    KIND_AGENT   = "agent"
+    KIND_SERVICE = "service"
+
     attr_reader :data, :slug
 
     def initialize(data = {}, slug: nil)
@@ -27,6 +33,20 @@ module Cove
       out["image"] = "localhost/cove-agent:latest" if out["image"].to_s.empty?
       out["tools"]    = self.class.arrayify(h["tools"])
       out["services"] = self.class.arrayify(h["services"])
+      # An unknown kind is kept as written and treated as an agent: guessing
+      # "service" for a word this build has never heard of would hand out an
+      # address out of a pool that is not the caller's to take.
+      out["kind"] = h["kind"].to_s.strip == KIND_SERVICE ? KIND_SERVICE : KIND_AGENT
+      # pod_ip and pubkey are HISTORY, not current state (§2 law 1): they record
+      # what the last launch did, and neither says a pod is running. pod_ip
+      # survives destroy because an address is the sheet's; pubkey does not,
+      # because an identity is the pod's and a reborn pod must not inherit one.
+      out["pod_ip"] = h["pod_ip"].to_s.strip
+      out["pubkey"] = h["pubkey"].to_s.strip
+      out["listen"] = h["listen"].to_s.strip
+      # The UDP port this sheet's tunnel listens on, host-side. See Plan.peer_port:
+      # it is persisted for the same reason the tunnel address is.
+      out["wg_port"] = h["wg_port"].to_s.strip
       out["created_at"] = (h["created_at"] || Time.now.utc.iso8601).to_s
       out["updated_at"] = (h["updated_at"] || Time.now.utc.iso8601).to_s
       out
@@ -71,6 +91,8 @@ module Cove
     # --- attributes ---------------------------------------------------------
 
     def name     = @data["name"]
+    def kind     = @data["kind"] || KIND_AGENT
+    def service? = kind == KIND_SERVICE
     def harness  = @data["harness"]
     def model    = @data["model"]
     def repo     = @data["repo"]
@@ -78,6 +100,13 @@ module Cove
     def command  = @data["command"]
     def tools    = @data["tools"]
     def services = @data["services"]
+    def pod_ip   = @data["pod_ip"].to_s
+    def pubkey   = @data["pubkey"].to_s
+    # A service-kind sheet publishes one port. Defaulting it is a decision, not a
+    # guess at the service's nature: every HTTP-ish thing in this town listens on
+    # 3000, and a service with no port cannot be permitted at all.
+    def listen   = @data["listen"].to_s.empty? ? "3000" : @data["listen"].to_s
+    def wg_port  = @data["wg_port"].to_s
     def created_at = @data["created_at"]
     def updated_at = @data["updated_at"]
 
@@ -96,7 +125,7 @@ module Cove
 
     def assign(attrs)
       updates = {}
-      %w[name harness model repo image command].each do |k|
+      %w[name kind harness model repo image command listen pod_ip pubkey wg_port].each do |k|
         updates[k] = attrs[k] if attrs.key?(k)
       end
       %w[tools services].each do |k|

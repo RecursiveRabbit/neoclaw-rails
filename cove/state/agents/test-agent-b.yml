@@ -1,0 +1,5 @@
+name: test-agent-b
+kind: agent
+image: docker.io/library/alpine:latest
+command: sleep 86400
+services: []

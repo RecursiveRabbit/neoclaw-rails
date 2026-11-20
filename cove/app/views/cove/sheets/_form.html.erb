@@ -9,6 +9,20 @@
   <label for="name">name</label>
   <input type="text" id="name" name="name" value="<%= @sheet.name %>" autocomplete="off">
 
+  <label for="kind">kind</label>
+  <select id="kind" name="kind">
+    <% %w[agent service].each do |k| %>
+      <option value="<%= k %>" <%= "selected" if @sheet.kind == k %>><%= k %></option>
+    <% end %>
+  </select>
+  <p class="muted" style="margin:.2rem 0 .9rem">
+    kind decides one thing: which address pool the sheet draws from. A service is still a pod this
+    Manager launches, peers and permits — it just publishes a port, and the port is what a permit opens.
+  </p>
+
+  <label for="listen">listen port (services only)</label>
+  <input type="text" id="listen" name="listen" value="<%= @sheet.listen %>" placeholder="3000" autocomplete="off">
+
   <label for="harness">harness</label>
   <input type="text" id="harness" name="harness" value="<%= @sheet.harness %>" placeholder="pi" autocomplete="off">
 

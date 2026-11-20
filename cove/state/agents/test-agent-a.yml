@@ -1,0 +1,12 @@
+# The acceptance fleet (§15). These are sheets and not code: the suite addresses
+# them by literal slug, so they are PART of the intent the Router renders, and the
+# only honest place for them is the state directory every clone starts with.
+#
+# They run alpine and sleep. A pod is a network namespace with a process in it, and
+# every row that touches these pods measures the namespace — the workload arrives
+# with the relay, one slice further on. A row that needed a real agent would say so.
+name: test-agent-a
+kind: agent
+image: docker.io/library/alpine:latest
+command: sleep 86400
+services: []

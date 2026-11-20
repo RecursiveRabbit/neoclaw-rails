@@ -19,7 +19,7 @@ module Cove
 
     def sheet_attrs
       attrs = {}
-      %w[name harness model repo image command].each do |k|
+      %w[name kind harness model repo image command listen].each do |k|
         attrs[k] = params[k] if params.key?(k)
       end
       attrs["tools"] = Sheet.arrayify(params[:tools]) if params.key?(:tools)
