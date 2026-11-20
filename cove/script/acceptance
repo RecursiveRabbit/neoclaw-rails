@@ -306,11 +306,18 @@ ROW_TABLE[10] = -> {
     # rebuild resets the peers' sessions, so a ping fired in the same second as a
     # launch can land in a window where the tunnel is being rebuilt — that is a
     # timing artefact, not a broken star, and the row is about the star.
+    # Every render rebuilds the Router's device and every rebuild resets the peers'
+    # sessions, so the first packet after a launch can be the one that carries the
+    # handshake and is dropped doing it. The row is about the star, not about the
+    # first hundred milliseconds; it waits up to eight seconds for an answer.
     answered = false
-    2.times do
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 8
+    while Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
       out, = nsented(pid, "ping -c 1 -W 2 10.99.0.1")
-      answered = true if out.include?("1 received")
-      break if answered
+      if out.include?("1 received")
+        answered = true
+        break
+      end
       sleep 1
     end
     fails << n unless answered
