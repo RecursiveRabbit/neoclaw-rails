@@ -125,6 +125,18 @@ module Cove
         steps << sudo("nsenter", "-t", pid, "-n", "ip", "addr", "add", "#{pod_ip}/32", "dev", "wg0")
         steps << sudo("nsenter", "-t", pid, "-n", "ip", "link", "set", "wg0", "up")
         steps << sudo("nsenter", "-t", pid, "-n", "ip", "route", "add", "default", "dev", "wg0")
+        # The pod's own door (§15 row 3). The Router is the map of which roads exist;
+        # the pod is the one place that can enforce "no road but the tunnel" without
+        # asking anything: loopback and wg0, everything else dropped. Two layers,
+        # because a pod that trusts the far end has no door of its own, and a Router
+        # that is the only filter is one bug away from a leak.
+        steps << sudo("nsenter", "-t", pid, "-n", "iptables", "-P", "INPUT", "DROP")
+        steps << sudo("nsenter", "-t", pid, "-n", "iptables", "-P", "FORWARD", "DROP")
+        steps << sudo("nsenter", "-t", pid, "-n", "iptables", "-P", "OUTPUT", "DROP")
+        steps << sudo("nsenter", "-t", pid, "-n", "iptables", "-A", "INPUT", "-i", "lo", "-j", "ACCEPT")
+        steps << sudo("nsenter", "-t", pid, "-n", "iptables", "-A", "OUTPUT", "-o", "lo", "-j", "ACCEPT")
+        steps << sudo("nsenter", "-t", pid, "-n", "iptables", "-A", "INPUT", "-i", "wg0", "-j", "ACCEPT")
+        steps << sudo("nsenter", "-t", pid, "-n", "iptables", "-A", "OUTPUT", "-o", "wg0", "-j", "ACCEPT")
         failed = steps.reject { |s| s.equal?(idempotent_del) }.reject(&:ok?)
         unless failed.empty?
           # leave nothing half-built

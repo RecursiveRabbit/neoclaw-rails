@@ -192,7 +192,14 @@ module Cove
       # Any mutation anywhere calls this; there is nowhere else to call.
       def write!(net = nil)
         agents = Sheet.all
-        services = ServiceBook.all
+        # NOT ServiceBook.all. A service is a name and an address, and it can come
+        # from two places: the book (things already running somewhere) and a
+        # service-kind sheet (a thing this Manager launched on the tunnel). The plan
+        # is the one place that merges them into one vocabulary. Measured on z620
+        # 2026-11-20: rendering from the book alone left all four test permits
+        # "unresolved", the Router opened no road, and rows 12-18 could not move
+        # while every peer line looked perfectly correct.
+        services = Plan.services
         body = render(agents, services, net)
         Cove.write_atomic(Cove.router_file, body)
         body

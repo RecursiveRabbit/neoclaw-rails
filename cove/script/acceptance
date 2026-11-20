@@ -409,7 +409,10 @@ ROW_TABLE[19] = -> {
   # have had something to destroy, and the call must have been answered by
   # something that claims to have destroyed it.
   return unmet(19, "no cove-test-* pod existed before the teardown — nothing to destroy, so nothing proven") if before.empty?
-  code, = http("/pods/destroy_all", method: "POST")
+  # Destroying four pods is four `podman rm -f` and four interface teardowns, not a
+  # page load. The default ten seconds is the caller's deadline, not the system's
+  # speed: measured once at >10s, which read as "http 0 — endpoint does not exist".
+  code, = http("/pods/destroy_all", method: "POST", timeout: 90)
   ok_code = (200..399).cover?(code)
   sleep 3
   left = podman_names.grep(/^cove-test-/)
