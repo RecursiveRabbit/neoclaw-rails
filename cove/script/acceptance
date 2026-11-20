@@ -222,8 +222,20 @@ ROW_TABLE[2] = -> {
   sleep 2
   after = podman_names
   newp = after - before
-  newp.empty? ? fail!(2, "no pod appeared after POST start (http #{code})") :
+  if newp.empty?
+    if after.include?("cove-test-agent-a")
+      # Honest degradation, not a green and not a red. The Manager's boot
+      # reconcile starts every sheet already marked started, so the pod is
+      # often waiting before this row runs. The endpoint answered, and the pod
+      # is there — but this row cannot claim the endpoint is what produced it.
+      unmet(2, "agent-a pod present before the call (http #{code}) — cannot separate the endpoint's effect " \
+               "from a pod the Manager's boot reconcile already started. Run this row alone against a stopped Manager to prove it.")
+    else
+      fail!(2, "no pod appeared after POST start (http #{code})")
+    end
+  else
     met(2, "POST start → #{newp.join(' ')} (http #{code})")
+  end
 }
 
 ROW_TABLE[3] = -> {
@@ -473,6 +485,19 @@ elsif ARGV.include?("--list")
   puts "R0d  the addresses the setup assigned are recorded as peers in the intent"
   (1..21).each { |i| puts format("%2d  %s", i, ROW_TABLE[i] ? "implemented" : "—") }
 else
+  # Two runs in the same minute destroy each other's fixtures: one run's
+  # destroy_all tears down the pods the other is still measuring, and the
+  # victim reports eight reds about a world that was fine. This is not
+  # hypothetical — it cost a whole run on 2026-11-20. One run at a time.
+  LOCK_PATH = "/tmp/cove-acceptance.lock"
+  lock = File.open(LOCK_PATH, "w")
+  unless lock.flock(File::LOCK_EX | File::LOCK_NB)
+    puts "another acceptance run holds #{LOCK_PATH} — refusing to start."
+    puts "Two runs share one Manager and one pod set; the second one's teardown would "
+    puts "be measured as the first one's failures. Wait for it to finish."
+    exit 3
+  end
+
   wanted = ARGV.map(&:to_i).reject(&:zero?)
   puts "cove acceptance — spec §15 — #{NOW}"
   puts "ref   #{REF}"
