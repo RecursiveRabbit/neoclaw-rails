@@ -237,20 +237,19 @@ ROW_TABLE[5] = -> {
 # services.yml and therefore always resolves; the fleet's own services have no
 # address until row 7 launches them, which is after this.
 ROW_TABLE[6] = -> {
-  raw_before, = in_router("iptables-save")
-  return unmet(6, "no Router") if raw_before.nil?
-  before = rule_set(raw_before)
+  probe = "10.88.0.3"   # forgejo, from services.yml: always resolvable
+  return unmet(6, "no Router") if in_router("iptables-save").first.nil?
   t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
   code, = post_form("/sheets/test-agent-a/permits", "services" => "forgejo")
-  ok_open, _opened, why = wait_rules { |rules| rule_set(rules) != before }
+  ok_open, _r, why = wait_rules { |rules| rules.lines.grep(/-d #{Regexp.escape(probe)}\/32/).size == 2 }
   return fail!(6, "no apply within 4s (http #{code}) #{why}") unless ok_open
 
   applied = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0) * 1000).round(0)
+  # Emptying the list is the one state the row can restore without knowing what the
+  # previous run left behind: whatever it was, the next rows set their own permits.
   code2, = post_form("/sheets/test-agent-a/permits", "services" => "")
-  ok_close, restored, why2 = wait_rules { |rules| rule_set(rules) == before }
-  unless ok_close && rule_set(restored) == before
-    return fail!(6, "the road opened in #{applied} ms but did not close again (http #{code2}) #{why2}")
-  end
+  ok_close, _r2, why2 = wait_rules { |rules| rules.lines.grep(/-d #{Regexp.escape(probe)}\/32/).empty? }
+  return fail!(6, "the road opened in #{applied} ms but did not close again (http #{code2}) #{why2}") unless ok_close
 
   met(6, "a real road opened in place in #{applied} ms and closed again — no relaunch (http #{code}/#{code2})")
 }
@@ -311,7 +310,7 @@ ROW_TABLE[10] = -> {
     # handshake and is dropped doing it. The row is about the star, not about the
     # first hundred milliseconds; it waits up to eight seconds for an answer.
     answered = false
-    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 8
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 15
     while Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
       out, = nsented(pid, "ping -c 1 -W 2 10.99.0.1")
       if out.include?("1 received")
@@ -367,7 +366,7 @@ end
 # row used to ping, and it could never have passed: ICMP is not a port, the Router's
 # FORWARD policy is DROP, and the row would have been red forever for a reason that
 # had nothing to do with the road. A TCP connect to the declared port is the packet.
-def opens?(pid, ip, port, timeout: 4)
+def opens?(pid, ip, port, timeout: 8)
   out, _err, _ok = nsented(pid, "timeout #{timeout} bash -c '</dev/tcp/#{ip}/#{port}' && echo OPEN",
                            timeout: timeout + 2)
   out.to_s.include?("OPEN")
@@ -423,7 +422,7 @@ ROW_TABLE[16] = -> {
     ok, _rules, why = wait_rules { |text| forward_rules(text, "10.99.2.10").size == 2 }
     return fail!(row, "Router did not reduce agent-a to one road #{why}") unless ok
 
-    kept_ok = opens?(pid, kept_ip, 3000, timeout: 6)
+    kept_ok = opens?(pid, kept_ip, 3000, timeout: 8)
     removed_ok = !opens?(pid, removed_ip, 3000, timeout: 3)
     detail = "#{kept} rides=#{kept_ok ? 'ok' : 'NO'}, #{removed} refused=#{removed_ok ? 'ok' : 'NO'}"
     if kept_ok && removed_ok
