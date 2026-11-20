@@ -9,7 +9,7 @@
 <h2>Start</h2>
 <div class="card">
   <p>
-    This runs <code>podman run -d --name <%= @sheet.pod_name %> --network <%= Podman::NETWORK %>
+    This runs <code>podman run -d --name <%= @sheet.pod_name %> --network <%= Cove::Podman::NETWORK %>
     <%= @sheet.image %> <%= @sheet.command %></code> against the podman socket this Manager was
     given, then re-renders <code>router.conf</code> from every sheet.
   </p>
@@ -25,6 +25,6 @@
 </div>
 
 <h2>In router.conf right now</h2>
-<pre><% RouterConfig.render([@sheet], ServiceBook.all).lines.grep(/^(agent|allow|unresolved) /).each do |line| %><%= line %><% end %></pre>
+<pre><% Cove::RouterConfig.render([@sheet], Cove::ServiceBook.all).lines.grep(/^(agent|allow|unresolved) /).each do |line| %><%= line %><% end %></pre>
 <p class="muted">Rendered live from this sheet and the service book — read only for this page's sake;
 the file itself is written at <a href="<%= router_config_path %>"><code>router.conf</code></a>.</p>
