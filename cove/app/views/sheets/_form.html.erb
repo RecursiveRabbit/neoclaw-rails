@@ -1,0 +1,58 @@
+<%# A plain HTML form, on purpose. No form builder, no remote submission: the
+    Manager must work with JavaScript off, because the thing it is trusted for is
+    that what you see on disk is what you clicked. %>
+<% persisted = local_assigns.fetch(:persisted, false) %>
+<form action="<%= persisted ? sheet_path(@sheet.slug) : sheets_path %>" method="post">
+  <input type="hidden" name="authenticity_token" value="<%= form_authenticity_token %>">
+  <% if persisted %><input type="hidden" name="_method" value="patch"><% end %>
+
+  <label for="name">name</label>
+  <input type="text" id="name" name="name" value="<%= @sheet.name %>" autocomplete="off">
+
+  <label for="harness">harness</label>
+  <input type="text" id="harness" name="harness" value="<%= @sheet.harness %>" placeholder="pi" autocomplete="off">
+
+  <label for="model">model preset</label>
+  <input type="text" id="model" name="model" value="<%= @sheet.model %>" autocomplete="off">
+
+  <label for="repo">repo</label>
+  <input type="text" id="repo" name="repo" value="<%= @sheet.repo %>" placeholder="git remote the agent wakes from" autocomplete="off">
+
+  <label for="image">image</label>
+  <input type="text" id="image" name="image" value="<%= @sheet.image %>" autocomplete="off">
+
+  <label for="command">command (argv line, run inside the pod)</label>
+  <input type="text" id="command" name="command" value="<%= @sheet.command %>" placeholder="sleep infinity" autocomplete="off">
+
+  <label for="tools">tools (comma separated)</label>
+  <input type="text" id="tools" name="tools" value="<%= @sheet.tools.join(", ") %>" autocomplete="off">
+
+  <label>services this agent may connect to</label>
+  <% if @services.empty? %>
+    <div class="warn">no services defined yet — add name/address rows to <code><%= Cove.services_file %></code></div>
+  <% else %>
+    <div class="checks">
+      <% @services.each do |service| %>
+        <label>
+          <input type="checkbox" name="services[]" value="<%= service.name %>"
+                 <%= "checked" if @sheet.services.include?(service.name) %>>
+          <%= service.name %> <span class="muted"><%= service.address %></span>
+        </label>
+      <% end %>
+    </div>
+  <% end %>
+
+  <% ghost = @sheet.services - @services.map(&:name) %>
+  <% if ghost.any? %>
+    <div class="warn">
+      this sheet names services the service book does not have:
+      <strong><%= ghost.join(", ") %></strong>. They stay on the sheet and are rendered as
+      <code>unresolved</code> in router.conf — the Manager will not invent them and will not drop them.
+    </div>
+  <% end %>
+
+  <p style="margin-top:1.1rem">
+    <button class="go" type="submit"><%= persisted ? "save sheet" : "write sheet" %></button>
+    <a class="btn" href="<%= sheets_path %>">cancel</a>
+  </p>
+</form>

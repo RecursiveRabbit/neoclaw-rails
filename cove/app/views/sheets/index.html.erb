@@ -1,0 +1,75 @@
+<h1>Agent sheets</h1>
+
+<% if @document_error %>
+  <div class="alert">a document on disk could not be read: <%= @document_error %></div>
+<% end %>
+
+<p class="muted">
+  A sheet is the only durable document in this system. It holds desired state and history —
+  never whether anything is running. <a href="<%= pods_path %>">Pods</a> answers that, by asking
+  podman, every time the page loads.
+</p>
+
+<table>
+  <thead>
+    <tr><th>sheet</th><th>harness</th><th>model</th><th>image</th><th>services allowed</th><th>saved</th><th></th></tr>
+  </thead>
+  <tbody>
+  <% if @sheets.empty? %>
+    <tr><td colspan="7" class="muted">no sheets yet — <a href="<%= new_sheet_path %>">write one</a></td></tr>
+  <% end %>
+  <% @sheets.each do |sheet| %>
+    <tr>
+      <td><a href="<%= edit_sheet_path(sheet.slug) %>"><strong><%= sheet.name %></strong></a><br>
+          <code class="muted"><%= sheet.slug %>.yml</code></td>
+      <td><%= sheet.harness.presence || "—" %></td>
+      <td><%= sheet.model.presence || "—" %></td>
+      <td><code><%= sheet.image %></code></td>
+      <td>
+        <% if sheet.services.empty? %>
+          <span class="muted">none</span>
+        <% else %>
+          <% sheet.services.each do |s| %>
+            <span class="pill"><%= s %></span>
+          <% end %>
+        <% end %>
+      </td>
+      <td class="muted"><%= sheet.updated_at %></td>
+      <td>
+        <form action="<%= start_sheet_path(sheet.slug) %>" method="post" style="display:inline">
+          <input type="hidden" name="authenticity_token" value="<%= form_authenticity_token %>">
+          <button class="go" type="submit">start</button>
+        </form>
+      </td>
+    </tr>
+  <% end %>
+  </tbody>
+</table>
+
+<h2>New sheet</h2>
+<p><a class="btn" href="<%= new_sheet_path %>">write a new sheet</a></p>
+
+<h2>Services on this host</h2>
+<p class="muted">
+  Read from <code><%= Cove.services_file %></code>. The Manager knows a service as a name and an
+  address and nothing else — no API, no token scheme, no idea what it does.
+</p>
+<% if @services.empty? %>
+  <div class="warn">the service book is empty or missing; edit <code><%= Cove.services_file %></code> to add name/address rows.</div>
+<% else %>
+  <table>
+    <thead><tr><th>name</th><th>address</th></tr></thead>
+    <tbody>
+      <% @services.each do |s| %>
+        <tr><td><%= s.name %></td><td><code><%= s.address.presence || "(no address)" %></code></td></tr>
+      <% end %>
+    </tbody>
+  </table>
+<% end %>
+
+<h2>Status of the two things the Manager touches</h2>
+<table>
+  <tr><td>podman</td><td><%= @podman_ok ? '<span class="good">answering</span>'.html_safe : '<span class="bad">not answering</span>'.html_safe %></td></tr>
+  <tr><td>router.conf</td>
+      <td><%= @router_exists ? link_to("on disk", router_config_path) : '<span class="bad">not written yet</span>'.html_safe %></td></tr>
+</table>

@@ -1,0 +1,8 @@
+services:
+  # A service is a name and an address. Nothing else is the Manager's business.
+  # Evans: edit this file with any editor; the Manager re-reads it on every render
+  # and on every page load. Names here are the two the spec used as examples.
+  - name: forgejo
+    address: 10.88.0.3:3000
+  - name: vikunja
+    address: 10.88.0.4:3456

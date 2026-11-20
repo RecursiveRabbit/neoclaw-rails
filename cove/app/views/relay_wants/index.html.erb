@@ -1,0 +1,51 @@
+<h1>The relay's build list</h1>
+<p class="muted">
+  Every fact the Manager asked for and nothing could answer, read out of
+  <code><%= Cove.wants_file %></code>. This page is the API specification for the relay, and it is
+  written by need rather than by design: a want whose count stops climbing is a function the relay
+  has grown.
+</p>
+
+<h2>Asked for, not answered</h2>
+<% if @wants.empty? %>
+  <div class="note">nothing wants yet — open a <a href="<%= pods_path %>">pod page</a> and the Manager will ask.</div>
+<% else %>
+  <table>
+    <thead><tr><th>want</th><th>agent</th><th>times</th><th>first</th><th>last</th><th>last reason</th></tr></thead>
+    <tbody>
+      <% @wants.each do |w| %>
+        <tr>
+          <td><code><%= w["want"] %></code></td>
+          <td><%= w["agent"] %></td>
+          <td><%= w["count"] %></td>
+          <td class="muted"><%= w["first_seen"] %></td>
+          <td class="muted"><%= w["last_seen"] %></td>
+          <td class="muted"><%= w["reason"] %></td>
+        </tr>
+      <% end %>
+    </tbody>
+  </table>
+<% end %>
+
+<h2>What each want means</h2>
+<table>
+  <tbody>
+    <% @declared.each do |key, meaning| %>
+      <tr><td><code><%= key %></code></td><td><%= meaning %></td></tr>
+    <% end %>
+  </tbody>
+</table>
+
+<h2>How the Manager asks</h2>
+<pre>GET <%= @relay_template %>%{agent}/facts?want=&lt;want&gt;
+
+200 {"value": &lt;measurement&gt;, "detail": &lt;optional string&gt;}
+with anything else  ->  {"seen": false, "reason": "&lt;why&gt;"}
+
+The wire carries measurements. Verdicts, if any, belong on the Manager's side of it.</pre>
+<p class="muted">
+  Template from <code>COVE_RELAY_URL_TEMPLATE</code>; address per agent is
+  <code>%{agent}</code> substituted with the sheet's slug. If the relay's real address turns out to be
+  different, the first thing that will say so is a page full of refusals whose reasons all name the
+  same wrong address.
+</p>
