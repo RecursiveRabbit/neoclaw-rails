@@ -69,6 +69,10 @@ module Cove
         current.assign("pod_ip" => pod_ip, "pubkey" => key.pubkey, "wg_port" => port.to_s)
         current.save!
         RouterConfig.write!(Plan.network_map)
+        # The render above rebuilt the Router's device, which forgot every endpoint
+        # it had learned — including the ones for pods that launched minutes ago.
+        # Every live peer is nudged, not just this one.
+        recommission!
 
         unless RouterPod.holds_peer?(key.pubkey, within: PEER_WAIT)
           return Result.new(ok: false, facts: facts,
