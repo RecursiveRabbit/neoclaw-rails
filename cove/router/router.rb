@@ -119,7 +119,11 @@ def apply(peers, permits, router, first:)
     run!("ip", "link", "add", IFACE, "type", "wireguard")
     run!("ip", "addr", "add", router["address"], "dev", IFACE)
     run!("wg", "set", IFACE, "private-key", KEY, "listen-port", router["listen"].to_s)
-    peers.each_value { |p| run!("wg", "set", IFACE, "peer", p["pubkey"], "allowed-ips", "#{p['address']}/32") }
+    peers.each_value do |p|
+      argv = ["wg", "set", IFACE, "peer", p["pubkey"], "allowed-ips", "#{p['address']}/32"]
+      argv += ["endpoint", p["endpoint"]] unless p["endpoint"].to_s.empty?
+      run!(*argv)
+    end
     run!("ip", "link", "set", IFACE, "up")
   else
     # The Router's key and listen port do not change on a re-apply (the Manager
@@ -129,6 +133,7 @@ def apply(peers, permits, router, first:)
     conf << "ListenPort = #{router['listen']}\n"
     peers.each_value do |p|
       conf << "\n[Peer]\nPublicKey = #{p['pubkey']}\nAllowedIPs = #{p['address']}/32\n"
+      conf << "Endpoint = #{p['endpoint']}\n" unless p["endpoint"].to_s.empty?
     end
     tmp = "/tmp/wg-sync.conf"
     File.write(tmp, conf)

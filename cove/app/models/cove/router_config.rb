@@ -108,7 +108,14 @@ module Cove
         peers.keys.sort.each do |name|
           p = peers[name].to_h
           key = p["pubkey"].to_s
-          body << %(peer "#{q(name)}" address="#{q(p['address'].to_s)}" pubkey="#{q(key.empty? ? 'UNKEYED' : key)}")
+          # endpoint is OPTIONAL and it is the host-side underlay address, never the
+          # pod's tunnel address: with the netns-move pattern the pod's UDP socket is
+          # born host-side, so the Router has to send to the host, not to the tunnel.
+          # Absent endpoint = this peer initiates and the Router learns it on handshake.
+          ep = p["endpoint"].to_s
+          line = %(peer "#{q(name)}" address="#{q(p['address'].to_s)}" pubkey="#{q(key.empty? ? 'UNKEYED' : key)}")
+          line += %( endpoint="#{q(ep)}") unless ep.empty?
+          body << line
         end
 
         body << ""
