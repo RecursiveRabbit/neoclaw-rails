@@ -36,7 +36,7 @@ module Cove
     end
 
     class << self
-      def sudo(*argv) = run("sudo", *argv)
+      def sudo(*argv) = run(*Cove.sudo_prefix, *argv)
       def host(*argv) = run(*argv)
 
       def run(*argv)
@@ -81,12 +81,12 @@ module Cove
         iface = "#{IFACE_PREFIX}#{sheet_slug}"
         pod = "cove-#{sheet_slug}"
 
-        podman = run("sudo", "podman", "run", "-d", "--name", pod, "--network", "none",
+        podman = run(*Cove.sudo_prefix, "podman", "run", "-d", "--name", pod, "--network", "none",
                      "--security-opt", "label=disable", *["--label", "cove.managed=1"],
                      *["--label", "cove.agent=#{sheet_slug}"], image, *command)
         raise Cove::DocumentError, "podman run: #{podman.err}" unless podman.ok?
 
-        pid = run("sudo", "podman", "inspect", "-f", "{{.State.Pid}}", pod).out.strip
+        pid = run(*Cove.sudo_prefix, "podman", "inspect", "-f", "{{.State.Pid}}", pod).out.strip
         raise Cove::DocumentError, "no pid for #{pod}" if pid.empty? || pid == "0"
 
         steps = []
@@ -121,7 +121,7 @@ module Cove
         iface = "#{IFACE_PREFIX}#{sheet_slug}"
         pod = "cove-#{sheet_slug}"
         results = []
-        results << run("sudo", "podman", "rm", "-f", pod)
+        results << run(*Cove.sudo_prefix, "podman", "rm", "-f", pod)
         results << sudo("ip", "link", "del", iface)
         FileUtils.rm_f(KEY_DIR.join("#{sheet_slug}.key").to_s)
         results
@@ -132,7 +132,7 @@ module Cove
         iface = "#{IFACE_PREFIX}#{sheet_slug}"
         {
           "interface" => run("ip", "link", "show", iface).ok?,
-          "pod" => run("sudo", "podman", "container", "exists", "cove-#{sheet_slug}").ok?,
+          "pod" => run(*Cove.sudo_prefix, "podman", "container", "exists", "cove-#{sheet_slug}").ok?,
           "key" => KEY_DIR.join("#{sheet_slug}.key").exist?
         }
       end

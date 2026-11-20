@@ -122,13 +122,13 @@ module Cove
       end
 
       def pod_exists?(sheet)
-        Podman.run("sudo", "podman", "container", "exists", sheet.pod_name).ok?
+        Podman.sudo("podman", "container", "exists", sheet.pod_name).ok?
       end
 
       private
 
       def running?(sheet)
-        r = Podman.run("sudo", "podman", "container", "inspect", "-f", "{{.State.Running}}", sheet.pod_name)
+        r = Podman.sudo("podman", "container", "inspect", "-f", "{{.State.Running}}", sheet.pod_name)
         r.ok? && r.stdout.strip == "true"
       end
 

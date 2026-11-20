@@ -44,16 +44,16 @@ module Cove
 
     class << self
       def exists?
-        Podman.run("sudo", "podman", "container", "exists", NAME).ok?
+        Podman.sudo("podman", "container", "exists", NAME).ok?
       end
 
       def running?
-        r = Podman.run("sudo", "podman", "container", "inspect", "-f", "{{.State.Running}}", NAME)
+        r = Podman.sudo("podman", "container", "inspect", "-f", "{{.State.Running}}", NAME)
         r.ok? && r.stdout.strip == "true"
       end
 
       def pid
-        r = Podman.run("sudo", "podman", "inspect", "-f", "{{.State.Pid}}", NAME)
+        r = Podman.sudo("podman", "inspect", "-f", "{{.State.Pid}}", NAME)
         r.ok? ? r.stdout.strip : ""
       end
 
@@ -62,11 +62,11 @@ module Cove
       # be inside it, so a default podman network will not do.
       def ensure_underlay!
         net = Plan.underlay["network"].to_s
-        return true if Podman.run("sudo", "podman", "network", "exists", net).ok?
+        return true if Podman.sudo("podman", "network", "exists", net).ok?
 
         subnet = Plan.underlay["subnet"].to_s
         gateway = Plan.underlay["gateway"].to_s
-        r = Podman.run("sudo", "podman", "network", "create",
+        r = Podman.sudo("podman", "network", "create",
                        "--subnet", subnet, "--gateway", gateway, net)
         raise Cove::DocumentError, "underlay network #{net} not created: #{r.message}" unless r.ok?
 
@@ -84,10 +84,10 @@ module Cove
         RouterConfig.write!(Plan.network_map)
         return Result.new(ok: true, message: "router already running") if running?
 
-        Podman.run("sudo", "podman", "rm", "-f", NAME) if exists?
+        Podman.sudo("podman", "rm", "-f", NAME) if exists?
 
         argv = [
-          "sudo", "podman", "run", "-d",
+          *Cove.sudo_prefix, "podman", "run", "-d",
           "--name", NAME,
           "--network", Plan.underlay["network"].to_s,
           "--ip", Plan.router_transport,
@@ -124,7 +124,7 @@ module Cove
         p = pid
         return [] if p.empty? || p == "0"
 
-        r = Podman.run("sudo", "nsenter", "-t", p, "-n", "wg", "show", "wg0", "peers")
+        r = Podman.sudo("nsenter", "-t", p, "-n", "wg", "show", "wg0", "peers")
         r.ok? ? r.stdout.split("\n").map(&:strip).reject(&:empty?) : []
       end
     end

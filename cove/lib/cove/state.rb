@@ -27,6 +27,13 @@ module Cove
     def services_file = state_dir.join("services.yml")
     def router_file = state_dir.join("router.conf")
     def wants_file = state_dir.join("relay-wants.jsonl")
+    # How this process becomes able to touch the host's network. It is `sudo -E`
+    # and not plain `sudo`, measured the hard way: sudo resets the environment, and
+    # CONTAINER_HOST is the only thing telling podman to talk to the host's store
+    # instead of opening its own (which, inside a container, cannot even configure
+    # storage). A deployment that runs the Manager as root already sets COVE_SUDO="".
+    def sudo_prefix = (@sudo_prefix ||= ENV.fetch("COVE_SUDO", "sudo -E").split.freeze)
+
     def plan_file = state_dir.join("plan.yml")
     def keys_dir = state_dir.join("keys")
 
