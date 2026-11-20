@@ -1,0 +1,184 @@
+#!/usr/bin/env bash
+# Verify the Cove Manager by mutation, not by reading it.
+#
+#   ./script/verify            # seam tests + live HTTP walk, no pods created
+#   ./script/verify --with-pod # also starts one real podman container and stops it
+#
+# Everything runs against a throwaway state directory: this script never touches the
+# sheets you are actually using.
+#
+# Note on CSRF: Rails signs each token to the form it was rendered in, so every POST
+# below takes its token from the form it is about to submit. A token borrowed from
+# another form is refused — which is the behaviour we want, and the reason this script
+# is longer than it looks like it should be.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+WITH_POD=0
+[ "${1:-}" = "--with-pod" ] && WITH_POD=1
+
+PORT="${PORT:-9311}"
+BASE="http://127.0.0.1:${PORT}"
+export COVE_STATE="$(mktemp -d /tmp/cove-verify-XXXXXX)"
+export COVE_RELAY_URL_TEMPLATE="${COVE_RELAY_URL_TEMPLATE:-http://127.0.0.1:9}"  # deliberately dead
+JAR="$COVE_STATE/cookies.txt"
+PIDS=()
+
+say() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
+ok()  { printf '   \033[32mok\033[0m   %s\n' "$*"; }
+die() { printf '   \033[31mFAIL\033[0m %s\n' "$*" >&2; exit 1; }
+cleanup() {
+  for p in "${PIDS[@]:-}"; do kill "$p" 2>/dev/null || true; done
+  if [ "$WITH_POD" = 1 ]; then podman rm -f cove-smoke-agent >/dev/null 2>&1 || true; fi
+  rm -rf "$COVE_STATE"
+}
+trap cleanup EXIT
+
+# token for the form whose action contains $2, from the page at $1
+tok() {
+  curl -sS -c "$JAR" -b "$JAR" "$1" | python3 -c '
+import sys, re
+html = sys.stdin.read(); want = sys.argv[1]; found = ""
+for m in re.finditer(r"<form\b[^>]*action=\"([^\"]*)\"[^>]*>(.*?)</form>", html, re.S):
+    if want in m.group(1):
+        t = re.search(r"name=\"authenticity_token\"\s+value=\"([^\"]+)\"", m.group(2))
+        if t:
+            found = t.group(1)
+            break
+print(found)' "$2"
+}
+
+post() { # $1 page url, $2 form action, then curl -d args
+  local page="$1" action="$2"; shift 2
+  local t; t=$(tok "$page" "$action")
+  [ -n "$t" ] || die "no token for form $action on $page"
+  curl -sS -o /dev/null -w '%{http_code}' -c "$JAR" -b "$JAR" -X POST \
+    --data-urlencode "authenticity_token=$t" "$@" "$BASE$action"
+}
+
+mkdir -p "$COVE_STATE/agents"
+cat > "$COVE_STATE/services.yml" <<'YAML'
+services:
+  - name: forgejo
+    address: 10.88.0.3:3000
+  - name: vikunja
+    address: 10.88.0.4:3456
+YAML
+
+say "1. seam tests (purity, totality, unresolved, atomic write, unknown keys, slug)"
+bundle exec ruby -Itest test/router_config_test.rb || die "seam tests"
+
+say "2. boot the app against a throwaway state directory"
+if curl -sf "$BASE/" >/dev/null 2>&1; then die "something is already listening on $PORT"; fi
+bundle exec puma -b "tcp://127.0.0.1:${PORT}" -e development config.ru >"$COVE_STATE/puma.log" 2>&1 &
+PIDS+=($!)
+for i in $(seq 1 40); do
+  curl -sf "$BASE/" >/dev/null 2>&1 && break
+  sleep 0.5
+  [ "$i" = 40 ] && { tail -30 "$COVE_STATE/puma.log"; die "app did not boot"; }
+done
+ok "listening on $BASE"
+
+say "3. write a sheet through the form, as a browser would (CSRF and all)"
+CODE=$(post "$BASE/sheets/new" "/sheets" \
+  --data-urlencode "name=Smoke Agent" \
+  --data-urlencode "harness=pi" \
+  --data-urlencode "image=docker.io/library/ruby:3.3-slim" \
+  --data-urlencode "command=sleep 3600" \
+  --data-urlencode "tools=look, say" \
+  -d "services[]=forgejo")
+[ "$CODE" = "302" ] || die "create returned $CODE"
+[ -f "$COVE_STATE/agents/smoke-agent.yml" ] || die "no sheet file written (expected agents/smoke-agent.yml)"
+ok "sheet written: $(ls "$COVE_STATE/agents")"
+
+say "4. the file, after one change"
+grep -qx 'agent "smoke-agent" services="forgejo"' "$COVE_STATE/router.conf" || { cat "$COVE_STATE/router.conf"; die "agent line missing"; }
+grep -qx 'allow "smoke-agent" "forgejo"' "$COVE_STATE/router.conf" || die "allow line missing"
+ok "router.conf holds the intent"
+
+say "5. totality: gut the file, then render again — nothing else changes"
+printf '# gutted by the test\n' > "$COVE_STATE/router.conf"
+CODE=$(post "$BASE/router.conf" "/router.conf/render")
+[ "$CODE" = "302" ] || { cat "$COVE_STATE/puma.log" | tail -20; die "re-render returned $CODE"; }
+grep -qx 'allow "smoke-agent" "forgejo"' "$COVE_STATE/router.conf" \
+  || { cat "$COVE_STATE/router.conf"; die "a line deleted by hand did not come back"; }
+ok "the whole file returned, from a render alone"
+
+say "6. a sheet naming a service the book does not have"
+python3 - "$COVE_STATE/agents/ghost-ref.yml" <<'PY'
+import sys
+open(sys.argv[1], "w").write("""name: Ghost Ref
+harness: pi
+model: ''
+repo: ''
+image: docker.io/library/ruby:3.3-slim
+command: sleep 3600
+tools: []
+services:
+- ghost
+created_at: '2026-11-19T00:00:00Z'
+updated_at: '2026-11-19T00:00:00Z'
+""")
+PY
+CODE=$(post "$BASE/router.conf" "/router.conf/render")
+[ "$CODE" = "302" ] || die "re-render returned $CODE"
+grep -qx 'unresolved "ghost-ref" "ghost"' "$COVE_STATE/router.conf" || { cat "$COVE_STATE/router.conf"; die "no unresolved line for a ghost service"; }
+if grep -q 'service "ghost"' "$COVE_STATE/router.conf"; then die "the Manager invented a service"; fi
+ok "ghost rendered as unresolved, not invented"
+
+say "7. pods page and pod page ask podman and the relay, and store neither"
+CODE_POD=$(curl -sS -o "$COVE_STATE/pod.html" -w '%{http_code}' -b "$JAR" "$BASE/pods/smoke-agent")
+[ "$CODE_POD" = "200" ] || die "pod page returned $CODE_POD"
+grep -q 'from the relay' "$COVE_STATE/pod.html" || die "pod page does not name the relay"
+grep -q 'want recorded' "$COVE_STATE/pod.html" || die "pod page did not record an unanswered want"
+ok "pod page rendered; unanswered wants recorded"
+
+say "8. the relay's build list, read out of the log"
+curl -sS -b "$JAR" "$BASE/relay-wants" > "$COVE_STATE/wants.html"
+for want in process_state last_token_age resources repo_head; do
+  grep -q "$want" "$COVE_STATE/wants.html" || die "want $want missing from the list"
+done
+[ -s "$COVE_STATE/relay-wants.jsonl" ] || die "no wants log written"
+ok "$(wc -l < "$COVE_STATE/relay-wants.jsonl") want records across $(python3 -c '
+import json,sys
+rows=[json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+print(len({r["want"] for r in rows}))' "$COVE_STATE/relay-wants.jsonl") distinct wants"
+
+if [ "$WITH_POD" = 1 ]; then
+  say "9. the button, for real: podman runs a container"
+  T=$(tok "$BASE/sheets/smoke-agent/edit" "/sheets/smoke-agent/start")
+  OUT=$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' -c "$JAR" -b "$JAR" -X POST \
+    --data-urlencode "authenticity_token=$T" "$BASE/sheets/smoke-agent/start")
+  echo "   start returned: $OUT"
+  CODE=${OUT%% *}
+  if [ "$CODE" != "302" ]; then
+    curl -sS -b "$JAR" "$BASE/sheets/smoke-agent/edit" | grep -o '<div class="alert">[^<]*' | sed 's/^/   alert: /' || true
+    die "start did not redirect"
+  fi
+  sleep 3
+  podman ps --filter label=cove.agent=smoke-agent --format '   {{.Names}} {{.Status}}' | tee /dev/stderr \
+    | grep -q 'cove-smoke-agent Up' || die "no running container from the button"
+  ok "pod exists, and its existence was never stored"
+  # What podman knows, podman said; nothing in state/ remembers it.
+  if grep -rqi 'cove-smoke-agent' "$COVE_STATE/agents" "$COVE_STATE/router.conf"; then
+    die "the pod's name leaked into the documents"
+  fi
+  ok "no document mentions the pod"
+  podman rm -f cove-smoke-agent >/dev/null
+  ok "test pod removed"
+fi
+
+say "10. the discipline test: no service semantics in the Manager's code"
+if grep -rInE 'forgejo|vikunja' app config lib 2>/dev/null; then
+  die "a service name appears in the Manager's code — the assignment has slipped"
+fi
+ok "no service name in app/, config/, lib/"
+WHERE=$(grep -rIlE 'forgejo|vikunja' . --exclude-dir=vendor --exclude-dir=.git --exclude-dir=log --exclude-dir=tmp 2>/dev/null | sort | tr '\n' ' ')
+printf '   names appear only in: %s\n' "${WHERE:-nowhere}"
+EXPECT="./script/verify ./state/services.yml ./test/router_config_test.rb "
+if [ "$WHERE" != "$EXPECT" ]; then
+  die "service names appear outside the data and fixture files: $WHERE"
+fi
+ok "names confined to the service book and two fixtures"
+
+say "ALL CHECKS PASSED"

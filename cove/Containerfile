@@ -1,0 +1,29 @@
+# Cove Manager — the first slice.
+#
+# Two stages: gems built once, then a slim runtime with the podman client, because
+# the button is real podman and the Manager must be able to run it from inside the pod.
+FROM docker.io/library/ruby:3.3-slim AS gems
+WORKDIR /app
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends build-essential libyaml-dev >/dev/null
+COPY Gemfile Gemfile.lock* ./
+ENV BUNDLE_PATH=/bundle BUNDLE_JOBS=4 BUNDLE_RETRY=3
+RUN bundle install
+
+FROM docker.io/library/ruby:3.3-slim
+# podman is not a dependency of the UI: it is the UI's only way to act.
+RUN apt-get update -qq \
+ && apt-get install -y -qq --no-install-recommends podman ca-certificates >/dev/null \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+ENV BUNDLE_PATH=/bundle \
+    BUNDLE_APP_CONFIG=/app/.bundle \
+    RAILS_ENV=production \
+    PORT=9200 \
+    COVE_STATE=/app/state \
+    CONTAINER_HOST=unix:///run/podman/podman.sock
+COPY --from=gems /bundle /bundle
+COPY . /app
+EXPOSE 9200
+# --bind: the fence is the address. The Manager answers on the host bridge only;
+# it is not published to the LAN and has no authentication by design (cove.md §3).
+CMD ["bundle", "exec", "puma", "-b", "tcp://0.0.0.0:9200", "-e", "production", "config.ru"]

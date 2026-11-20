@@ -1,0 +1,50 @@
+<h1>Pods</h1>
+<p class="muted">
+  Read from podman at the moment this page rendered. Nothing on this page was stored:
+  a pod that dies while you are reading it is already gone from the next load, and the page
+  will not remember that it ever said otherwise.
+</p>
+
+<% if @error %>
+  <div class="alert">podman could not be read: <%= @error %></div>
+<% end %>
+
+<table>
+  <thead><tr><th>sheet</th><th>pod</th><th>image</th><th>status (as podman reports it)</th><th>created</th><th></th></tr></thead>
+  <tbody>
+  <% if @pods.empty? %>
+    <tr><td colspan="6" class="muted">nothing running. A sheet is not a pod.</td></tr>
+  <% end %>
+  <% @pods.each do |pod| %>
+    <% slug = agent_label(pod); sheet = @sheets[slug] %>
+    <tr>
+      <td>
+        <% if sheet %>
+          <a href="<%= pod_path(slug) %>"><strong><%= sheet.name %></strong></a><br>
+          <code class="muted"><%= slug %></code>
+        <% else %>
+          <span class="bad">no sheet</span><br><code class="muted"><%= slug.presence || "(unlabelled)" %></code>
+        <% end %>
+      </td>
+      <td><code><%= container_name(pod) %></code></td>
+      <td><code class="muted"><%= pod["Image"] %></code></td>
+      <td><%= pod["Status"] %></td>
+      <td class="muted"><%= pod["Created"] %></td>
+      <td>
+        <form action="<%= pod_path(slug) %>/stop" method="post" style="display:inline">
+          <input type="hidden" name="authenticity_token" value="<%= form_authenticity_token %>">
+          <button class="stop" type="submit">stop</button>
+        </form>
+      </td>
+    </tr>
+  <% end %>
+  </tbody>
+</table>
+
+<% if @orphans.any? %>
+  <div class="warn">
+    <%= @orphans.size %> pod(s) carry this Manager's label but no current sheet claims them.
+    That is what deleting a sheet while its pod ran looks like. They are not stopped for you:
+    stopping something because its paperwork is missing would be the Manager inventing intent.
+  </div>
+<% end %>

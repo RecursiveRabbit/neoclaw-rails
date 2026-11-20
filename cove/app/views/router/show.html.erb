@@ -1,0 +1,23 @@
+<h1>router.conf</h1>
+<p class="muted">
+  This is the file on disk at <code><%= @path %></code>, read as-is. The router does not exist yet;
+  when it does it will read this and nothing else. It is rewritten whole on every change to any sheet,
+  pool, or service row — never patched.
+</p>
+
+<% if @body.nil? %>
+  <div class="warn">not written yet. Save a sheet, or press render.</div>
+<% else %>
+  <pre><%= @body %></pre>
+<% end %>
+
+<form action="<%= router_config_path %>/render" method="post">
+  <input type="hidden" name="authenticity_token" value="<%= form_authenticity_token %>">
+  <button type="submit">re-render from state/ now</button>
+</form>
+
+<h2>How to check it, rather than trust it</h2>
+<pre># totality: delete a line, change nothing, save any sheet — the line comes back
+sed -i '/^allow/d' state/router.conf && touch state/agents/*.yml   # then re-render
+# purity: identical intent renders identical bytes
+sha256sum state/router.conf; curl -s -X POST .../router.conf/render; sha256sum state/router.conf</pre>

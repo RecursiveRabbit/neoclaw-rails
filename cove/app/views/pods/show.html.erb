@@ -1,0 +1,51 @@
+<h1><%= @sheet ? @sheet.name : @pod_name %></h1>
+<p class="muted">pod <code><%= @pod_name %></code> · facts asked from the relay at page load</p>
+
+<% if @error %>
+  <div class="alert">podman could not be read: <%= @error %></div>
+<% end %>
+
+<h2>Existence — from podman</h2>
+<% if @pod %>
+  <table>
+    <tr><td>name</td><td><code><%= container_name(@pod) %></code></td></tr>
+    <tr><td>status</td><td><%= @pod["Status"] || @pod["State"] %></td></tr>
+    <tr><td>image</td><td><code><%= @pod["Image"] %></code></td></tr>
+    <tr><td>created</td><td><%= @pod["Created"] %></td></tr>
+  </table>
+<% else %>
+  <div class="warn">
+    podman does not have <code><%= @pod_name %></code> right now. That is the whole of what this
+    page can say: not that it failed, not that it never existed — that it is not there at this moment.
+  </div>
+<% end %>
+
+<h2>Inside — from the relay</h2>
+<p class="muted">
+  The relay is asked one question at a time, at <code><%= Relay.url_for(params[:slug]) %></code>.
+  It does not exist yet, so these are the questions it must learn to answer. Each refusal is
+  recorded on <a href="<%= relay_wants_path %>">relay wants</a>, which is its build list.
+</p>
+<table class="facts">
+  <thead><tr><th>want</th><th>measurement</th></tr></thead>
+  <tbody>
+  <% @facts.each do |fact| %>
+    <tr>
+      <td><%= fact.want %></td>
+      <td>
+        <% if fact.seen? %>
+          <strong><%= fact.value %></strong>
+          <% if fact.detail %><br><span class="muted"><%= fact.detail %></span><% end %>
+          <br><span class="muted">asked <%= fact.asked_at %></span>
+        <% else %>
+          <span class="bad">not seen</span>
+          <br><span class="muted"><%= fact.reason %></span>
+          <br><span class="muted">want recorded · <%= Relay::WANTS[fact.want] %></span>
+        <% end %>
+      </td>
+    </tr>
+  <% end %>
+  </tbody>
+</table>
+
+<p><a class="btn" href="<%= pods_path %>">back to pods</a></p>
