@@ -100,6 +100,28 @@ module Cove
         Result.new(ok: false, message: e.message)
       end
 
+      # After any change to the intent the Router rebuilds its device, and a rebuild
+      # forgets every endpoint it had learned. WireGuard cannot be told an endpoint
+      # from the file — the Router parses `endpoint=` and does not pass it to
+      # `wg set` — so the only way a peer becomes addressable again is to speak.
+      # Measured on z620 2026-11-20: after a rebuild, 1 of 4 peers had an endpoint;
+      # the rest returned one per five seconds of keepalive, and the tunnel was
+      # unreachable for about fifteen. So the Manager nudges: one echo per live pod,
+      # from inside its own namespace, immediately after the file changes.
+      def recommission!
+        Sheet.all.each do |s|
+          next unless s.pod_ip.to_s.empty?
+
+          pid = Podman.sudo("podman", "inspect", "-f", "{{.State.Pid}}", s.pod_name)
+          next unless pid.ok? && pid.stdout.strip != "0"
+
+          Network.sudo("nsenter", "-t", pid.stdout.strip, "-n", "ping", "-c", "1", "-W", "1", Plan.router_ip)
+        end
+        true
+      rescue StandardError
+        false
+      end
+
       def destroy_all!
         # Only sheets with a pod standing are touched. A sheet is a document; a
         # teardown destroys pods, and destroying a document because a suite asked

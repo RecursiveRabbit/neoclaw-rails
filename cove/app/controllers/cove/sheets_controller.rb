@@ -76,6 +76,7 @@ module Cove
       sheet.assign("services" => Sheet.arrayify(params[:services]))
       sheet.save!
       RouterConfig.write!(Plan.network_map)
+      Launch.recommission!
       redirect_to edit_sheet_path(sheet.slug),
                   notice: "#{sheet.slug} permits: #{sheet.services.empty? ? 'none' : sheet.services.join(' ')}; " \
                           "router.conf re-rendered whole"

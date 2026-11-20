@@ -11,6 +11,7 @@ module Cove
 
     def render_now
       RouterConfig.write!(Plan.network_map)
+      Launch.recommission!
       redirect_to router_config_path, notice: "router.conf re-rendered whole from state/"
     rescue Cove::DocumentError => e
       redirect_to router_config_path, alert: "render failed: #{e.message}"
