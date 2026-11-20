@@ -9,9 +9,19 @@
 <h2>Start</h2>
 <div class="card">
   <p>
-    This runs <code>podman run -d --name <%= @sheet.pod_name %> --network <%= Cove::Podman::NETWORK %>
-    <%= @sheet.image %> <%= @sheet.command %></code> against the podman socket this Manager was
-    given, then re-renders <code>router.conf</code> from every sheet.
+    Four steps, and the button does all of them: take an address from the plan if this sheet has none,
+    mint a keypair, run <code>podman run -d --name <%= @sheet.pod_name %> --network none</code>, then
+    build a WireGuard interface in the HOST namespace and move it into the pod. The sheet keeps the
+    address and the public key; the private key is destroyed with the call.
+  </p>
+  <table>
+    <tr><th>address assigned</th><td><code><%= @sheet.pod_ip.presence || "— none yet (the plan gives the lowest free)" %></code></td></tr>
+    <tr><th>tunnel port</th><td><code><%= @sheet.wg_port.presence || "— none yet" %></code></td></tr>
+    <tr><th>public key</th><td><code><%= @sheet.pubkey.presence || "— none yet" %></code></td></tr>
+  </table>
+  <p class="muted" style="margin:.4rem 0 1rem">
+    History, not state: these record what the last launch did. Neither says the pod is running — that
+    question is answered by <a href="<%= pods_path %>">Pods</a>, which asks podman.
   </p>
   <form action="<%= start_sheet_path(@sheet.slug) %>" method="post">
     <input type="hidden" name="authenticity_token" value="<%= form_authenticity_token %>">

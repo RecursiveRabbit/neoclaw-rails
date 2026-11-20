@@ -15,7 +15,7 @@ Rails.application.routes.draw do
     get  "pods",             to: "pods#index"
     # The teardown row goes before the :slug routes so the literal is never read as
     # a slug by a future reader, and so `destroy_all` can never be a pod that exists.
-    post "pods/destroy_all", to: "pods#destroy_all"
+    post "pods/destroy_all", to: "pods#destroy_all", as: :destroy_all_pods
     get  "pods/:slug",       to: "pods#show",  as: :pod
     post "pods/:slug/stop",  to: "pods#stop"
 

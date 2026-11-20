@@ -9,6 +9,13 @@
   <div class="alert">podman could not be read: <%= @error %></div>
 <% end %>
 
+<form action="<%= destroy_all_pods_path %>" method="post" style="margin:1rem 0"
+      onsubmit="return confirm('destroy every pod this Manager launched? the Router keeps its file and loses its peers.');">
+  <input type="hidden" name="authenticity_token" value="<%= form_authenticity_token %>">
+  <button class="go" type="submit">destroy every pod</button>
+  <span class="muted">the teardown row, as a button: pods gone, Router emptied, addresses kept on the sheets.</span>
+</form>
+
 <table>
   <thead><tr><th>sheet</th><th>pod</th><th>image</th><th>status (as podman reports it)</th><th>created</th><th></th></tr></thead>
   <tbody>

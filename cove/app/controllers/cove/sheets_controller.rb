@@ -9,7 +9,7 @@ module Cove
     skip_forgery_protection only: %i[start permits]
     def index
       @sheets = Sheet.all
-      @services = ServiceBook.all
+      @services = Plan.services
       @router_exists = File.exist?(Cove.router_file)
       @podman_ok = Podman.available?
     rescue Cove::DocumentError => e
@@ -20,7 +20,7 @@ module Cove
 
     def new
       @sheet = Sheet.new({ "name" => "", "image" => "localhost/cove-agent:latest" })
-      @services = ServiceBook.all
+      @services = Plan.services
     end
 
     def create
@@ -36,7 +36,10 @@ module Cove
 
     def edit
       @sheet = Sheet.find(params[:slug]) or return redirect_to(sheets_path, alert: "no sheet #{params[:slug]}")
-      @services = ServiceBook.all
+      # Every service the plan knows, which is the book AND every service-kind sheet: a
+      # permit list built from the book alone can never grant a road to a service this
+      # Manager launched, and an empty intersection is exactly how R14 starved.
+      @services = Plan.services
       @unresolved = @sheet.services - @services.map(&:name)
     end
 
