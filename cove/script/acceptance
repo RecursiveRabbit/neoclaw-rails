@@ -165,6 +165,40 @@ def build_fixtures
   end
 end
 
+# The desk's word, 2026-11-20: setup must record the addresses it assigns. A pod
+# that comes up holding a tunnel address the intent does not carry is a peer the
+# Router can never permit — the permits starve at the producer, not at the rule.
+# This renders first and says so in its detail: it is measuring the producer, not
+# row 6's apply latency. Absent pods and pods without a wg0 are skipped here and
+# remain the business of R0c / R3 / R7 / R8.
+SETUP_PODS = %w[cove-test-agent-a cove-test-agent-b cove-test-service-a cove-test-service-b].freeze
+
+def check_addresses_recorded
+  http("/router.conf/render", method: "POST")
+  intent, = sh("sudo -n podman exec #{ROUTER} cat /etc/cove/router.conf 2>/dev/null")
+  intent = intent.to_s
+  return unmet("R0d", "no rendered intent to read (Router absent or exec failed) — the address producer cannot be checked") if intent.strip.empty?
+
+  read = []
+  unrecorded = []
+  SETUP_PODS.each do |pod|
+    netns = pod_netns(pod) or next
+    addr, = nsented(netns, "ip -4 -o addr show wg0 2>/dev/null | awk '{print $4}' | cut -d/ -f1")
+    addr = addr.to_s.strip
+    next if addr.empty?
+    read << "#{pod}=#{addr}"
+    unrecorded << "#{pod}=#{addr}" unless intent =~ /^peer\s+"[^"]*"\s+address="#{Regexp.escape(addr)}"/
+  end
+  return unmet("R0d", "no pod holding a wg0 address to check — the fixtures did not come up, see R0c") if read.empty?
+
+  if unrecorded.empty?
+    met("R0d", "every up pod's tunnel address is recorded as a peer in the intent: #{read.join(' ')}")
+  else
+    fail!("R0d", "assigned but not recorded — no peer line in the intent for #{unrecorded.join(' ')}. " \
+                 "A permit cannot be rendered for a peer the setup never wrote down.")
+  end
+end
+
 # ---- the rows --------------------------------------------------------------
 ROW_TABLE = {}
 
@@ -436,6 +470,7 @@ if ARGV.include?("--prove-instrument")
   prove_instrument
 elsif ARGV.include?("--list")
   puts "R0c  fixture set (test-agent-b, test-service-a, test-service-b) — built before any pod row"
+  puts "R0d  the addresses the setup assigned are recorded as peers in the intent"
   (1..21).each { |i| puts format("%2d  %s", i, ROW_TABLE[i] ? "implemented" : "—") }
 else
   wanted = ARGV.map(&:to_i).reject(&:zero?)
@@ -450,6 +485,7 @@ else
   puts
   rows = wanted.empty? ? (1..21).to_a : wanted
   build_fixtures if wanted.empty? || pod_dependent?(wanted)
+  check_addresses_recorded if wanted.empty? || pod_dependent?(wanted)
   rows.each do |i|
     fn = ROW_TABLE[i]
     if fn.nil?
