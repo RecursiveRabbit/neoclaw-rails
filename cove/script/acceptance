@@ -437,25 +437,33 @@ end
 
 # 19–21: Evans' destroy rows. These are the ones this suite was commissioned for.
 ROW_TABLE[19] = -> {
+  # Soro, 2026-11-20, accepted by the desk: assert the EFFECT against a baseline
+  # taken at gate time, count rather than code, and treat "nothing to destroy" as a
+  # failure of the row rather than a reason to skip it. A teardown that had nothing
+  # to tear down proves nothing, and UNMET reads as "not my fault" when the fault is
+  # that this run never had fixtures.
+  baseline = BASELINE[:pods] || []
   before = podman_names.grep(/^cove-test-/)
-  # A destroy endpoint that does not exist also leaves no pods behind. That is a
-  # green nothing could fail, and this suite is not allowed to have one: it must
-  # have had something to destroy, and the call must have been answered by
-  # something that claims to have destroyed it.
-  return unmet(19, "no cove-test-* pod existed before the teardown — nothing to destroy, so nothing proven") if before.empty?
-  # Destroying four pods is four `podman rm -f` and four interface teardowns, not a
-  # page load. The default ten seconds is the caller's deadline, not the system's
-  # speed: measured once at >10s, which read as "http 0 — endpoint does not exist".
+  if before.empty?
+    return fail!(19, "nothing to destroy: 0 cove-test-* pod(s) standing (baseline at gate time: " \
+                     "#{baseline.empty? ? 'none' : baseline.join(' ')}). A teardown with no fixtures " \
+                     "proves nothing, and a row that skips itself reports the suite's ordering, not the system.")
+  end
+
+  # Destroying four pods is four podman rm and four interface teardowns, not a page
+  # load. The default ten seconds is the caller's deadline, not the system's speed.
   code, = http("/pods/destroy_all", method: "POST", timeout: 90)
   ok_code = (200..399).cover?(code)
   sleep 3
   left = podman_names.grep(/^cove-test-/)
-  if ok_code && left.empty?
-    met(19, "destroy-all answered #{code}; #{before.size} pod(s) gone, none left (#{before.join(' ')})")
-  elsif !ok_code
-    fail!(19, "destroy-all is not wired: http #{code} with #{before.size} pod(s) standing — the endpoint the rows need does not exist")
+  gone = before - left
+
+  return fail!(19, "#{code.zero? ? 'no answer from /pods/destroy_all' : "destroy-all answered #{code}"} " \
+                   "with #{before.size} pod(s) standing: #{before.join(' ')}") unless ok_code
+  if left.empty?
+    met(19, "destroy-all answered #{code}; #{gone.size} pod(s) destroyed, 0 left (#{before.join(' ')})")
   else
-    fail!(19, "still running after destroy-all: #{left.join(' ')} (http #{code})")
+    fail!(19, "#{left.size} pod(s) still running after destroy-all: #{left.join(' ')} (http #{code})")
   end
 }
 
@@ -539,6 +547,7 @@ else
   gate!
   need_instruments!
   BASELINE[:wg_ifaces] = host_wg_ifaces
+  BASELINE[:pods] = podman_names.grep(/^cove-test-/)
   puts "baseline host wg interfaces: #{BASELINE[:wg_ifaces].empty? ? '(none)' : BASELINE[:wg_ifaces].join(' ')}"
   puts
   rows = wanted.empty? ? (1..21).to_a : wanted
