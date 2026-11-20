@@ -46,6 +46,7 @@ module Cove
         end
 
         pod_ip = current.pod_ip.to_s.empty? ? Plan.allocate(current) : current.pod_ip
+        port = Plan.peer_port(current)
         key = Keys.ephemeral
         begin
           facts = Network.attach(
@@ -57,13 +58,14 @@ module Cove
             private_key: key.path,
             router_transport: Plan.router_transport,
             router_port: Plan.router_port,
-            wg_net: Plan.wg_net
+            wg_net: Plan.wg_net,
+            listen_port: port
           )
         ensure
           Keys.discard(key) # the pod's private key does not outlive this call
         end
 
-        current.assign("pod_ip" => pod_ip, "pubkey" => key.pubkey)
+        current.assign("pod_ip" => pod_ip, "pubkey" => key.pubkey, "wg_port" => port.to_s)
         current.save!
         RouterConfig.write!(Plan.network_map)
 

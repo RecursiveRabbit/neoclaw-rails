@@ -44,6 +44,9 @@ module Cove
       out["pod_ip"] = h["pod_ip"].to_s.strip
       out["pubkey"] = h["pubkey"].to_s.strip
       out["listen"] = h["listen"].to_s.strip
+      # The UDP port this sheet's tunnel listens on, host-side. See Plan.peer_port:
+      # it is persisted for the same reason the tunnel address is.
+      out["wg_port"] = h["wg_port"].to_s.strip
       out["created_at"] = (h["created_at"] || Time.now.utc.iso8601).to_s
       out["updated_at"] = (h["updated_at"] || Time.now.utc.iso8601).to_s
       out
@@ -103,6 +106,7 @@ module Cove
     # guess at the service's nature: every HTTP-ish thing in this town listens on
     # 3000, and a service with no port cannot be permitted at all.
     def listen   = @data["listen"].to_s.empty? ? "3000" : @data["listen"].to_s
+    def wg_port  = @data["wg_port"].to_s
     def created_at = @data["created_at"]
     def updated_at = @data["updated_at"]
 
@@ -121,7 +125,7 @@ module Cove
 
     def assign(attrs)
       updates = {}
-      %w[name kind harness model repo image command listen pod_ip pubkey].each do |k|
+      %w[name kind harness model repo image command listen pod_ip pubkey wg_port].each do |k|
         updates[k] = attrs[k] if attrs.key?(k)
       end
       %w[tools services].each do |k|

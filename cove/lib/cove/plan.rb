@@ -43,7 +43,13 @@ module Cove
       "host"     => { "address" => "10.99.0.3" },
       "pools"    => { "agent" => "10.99.2", "service" => "10.99.1" },
       "first_host" => 10,
-      "last_host"  => 250
+      "last_host"  => 250,
+      # The UDP ports pods' tunnel sockets listen on. They are allocated and
+      # persisted like the addresses, and for a harder reason: without a known port
+      # the Router cannot know where a silent pod's socket is, and a peer that has
+      # never spoken is a peer the Router answers "no route to host". See peer_port.
+      "first_port" => 40000,
+      "last_port"  => 41999
     }.freeze
 
     class << self
@@ -92,6 +98,30 @@ module Cove
         raise Cove::DocumentError, "no free address in #{prefix}.0/24 (plan #{file})"
       end
 
+      # The UDP port this sheet's socket listens on, allocated like an address and
+      # persisted like one. This is what makes a peer's endpoint renderable, and a
+      # rendered endpoint is what stops a silent pod from being unreachable: the
+      # Router rebuilds its device on every change, and a rebuild forgets every
+      # endpoint it learned. Measured on z620 2026-11-20: agent-a's SYN was forwarded
+      # by the permit rule and came back "No route to host" because the service peer
+      # had an allowed-ips and no endpoint — it had simply never spoken.
+      def peer_port(sheet)
+        return sheet.wg_port.to_i if sheet.wg_port.to_s.match?(/\A\d+\z/) && sheet.wg_port.to_i.positive?
+
+        taken = Set.new(Sheet.all.reject { |s| s.slug == sheet.slug }.map(&:wg_port).map(&:to_i))
+        (data["first_port"].to_i..data["last_port"].to_i).each do |n|
+          return n unless taken.include?(n)
+        end
+        raise Cove::DocumentError, "no free tunnel port in #{data['first_port']}..#{data['last_port']} (plan #{file})"
+      end
+
+      # Where the Router should send a peer's packets: the host's own address on the
+      # underlay bridge, because with the host-born ordering the pod's UDP socket is
+      # born in the host namespace and its source address is the host's.
+      def peer_endpoint(sheet)
+        "#{underlay['gateway']}:#{peer_port(sheet)}"
+      end
+
       # Every service the Router may be told about, in one shape: name + "host:port".
       #
       # Two sources and one vocabulary. The service book holds things already
@@ -132,7 +162,8 @@ module Cove
         Sheet.all.sort_by(&:slug).each do |s|
           next if s.pod_ip.to_s.empty? || s.pubkey.to_s.empty?
 
-          peers["#{s.kind}:#{s.slug}"] = { "address" => s.pod_ip, "pubkey" => s.pubkey }
+          peers["#{s.kind}:#{s.slug}"] = { "address" => s.pod_ip, "pubkey" => s.pubkey,
+                                           "endpoint" => peer_endpoint(s) }
         end
         { "router" => { "address" => router_address, "listen" => router_listen }, "peers" => peers }
       end

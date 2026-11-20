@@ -10,7 +10,7 @@ module Cove
   # The attributes a sheet knows by name. Everything else in the file is carried
   # through untouched (law 2) — this list is what the *Manager* has an opinion
   # about, not what a sheet may contain.
-  SHEET_KEYS = %w[name kind harness model repo image command tools services listen pod_ip pubkey].freeze
+  SHEET_KEYS = %w[name kind harness model repo image command tools services listen pod_ip pubkey wg_port].freeze
 
   class << self
     # COVE_STATE lets the app be pointed at a throwaway directory (tests, a

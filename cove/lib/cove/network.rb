@@ -87,7 +87,8 @@ module Cove
       # only as that file, for as long as the `wg set` that reads it. The proof
       # harness passes nothing and gets the on-disk keypair instead.
       def attach(sheet_slug:, pod_ip:, image:, command: [], router_pub:, private_key: nil,
-                 router_transport: ROUTER_TRANSPORT, router_port: ROUTER_PORT, wg_net: WG_NET)
+                 router_transport: ROUTER_TRANSPORT, router_port: ROUTER_PORT, wg_net: WG_NET,
+                 listen_port: 0)
         priv, pub = if private_key
                       [private_key.to_s, Keys.pubkey_of(File.read(private_key))]
                     else
@@ -114,7 +115,7 @@ module Cove
         steps << idempotent_del
         steps << sudo("ip", "link", "add", iface, "type", "wireguard")
         steps << sudo("ip", "addr", "add", "#{pod_ip}/32", "dev", iface)
-        steps << sudo("wg", "set", iface, "private-key", priv, "listen-port", "0")
+        steps << sudo("wg", "set", iface, "private-key", priv, "listen-port", listen_port.to_s)
         steps << sudo("wg", "set", iface, "peer", router_pub,
                       "endpoint", "#{router_transport}:#{router_port}",
                       "allowed-ips", wg_net, "persistent-keepalive", "15")
