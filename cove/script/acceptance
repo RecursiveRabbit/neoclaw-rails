@@ -84,15 +84,21 @@ end
 def await_handshake(timeout: 10.0)
   started = Time.now
   loop do
-    out, why, ok = in_router("wg show wg0 latest-handshake 2>/dev/null")
-    return [false, 0.0, why.to_s.strip] unless ok
-    lines = out.to_s.lines.reject { |l| l.strip.empty? }
-    stamps = lines.map { |l| l.split.last.to_i }.reject(&:zero?)
-    waited = (Time.now - started).round(1)
-    if lines.any? && stamps.size == lines.size
-      return [true, waited, "#{lines.size} peer(s)"]
+    # No `2>/dev/null` here, and that is the lesson from the run that added this:
+    # I silenced the instrument's own complaint and it reported an empty reason.
+    # The full output is parsed rather than the `latest-handshake` subcommand, so
+    # this does not depend on a wg build that has it.
+    out, why, ok = in_router("wg show wg0")
+    unless ok
+      said = why.to_s.strip
+      return [false, 0.0, said.empty? ? "wg failed and said nothing" : said]
     end
-    return [false, waited, "#{stamps.size}/#{lines.size} handshook within #{timeout}s"] if (Time.now - started) > timeout
+    body = out.to_s
+    peers = body.scan(/^peer: /).size
+    shook = body.scan(/latest handshake: \d/).size
+    waited = (Time.now - started).round(1)
+    return [true, waited, "#{peers} peer(s)"] if peers.positive? && shook == peers
+    return [false, waited, "#{shook}/#{peers} handshook within #{timeout}s"] if (Time.now - started) > timeout
     sleep 0.25
   end
 end
