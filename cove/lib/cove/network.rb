@@ -118,7 +118,7 @@ module Cove
         steps << sudo("wg", "set", iface, "private-key", priv, "listen-port", listen_port.to_s)
         steps << sudo("wg", "set", iface, "peer", router_pub,
                       "endpoint", "#{router_transport}:#{router_port}",
-                      "allowed-ips", wg_net, "persistent-keepalive", "5")
+                      "allowed-ips", wg_net, "persistent-keepalive", "1")
         steps << sudo("ip", "link", "set", iface, "up")
         # the move
         steps << sudo("ip", "link", "set", iface, "netns", pid)
