@@ -127,11 +127,17 @@ module Cove
       end
 
       def destroy_all!
-        # Only sheets with a pod standing are touched. A sheet is a document; a
-        # teardown destroys pods, and destroying a document because a suite asked
-        # for "nothing left running" would be a different verb wearing this one's
-        # name.
-        doomed = Sheet.all.select { |s| pod_exists?(s) }
+        # The list of things to destroy comes from the WORLD, not from the documents:
+        # every pod carrying the managed label except the Router. Measuring taught
+        # this the hard way today — a sheet-derived list left one pod standing because
+        # `podman container exists` answered for a name before its pod was listed,
+        # and a teardown that walks the documents inherits every disagreement between
+        # the documents and the world. A sheet is a document; a teardown destroys pods.
+        names = Podman.run(*Cove.sudo_prefix, "podman", "ps", "--filter", "label=cove.managed=1",
+                           "--format", "{{.Names}}").stdout.split("\n").map(&:strip)
+        doomed = Sheet.all.select { |s| names.include?(s.pod_name) }
+        orphans = names.reject { |n| n.empty? || n == RouterPod::NAME }
+                        .reject { |n| doomed.any? { |s| s.pod_name == n } }
         failures = []
         doomed.each do |s|
           r = destroy!(s)
@@ -140,9 +146,16 @@ module Cove
         # One render at the end, from whatever the sheets now say, so the Router is
         # left holding no peer even if one sheet's teardown went wrong.
         RouterConfig.write!(Plan.network_map)
+        # A pod the documents do not claim is still a pod this Manager launched, and
+        # leaving it running because no sheet names it is how a teardown lies.
+        orphans.each do |n|
+          r = Podman.sudo("podman", "rm", "-f", "--time", "0", n)
+          failures << "#{n}: #{r.message}" unless r.ok?
+        end
+
         if failures.empty?
-          Result.new(ok: true, message: doomed.empty? ? "no pods to destroy" :
-                                                      "destroyed #{doomed.map(&:pod_name).join(' ')}")
+          gone = (doomed.map(&:pod_name) + orphans)
+          Result.new(ok: true, message: gone.empty? ? "no pods to destroy" : "destroyed #{gone.join(' ')}")
         else
           Result.new(ok: false, message: failures.join("; "))
         end
