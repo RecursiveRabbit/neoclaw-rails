@@ -1,26 +1,42 @@
 #!/usr/bin/env bash
 # APPARATUS, NOT A DELIVERABLE. Cove slice two, the pod's side of the tunnel.
 #
-# The desk closed spec open-item 2 by naming this script the specification for
-# `Cove::Network` (cove.md, second draft + e6dd7a5/2884c36). It is here so that the
-# Router's author and the Manager's author read the same commands, and so that the
-# shape the spec now describes —
+# This is the HOST-BORN ORDERING version, and it is the one that counts. An earlier
+# version of this script created the interface inside the pod's namespace; with the
+# socket born pod-side an underlay link is required, and that shape was reported as
+# the kernel's shape. It was wrong, and the correction is in the townline
+# (reviews/2026-11-19-from-dova-cove-slice-two-correction-host-born-socket.md).
 #
-#   one extra link carrying exactly one /32 and no other route
+# THE ORDERING, which is the whole content of this file:
 #
-# — is a thing you can run, not a paragraph you can misread. Section 3 also carries
-# the trap this script paid for: plain `wg set` installs no routes, so every peer
-# needs `ip route add <peer>/32 dev wg0` or the Router tells its own pods
-# "Network unreachable" while the handshake counters look healthy.
+#   1. ip link add wg-X type wireguard          # in the HOST namespace
+#   2. set the private key, the peer, the endpoint, the tunnel address
+#   3. ip link set wg-X up                      # socket opens host-side
+#   4. ip link set wg-X netns <pod pid>         # only now does the device move
+#   5. inside the pod: rename to wg0, RE-ADD the address, up, `default dev wg0`
 #
-# It stands up: a Router in its own netns, two agent-ish pods and one pretend
-# service, all `--network none`, and then it measures them. Run it, read section 8
-# and 9, run it again with `clean`.
+# Step 5's re-add is not decoration: addresses do not survive a netns move. The device
+# keeps its key and its peers and loses its address, which produces a tunnel that
+# handshakes and carries nothing.
+#
+# The proof that the socket stayed host-side is visible in the Router:
+#   wg show wg0 endpoints   ->   10.89.0.1:<port>   (the host bridge's own address)
+#
+# Spec §3 (602246c) carries this shape and the wg-set trap below, because both cost
+# time to learn:
+#
+#   plain `wg set` installs no routes (only `wg-quick` does). Every peer needs
+#   `ip route add <peer>/32 dev wg0` on the Router, or the Router answers its own
+#   pods "Network unreachable" while every handshake counter looks healthy.
+#
+# What it stands up: a Router in its own netns, two agent-ish pods and one pretend
+# service, all `--network none`, then it measures them. Run it, read sections 7–9,
+# run it again with `clean`.
 #
 # What it is NOT: the Router (soro's), the Manager's wiring (not built), or a proof
-# from a landed ref. Replace the stand-in Router first; then port these commands into
-# `Cove::Network` and delete nothing else.
-
+# from a landed ref.
+, the pod's side of the tunnel. Apparatus, not deliverable.
+#
 # Question: can a pod be given a WireGuard interface such that (a) it can reach a
 # Router and nothing else, (b) another pod is unreachable, (c) the internet and the
 # host do not answer, and (d) the far end sees the pod's true tunnel IP?
@@ -111,37 +127,38 @@ sudo podman exec spk-router sh -c "
 "
 
 log "5. two pods with --network none, each with an unaddressed transport veth"
-mkpod() { # name  wg-ip  transport-ip  image  cmd...
-  local n="$1" ip="$2" tip="$3" img="$4"; shift 4
+mkpod() { # name  wg-ip  (transport args unused in this variant)  image  cmd...
+  local n="$1" ip="$2" _tip="$3" img="$4"; shift 4
   local c="spk-$n"
   sudo podman run -d --name "$c" --network none --security-opt label=disable "$img" "$@" >/dev/null
   local pid; pid=$(sudo podman inspect -f '{{.State.Pid}}' "$c")
-  sudo ip link add "veth-$n-h" type veth peer name "veth-$n-p"
-  sudo ip link set "veth-$n-h" master "$BR"; sudo ip link set "veth-$n-h" up
-  sudo ip link set "veth-$n-p" netns "$pid"
-  # the transport link needs a source address, or the tunnel's packets leave from
-  # 0.0.0.0 and the handshake never happens. One /32, nothing else.
-  sudo nsenter -t "$pid" -n ip addr add "$tip/32" dev "veth-$n-p"
-  # a transport link with no address at all: no v6 link-local either
-  sudo nsenter -t "$pid" -n ip link set "veth-$n-p" addrgenmode none
-  sudo nsenter -t "$pid" -n ip link set "veth-$n-p" up
+
+  # THE DOC'S ORDERING: the interface is born in the HOST namespace, so the UDP
+  # socket's routing is the host's; only then is the device moved into the pod.
+  # No veth, no transport /32 — the pod gets wg0 and loopback, and nothing else.
+  sudo ip link add "wg-$n" type wireguard
+  sudo ip addr add "$ip/32" dev "wg-$n"
+  sudo wg set "wg-$n" private-key "$W/$n.key" listen-port 0
+  sudo wg set "wg-$n" peer "$(cat "$W/router.pub")" endpoint "$ROUTER_TRANSPORT:$PORT" \
+      allowed-ips "$WG_NET" persistent-keepalive 15
+  sudo ip link set "wg-$n" up
+  echo "  host-side wg-$n up, addr $ip"
+
+  sudo ip link set "wg-$n" netns "$pid"
   sudo nsenter -t "$pid" -n ip link set lo up
-  sudo nsenter -t "$pid" -n ip link add wg0 type wireguard
-  sudo nsenter -t "$pid" -n wg set wg0 private-key "$W/$n.key" listen-port 0
+  sudo nsenter -t "$pid" -n ip link set "wg-$n" name wg0
+  # the device keeps its config but NOT its addresses across a netns move:
+  # re-home the tunnel address inside the pod, or the pod has a tunnel it cannot source from
   sudo nsenter -t "$pid" -n ip addr add "$ip/32" dev wg0
   sudo nsenter -t "$pid" -n ip link set wg0 up
-  # the one road: a /32 to the router's transport, over the unaddressed veth
-  sudo nsenter -t "$pid" -n ip route add "$ROUTER_TRANSPORT/32" dev "veth-$n-p"
-  sudo nsenter -t "$pid" -n wg set wg0 peer "$(cat "$W/router.pub")" \
-      endpoint "$ROUTER_TRANSPORT:$PORT" allowed-ips "$WG_NET" persistent-keepalive 15
-  sudo nsenter -t "$pid" -n ip route add "$WG_NET" dev wg0
-  echo "  $c pid=$pid ip=$ip"
+  sudo nsenter -t "$pid" -n ip route add default dev wg0
+  echo "  $c pid=$pid ip=$ip (moved in)"
 }
 
-mkpod a "$WAN"  10.89.1.11 docker.io/library/alpine:3.20 sleep infinity
-mkpod b "$WANB" 10.89.1.12 docker.io/library/python:3.12-alpine \
+mkpod a "$WAN"  0 docker.io/library/alpine:3.20 sleep infinity
+mkpod b "$WANB" 0 docker.io/library/python:3.12-alpine \
       python3 -m http.server 9999 --bind 0.0.0.0
-mkpod s "$SRV" 10.89.1.10 docker.io/library/python:3.12-alpine \
+mkpod s "$SRV" 0 docker.io/library/python:3.12-alpine \
       python3 -m http.server "$LISTEN" --bind 0.0.0.0
 
 log "6. router peers"
