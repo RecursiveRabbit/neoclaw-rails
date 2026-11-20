@@ -84,15 +84,29 @@ end
 def await_handshake(timeout: 10.0)
   started = Time.now
   loop do
-    out, why, ok = in_router("wg show wg0 latest-handshake 2>/dev/null")
-    return [false, 0.0, why.to_s.strip] unless ok
-    lines = out.to_s.lines.reject { |l| l.strip.empty? }
-    stamps = lines.map { |l| l.split.last.to_i }.reject(&:zero?)
-    waited = (Time.now - started).round(1)
-    if lines.any? && stamps.size == lines.size
-      return [true, waited, "#{lines.size} peer(s)"]
+    # `latest-handshakes`, plural. The singular is not a parameter of `wg show`: wg
+    # answers "Invalid parameter" and its usage text ON STDOUT, so a grep-shaped
+    # reader sees output and no error and waits out its whole timeout on a command
+    # that never ran. Measured 2026-11-20 on z620.
+    out, why, ok = in_router("wg show wg0 latest-handshakes 2>&1")
+    return [false, 0.0, "the Router could not be asked: #{why.to_s.strip.empty? ? 'no answer' : why.to_s.strip}"] unless ok
+
+    lines = out.to_s.lines.map(&:strip).reject(&:empty?)
+    if lines.empty?
+      # Nothing to wait for is a different claim from a peer that has not spoken.
+      return [false, 0.0, "the Router holds no peers to wait for"] if (Time.now - started) > 1.0
+      sleep 0.25
+      next
     end
-    return [false, waited, "#{stamps.size}/#{lines.size} handshook within #{timeout}s"] if (Time.now - started) > timeout
+
+    spoken = lines.reject { |l| l.split.last.to_s == "0" }
+    waited = (Time.now - started).round(1)
+    return [true, waited, "#{lines.size} peer(s)"] if spoken.size == lines.size
+    if (Time.now - started) > timeout
+      # A refusal that cannot say why is a failure with extra steps.
+      return [false, waited, "#{spoken.size}/#{lines.size} handshook within #{timeout}s " \
+                             "(#{lines.size - spoken.size} silent)"]
+    end
     sleep 0.25
   end
 end
