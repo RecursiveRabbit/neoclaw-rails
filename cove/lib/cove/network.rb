@@ -104,8 +104,14 @@ module Cove
         pid = run(*Cove.sudo_prefix, "podman", "inspect", "-f", "{{.State.Pid}}", pod).out.strip
         raise Cove::DocumentError, "no pid for #{pod}" if pid.empty? || pid == "0"
 
+        # Idempotence, and the one step whose failure is not one: there is normally
+        # no device by this name, and "nothing to delete" is the success case. It is
+        # excluded by identity and not by pattern — the earlier version matched argv,
+        # and adding `-E` to the priv esc shifted every position so the guard silently
+        # stopped guarding and every first launch failed on its own cleanup.
+        idempotent_del = sudo("ip", "link", "del", iface)
         steps = []
-        steps << sudo("ip", "link", "del", iface)          # idempotence: never two
+        steps << idempotent_del
         steps << sudo("ip", "link", "add", iface, "type", "wireguard")
         steps << sudo("ip", "addr", "add", "#{pod_ip}/32", "dev", iface)
         steps << sudo("wg", "set", iface, "private-key", priv, "listen-port", "0")
@@ -119,7 +125,7 @@ module Cove
         steps << sudo("nsenter", "-t", pid, "-n", "ip", "addr", "add", "#{pod_ip}/32", "dev", "wg0")
         steps << sudo("nsenter", "-t", pid, "-n", "ip", "link", "set", "wg0", "up")
         steps << sudo("nsenter", "-t", pid, "-n", "ip", "route", "add", "default", "dev", "wg0")
-        failed = steps.reject(&:ok?).reject { |s| s.argv[1, 4] == ["ip", "link", "del", iface] }
+        failed = steps.reject { |s| s.equal?(idempotent_del) }.reject(&:ok?)
         unless failed.empty?
           # leave nothing half-built
           detach(sheet_slug)
