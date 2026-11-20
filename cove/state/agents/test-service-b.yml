@@ -1,5 +1,5 @@
 name: test-service-b
 kind: service
 image: docker.io/library/alpine:latest
-command: sleep 86400
+command: busybox httpd -f -p 3000 -h /tmp
 listen: 3000
