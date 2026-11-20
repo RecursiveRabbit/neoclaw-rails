@@ -163,7 +163,13 @@ module Cove
         iface = iface_for(sheet_slug)
         pod = "cove-#{sheet_slug}"
         results = []
-        results << run(*Cove.sudo_prefix, "podman", "rm", "-f", pod)
+        # --time 0, and it is measured, not defensive: a container's PID 1 that has not
+        # installed a SIGTERM handler ignores it, and `sleep 86400` as PID 1 does
+        # exactly that. podman then waits out its full ten-second grace period before
+        # SIGKILL, which made a one-pod teardown take 10.7 s and read to the crank as
+        # "http 0, the endpoint does not exist". Nothing here wants a graceful stop:
+        # the pod is being destroyed.
+        results << run(*Cove.sudo_prefix, "podman", "rm", "-f", "--time", "0", pod)
         results << sudo("ip", "link", "del", iface)
         FileUtils.rm_f(KEY_DIR.join("#{sheet_slug}.key").to_s)
         results
