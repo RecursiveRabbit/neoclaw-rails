@@ -75,6 +75,28 @@ def nsented(path, cmd, timeout: 15)
   sudo_sh("nsenter --net=#{path} #{cmd}", timeout: timeout)
 end
 
+# A fresh WireGuard peer carries nothing until it has handshaked, and the first
+# ICMP to leave before that is dropped. Measured 2026-11-20: R10 reported the
+# Router unreachable, and the same ping by hand three minutes later answered 2/2
+# at 0.458 ms with a handshake two seconds old. The row was measuring the race,
+# not the route. Wait on the handshake, never sleep, and say how long the wait
+# was so a reader can tell a dead route from a slow peer.
+def await_handshake(timeout: 10.0)
+  started = Time.now
+  loop do
+    out, why, ok = in_router("wg show wg0 latest-handshake 2>/dev/null")
+    return [false, 0.0, why.to_s.strip] unless ok
+    lines = out.to_s.lines.reject { |l| l.strip.empty? }
+    stamps = lines.map { |l| l.split.last.to_i }.reject(&:zero?)
+    waited = (Time.now - started).round(1)
+    if lines.any? && stamps.size == lines.size
+      return [true, waited, "#{lines.size} peer(s)"]
+    end
+    return [false, waited, "#{stamps.size}/#{lines.size} handshook within #{timeout}s"] if (Time.now - started) > timeout
+    sleep 0.25
+  end
+end
+
 def pod_netns(name)
   out, = sh("sudo -n podman inspect #{name} --format '{{.State.Pid}}' 2>/dev/null")
   pid = out.strip
@@ -320,26 +342,34 @@ ROW_TABLE[9] = -> {
 
 # 10. All four reach the Router.
 ROW_TABLE[10] = -> {
+  settled, waited, note = await_handshake
+  return unmet(10, "no Router peer handshake to wait for (#{note})") unless settled
   fails = []
   %w[cove-test-agent-a cove-test-agent-b cove-test-service-a cove-test-service-b].each do |n|
     pid = pod_netns(n) or next fails << "#{n}: no pod"
     ok, = nsented(pid, "ping -c 1 -W 2 10.99.0.1")
     fails << n unless ok.include?("1 received")
   end
-  fails.empty? ? met(10, "all four ping the Router at 10.99.0.1") : fail!(10, "no answer: #{fails.join(' ')}")
+  fails.empty? ? met(10, "all four ping the Router at 10.99.0.1 (#{note}, handshakes settled in #{waited}s)") :
+    fail!(10, "no answer: #{fails.join(' ')} (#{note}, settled in #{waited}s)")
 }
 
 # 11. None of the four reaches the host or each other.
 ROW_TABLE[11] = -> {
   a = pod_netns("cove-test-agent-a") or return unmet(11, "no test-agent-a")
   b = pod_netns("cove-test-agent-b") or return unmet(11, "no test-agent-b")
+  # A leak test is only as good as the link being up: a tunnel that has not
+  # handshaked leaks nothing for the trivial reason. Wait, then try.
+  settled, waited, note = await_handshake
+  return unmet(11, "no Router peer handshake to wait for (#{note})") unless settled
   to_host, = nsented(a, "ping -c 1 -W 2 10.99.0.3")
   to_b, = nsented(a, "ping -c 1 -W 2 10.99.2.11")
   leaked = []
   leaked << "agent-a→host" if to_host.include?("1 received")
   leaked << "agent-a→agent-b" if to_b.include?("1 received")
-  leaked.empty? ? met(11, "agent-a reached neither the host nor agent-b") :
-    fail!(11, "crossed where nothing permits: #{leaked.join(', ')}")
+  tail = "(#{note}, settled in #{waited}s)"
+  leaked.empty? ? met(11, "agent-a reached neither the host nor agent-b #{tail}") :
+    fail!(11, "crossed where nothing permits: #{leaked.join(', ')} #{tail}")
 }
 
 # 12/13/14 — the permits, and then the packets.
@@ -349,6 +379,8 @@ ROW_TABLE[11] = -> {
     when 12 then unmet(12, "needs the Manager's permit API/UI to set agent-a → service-a,service-b")
     when 13 then unmet(13, "needs the Manager's permit API/UI to set agent-b → service-a,service-b")
     else
+      settled, waited, note = await_handshake
+      return unmet(14, "no Router peer handshake to wait for (#{note})") unless settled
       res = []
       { "cove-test-agent-a" => %w[cove-test-service-a cove-test-service-b],
         "cove-test-agent-b" => %w[cove-test-service-a cove-test-service-b] }.each do |agent, svcs|
@@ -360,7 +392,8 @@ ROW_TABLE[11] = -> {
         end
       end
       ok = res.all? { |r| r.end_with?("=ok") }
-      ok ? met(14, res.join(" ")) : fail!(14, res.join(" "))
+      tail = "(#{note}, settled in #{waited}s)"
+      ok ? met(14, "#{res.join(' ')} #{tail}") : fail!(14, "#{res.join(' ')} #{tail}")
     end
   }
 end
@@ -379,9 +412,12 @@ ROW_TABLE[15] = -> {
 
 ROW_TABLE[16] = -> {
   a = pod_netns("cove-test-agent-a") or return unmet(16, "no test-agent-a")
+  settled, waited, note = await_handshake
+  return unmet(16, "no Router peer handshake to wait for (#{note})") unless settled
   out, err, ok = nsented(a, "curl -sS -o /dev/null -w '%{http_code}' --max-time 8 https://theuncannyvalley.cc", timeout: 12)
-  (ok && out.strip == "200") ? met(16, "agent-a downloaded from theuncannyvalley.cc (the explicit hole)") :
-    fail!(16, "egress failed: #{out.strip} #{err.strip[0, 80]}")
+  tail = "(#{note}, settled in #{waited}s)"
+  (ok && out.strip == "200") ? met(16, "agent-a downloaded from theuncannyvalley.cc (the explicit hole) #{tail}") :
+    fail!(16, "egress failed: #{out.strip} #{err.strip[0, 80]} #{tail}")
 }
 
 [17, 18].each do |row|
