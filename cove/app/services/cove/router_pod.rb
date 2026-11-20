@@ -12,8 +12,15 @@ module Cove
   module RouterPod
     NAME  = ENV.fetch("COVE_ROUTER_NAME", "cove-router")
     IMAGE = ENV.fetch("COVE_ROUTER_IMAGE", "localhost/cove-router:soro")
-    CONF  = "/etc/cove/router.conf"
-    KEY   = "/etc/cove/router.key"
+    # The Router reads its file through a DIRECTORY mount, and that is load-bearing:
+    # every write in this system is atomic (temp file, fsync, rename), and a bind
+    # mount of a single FILE is pinned to the inode that existed at launch. Measured
+    # on z620 2026-11-20: the first launch rendered router.conf, mounted it, and every
+    # later render renamed a new file over the path — which the Router could not see,
+    # so it never learned a peer. A directory mount follows the rename.
+    MOUNT = "/etc/cove"
+    CONF  = "#{MOUNT}/router.conf"
+    KEY   = "#{MOUNT}/keys/router.key"
 
     # soro's router.rb programs itself and then EXITS — measured on z620 2026-11-20
     # (exit 0, ~0.3 s, pod gone). §5 as ruled wants the process kept and the whole
@@ -82,6 +89,11 @@ module Cove
         # refuses a config it cannot read. Rendering first is also the honest order:
         # the Router is launched holding the intent as it is.
         RouterConfig.write!(Plan.network_map)
+        # The key has to exist before the Router starts: the mount is read-only, so a
+        # Router that has to generate one could not write it back, and §2 says this key
+        # is the Manager's to keep. It is created once and reused, so a relaunch
+        # re-handshakes with the existing peers instead of re-keying the fleet.
+        Keys.ensure_router!
         return Result.new(ok: true, message: "router already running") if running?
 
         Podman.sudo("podman", "rm", "-f", NAME) if exists?
@@ -97,8 +109,7 @@ module Cove
           "--sysctl", "net.ipv4.ip_forward=1",
           "--label", "cove.managed=1",
           "--label", "cove.router=1",
-          "-v", "#{Cove.router_file}:#{CONF}:ro",
-          "-v", "#{Keys.ensure_router!}:#{KEY}:ro",
+          "-v", "#{Cove.state_dir}:#{MOUNT}:ro",
           "--entrypoint", "/bin/sh",
           IMAGE, "-c", WATCH
         ]
