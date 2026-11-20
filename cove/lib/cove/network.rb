@@ -54,7 +54,8 @@ module Cove
           File.write(priv, raw)
           File.chmod(0o600, priv)
         end
-        pub, st = Open3.capture2("wg", "pubkey", priv.to_s)
+        # `wg pubkey` reads the private key on stdin; it takes no file argument
+        pub, st = Open3.capture2("wg", "pubkey", stdin_data: File.read(priv))
         raise Cove::DocumentError, "wg pubkey failed" unless st.success?
         [priv.to_s, pub.strip]
       end
