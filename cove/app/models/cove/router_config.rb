@@ -18,10 +18,26 @@
 module Cove
   module RouterConfig
     FORMAT_VERSION = 1
+    # v2 is the network the Router can actually program: peers with keys and
+    # addresses, services with a port, permits resolved to an address:port, and a
+    # digest so a short file cannot pass for a whole one. v1 is what the Manager
+    # writes today; the Router reads v2 and refuses v1 loudly rather than half-
+    # configuring itself.
+    NETWORK_VERSION = 2
 
     class << self
       # => String, the whole configuration, every time.
-      def render(agents, services)
+      #
+      # net: nil  -> v1, byte-identical to the format the Manager already writes.
+      # net: hash -> v2, the whole network. Keys:
+      #   "router"  => { "address" => "10.99.0.1/24", "listen" => 51820 }
+      #   "peers"   => { "agent:alpha" => { "address" => "10.99.2.10", "pubkey" => "..." }, ... }
+      def render(agents, services, net = nil)
+        return render_v1(agents, services) if net.nil?
+        render_v2(agents, services, net)
+      end
+
+      def render_v1(agents, services)
         agents = agents.sort_by(&:slug)
         services = services.sort_by(&:name)
         known = services.map(&:name)
@@ -72,12 +88,105 @@ module Cove
         lines.join("\n") + "\n"
       end
 
+      # v2: the whole network, in a shape a dumb Router can program without
+      # consulting anything else — including this code.
+      def render_v2(agents, services, net)
+        require "digest"
+        agents = agents.sort_by(&:slug)
+        services = services.sort_by(&:name)
+        known = services.map(&:name)
+        peers = (net["peers"] || {})
+        router = (net["router"] || {})
+
+        body = []
+        body << "version #{NETWORK_VERSION}"
+        body << %(router address="#{q(router['address'].to_s)}" listen="#{q(router['listen'].to_s)}")
+        body << ""
+
+        # Peers, sorted by key. A peer with no key is written UNKEYED and the
+        # Router refuses to program it: an absent key must not look like a key.
+        peers.keys.sort.each do |name|
+          p = peers[name].to_h
+          key = p["pubkey"].to_s
+          body << %(peer "#{q(name)}" address="#{q(p['address'].to_s)}" pubkey="#{q(key.empty? ? 'UNKEYED' : key)}")
+        end
+
+        body << ""
+        services.each do |s|
+          host, port = split_address(s.address)
+          body << %(service "#{q(s.name)}" address="#{q(host)}" port="#{q(port)}")
+        end
+
+        permits = []
+        unresolved = []
+        # A permit's source is the *peer name*, not the slug: the Router is dumb and
+        # must not be asked to guess a naming convention. If the network map does
+        # not name a peer for a live sheet, that is a peer the Router cannot open a
+        # road for, and the file says so rather than guessing.
+        peer_for = lambda do |slug|
+          return "agent:#{slug}" if peers.key?("agent:#{slug}")
+          return slug if peers.key?(slug)
+          nil
+        end
+
+        agents.each do |agent|
+          agent.services.uniq.sort.each do |service_name|
+            svc = services.find { |s| s.name == service_name }
+            src_peer = peer_for.call(agent.slug)
+            if svc.nil?
+              unresolved << [agent.slug, service_name]
+            elsif src_peer.nil?
+              unresolved << [agent.slug, "peer-not-in-network-map"]
+            else
+              host, port = split_address(svc.address)
+              permits << [src_peer, service_name, host, port]
+            end
+          end
+        end
+
+        unless permits.empty?
+          body << ""
+          body << "# permits: the only roads. Anything not listed here is refused by default."
+          permits.sort.each { |a, s, h, p| body << %(permit "#{q(a)}" "#{q(s)}" to="#{q(h)}" port="#{q(p)}") }
+        end
+
+        unless unresolved.empty?
+          body << ""
+          body << "# unresolved: the Manager could not decide these — the Router will not guess"
+          unresolved.sort.each { |a, s| body << %(unresolved "#{q(a)}" "#{q(s)}") }
+        end
+
+        body << ""
+        body << "# peers=#{peers.size} services=#{services.size} permits=#{permits.size} unresolved=#{unresolved.size}"
+        body_text = body.join("\n") + "\n"
+
+        # The digest covers the body only, so the header stays out of the hash.
+        header = []
+        header << "# cove router intent v#{NETWORK_VERSION} — the whole network, rewritten whole."
+        header << "# Read by the Router and by nothing else. Do not edit: the Manager overwrites this file."
+        header << "# The last line of this file is the sha256 of every line above it; a short file cannot pass."
+        header << "body-sha256 #{Digest::SHA256.hexdigest(body_text)}"
+        header.join("\n") + "\n" + body_text
+      end
+
+      # A service address is `host:port`. The Manager does not know what the
+      # service is; it only knows it has one address, and the Router needs two
+      # fields. A malformed address is refused rather than guessed at.
+      def split_address(address)
+        s = address.to_s.strip
+        host, port = s.split(":", 2)
+        if host.to_s.empty? || port.to_s.empty?
+          raise Cove::DocumentError, "service address is not host:port: #{s.inspect}"
+        end
+        [host, port]
+      end
+
       # Render from what is on disk and write it. The only writer of router.conf.
       # Any mutation anywhere calls this; there is nowhere else to call.
-      def write!
+      def write!(net = nil)
         agents = Sheet.all
         services = ServiceBook.all
-        body = render(agents, services)
+        body = render(agents, services, net)
         Cove.write_atomic(Cove.router_file, body)
         body
       end

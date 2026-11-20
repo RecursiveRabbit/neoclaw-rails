@@ -1,0 +1,22 @@
+# The Router, in a pod.
+#
+# It needs NET_ADMIN and nothing else: no volumes but the intent file and the key
+# the Manager hands it. It has no API, no shell entrypoint beyond running itself,
+# and no way to be reconfigured except by relaunch (spec §5).
+#
+# Built rootful and run rootful: it is a network device owner, and the Manager
+# launches it with the capabilities that requires.
+FROM docker.io/library/ruby:3.3-slim
+
+RUN apt-get update -qq \
+ && apt-get install -y -qq --no-install-recommends wireguard-tools iptables iproute2 >/dev/null \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /router
+COPY router.rb /router/router.rb
+
+ENV COVE_ROUTER_CONF=/etc/cove/router.conf \
+    COVE_ROUTER_KEY=/etc/cove/router.key \
+    COVE_ROUTER_IFACE=wg0
+
+ENTRYPOINT ["ruby", "/router/router.rb"]
