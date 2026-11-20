@@ -1,3 +1,4 @@
+require "digest"
 require "open3"
 require "securerandom"
 require "fileutils"
@@ -26,7 +27,14 @@ module Cove
     ROUTER_TRANSPORT = ENV.fetch("COVE_ROUTER_TRANSPORT", "10.89.4.2")
     ROUTER_PORT = Integer(ENV.fetch("COVE_ROUTER_PORT", "51820"))
     ROUTER_NAME = ENV.fetch("COVE_ROUTER_NAME", "cove-router")
-    IFACE_PREFIX = "cove-wg-".freeze
+    # IFNAMSIZ is 16 bytes, so 15 characters, and the kernel says so with an error
+    # that names no field: "Attribute failed policy validation." Measured on z620
+    # 2026-11-20 — `cove-wg-test-agent-a` is 19 characters and never existed for a
+    # millisecond. The host-side name only has to survive one `ip link set ... netns`
+    # before the device is renamed to wg0 inside the pod, so it is a short, stable
+    # digest of the slug: readable enough in `ip link`, and never too long.
+    IFACE_PREFIX = "cwg-".freeze
+    IFACE_MAX = 15
     KEY_DIR = Pathname.new(ENV.fetch("COVE_STATE", "/tmp/cove-net"))
                         .join("keys")
 
@@ -48,6 +56,13 @@ module Cove
       # The Manager holds the pod's keypair only long enough to set it from the host
       # side and then discard it (spec §2). On disk here for the proof harness; the
       # Manager's version keeps them in memory.
+      def iface_for(slug)
+        name = "#{IFACE_PREFIX}#{Digest::SHA256.hexdigest(slug.to_s)[0, 8]}"
+        raise Cove::DocumentError, "interface name too long for IFNAMSIZ: #{name}" if name.length > IFACE_MAX
+
+        name
+      end
+
       def keypair(slug)
         FileUtils.mkdir_p(KEY_DIR, mode: 0o700)
         priv = KEY_DIR.join("#{slug}.key")
@@ -78,7 +93,7 @@ module Cove
                     else
                       keypair(sheet_slug)
                     end
-        iface = "#{IFACE_PREFIX}#{sheet_slug}"
+        iface = iface_for(sheet_slug)
         pod = "cove-#{sheet_slug}"
 
         podman = run(*Cove.sudo_prefix, "podman", "run", "-d", "--name", pod, "--network", "none",
@@ -118,7 +133,7 @@ module Cove
       # Pod, interface, key, and the Router's peer. Idempotent: destroying what is not
       # there is a success, because the state we want is "gone" either way.
       def detach(sheet_slug)
-        iface = "#{IFACE_PREFIX}#{sheet_slug}"
+        iface = iface_for(sheet_slug)
         pod = "cove-#{sheet_slug}"
         results = []
         results << run(*Cove.sudo_prefix, "podman", "rm", "-f", pod)
@@ -129,7 +144,7 @@ module Cove
 
       # Host-side leftovers for a sheet: the truth about "gone", asked of the kernel.
       def leftovers(sheet_slug)
-        iface = "#{IFACE_PREFIX}#{sheet_slug}"
+        iface = iface_for(sheet_slug)
         {
           "interface" => run("ip", "link", "show", iface).ok?,
           "pod" => run(*Cove.sudo_prefix, "podman", "container", "exists", "cove-#{sheet_slug}").ok?,
