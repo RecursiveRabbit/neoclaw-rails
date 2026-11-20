@@ -1,0 +1,23 @@
+#!/bin/sh
+# Cove Manager entrypoint.
+#
+# In production Rails needs a secret to sign its session cookie, and this Manager
+# deliberately stores no secret at rest: there is no credentials file to mount and
+# nothing to leak from the image. So the secret is generated per boot and dies with
+# the pod.
+#
+# The cost is honest and worth naming: a restart invalidates sessions, so a form left
+# open across a restart comes back with a CSRF failure. That is the correct trade for a
+# control pane whose whole doctrine is "no second copies" — the alternative is a secret
+# stored somewhere, which is a second copy of a fact that can leak.
+#
+# Set SECRET_KEY_BASE to override (e.g. to keep sessions across restarts).
+set -eu
+
+if [ -z "${SECRET_KEY_BASE:-}" ]; then
+  SECRET_KEY_BASE=$(ruby -rsecurerandom -e 'print SecureRandom.hex(64)')
+  export SECRET_KEY_BASE
+  echo "[cove] SECRET_KEY_BASE unset; generated for this boot (sessions will not survive a restart)" >&2
+fi
+
+exec "$@"
