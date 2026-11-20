@@ -7,7 +7,10 @@ require "securerandom"
 # The whole durable state of this system is a handful of text files. These
 # methods are the only places that know where they are.
 module Cove
-  SHEET_KEYS = %w[name harness model repo image command tools services].freeze
+  # The attributes a sheet knows by name. Everything else in the file is carried
+  # through untouched (law 2) — this list is what the *Manager* has an opinion
+  # about, not what a sheet may contain.
+  SHEET_KEYS = %w[name kind harness model repo image command tools services listen pod_ip pubkey].freeze
 
   class << self
     # COVE_STATE lets the app be pointed at a throwaway directory (tests, a
@@ -24,6 +27,8 @@ module Cove
     def services_file = state_dir.join("services.yml")
     def router_file = state_dir.join("router.conf")
     def wants_file = state_dir.join("relay-wants.jsonl")
+    def plan_file = state_dir.join("plan.yml")
+    def keys_dir = state_dir.join("keys")
 
     # Write a file whole, atomically, in the same directory: temp file, fsync,
     # rename, fsync the directory. A reader either sees the old file or the new

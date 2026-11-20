@@ -108,6 +108,33 @@ def ping(ip, count: 2, timeout: 4)
   st && out =~ /(\d+) received/ && Regexp.last_match(1).to_i.positive?
 end
 
+# A form POST to the Manager. The permit API and the start button are driven by a
+# machine, so they carry no CSRF token; the fence is the bind address (row 1).
+def post_form(path, fields)
+  body = fields.map { |k, v| "#{k}=#{v}" }.join("&")
+  http(path, method: "POST", data: body)
+end
+
+# Wait for the Router's live rules to satisfy a predicate. Returns
+# [ok, last_reading, why_not]. A change reaches the Router through one file and one
+# applied process, so "it should be there by now" is a guess; this is the measurement.
+def wait_rules(within: 4)
+  deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + within
+  last = ""
+  loop do
+    last, why, ok = in_router("iptables-save")
+    return [false, last, why] unless ok
+    return [true, last, nil] if yield(last)
+    return [false, last, "not within #{within}s"] if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+
+    sleep 0.1
+  end
+end
+
+def forward_rules(text, source)
+  text.lines.grep(/^-A FORWARD -s #{Regexp.escape(source)}\/32/)
+end
+
 # ---- row zero: the tree it is judging --------------------------------------
 BASELINE = {}
 
@@ -194,30 +221,51 @@ ROW_TABLE[5] = -> {
 }
 
 # 6. A change reconfigures the Router, in place, measured.
+#
+# The row cannot induce a change by asking for the same intent twice: identical
+# intent renders identical bytes and the Router would be right to do nothing. So the
+# row makes a real one — one road to a service in the book, opened and then closed —
+# and measures the apply each way. The road it opens is to `forgejo`, which is in
+# services.yml and therefore always resolves; the fleet's own services have no
+# address until row 7 launches them, which is after this.
 ROW_TABLE[6] = -> {
   before, = in_router("iptables-save")
   return unmet(6, "no Router") if before.nil?
   t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-  code, = http("/router.conf/render", method: "POST")
-  applied = nil
-  40.times do
-    sleep 0.05
-    now, = in_router("iptables-save")
-    if now != before && code == 302
-      applied = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0) * 1000).round(0)
-      break
-    end
+  code, = post_form("/sheets/test-agent-a/permits", "services" => "forgejo")
+  ok_open, _opened, why = wait_rules { |rules| rules != before }
+  return fail!(6, "no apply within 4s (http #{code}) #{why}") unless ok_open
+
+  applied = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0) * 1000).round(0)
+  code2, = post_form("/sheets/test-agent-a/permits", "services" => "")
+  ok_close, restored, why2 = wait_rules { |rules| rules == before }
+  unless ok_close && restored == before
+    return fail!(6, "the road opened in #{applied} ms but did not close again (http #{code2}) #{why2}")
   end
-  applied ? met(6, "change applied in place in #{applied} ms (no relaunch)") :
-            fail!(6, "no apply within 2s (http #{code})")
+
+  met(6, "a real road opened in place in #{applied} ms and closed again — no relaunch (http #{code}/#{code2})")
 }
 
 # 7. Four pods on the network.
+#
+# Row 2 started one sheet through the button and proved the path. The fleet is this
+# row's subject, so this row starts the rest the same way — through the Manager, not
+# with podman — and then requires all four to exist. A pod that appeared because a
+# human ran podman by hand would not be evidence about the Manager.
 ROW_TABLE[7] = -> {
   want = %w[cove-test-agent-a cove-test-agent-b cove-test-service-a cove-test-service-b]
+  sheets = %w[test-agent-b test-service-a test-service-b]
+  refusals = []
+  sheets.each do |slug|
+    next if podman_names.include?("cove-#{slug}")
+
+    code, _, ok = post_form("/sheets/#{slug}/start", {})
+    refusals << "#{slug}: http #{code}" unless ok
+  end
   have = podman_names
   missing = want.reject { |w| have.include?(w) }
-  missing.empty? ? met(7, want.join(' ')) : fail!(7, "missing: #{missing.join(' ')}")
+  missing.empty? ? met(7, "#{want.join(' ')} — all four launched through the Manager") :
+    fail!(7, "missing: #{missing.join(' ')}#{refusals.empty? ? '' : " (#{refusals.join(', ')})"}")
 }
 
 # 8. Each pod has no network access except through WireGuard.
@@ -265,27 +313,43 @@ ROW_TABLE[11] = -> {
 }
 
 # 12/13/14 — the permits, and then the packets.
-[12, 13, 14].each do |row|
+#
+# 12 and 13 are CONFIG rows on purpose: what they can measure is that the Manager's
+# answer reached the Router's rule set, which is a reading. Row 14 is the packet, and
+# a rule that carries no packet has never counted in this suite.
+[[12, "test-agent-a", "10.99.2.10"], [13, "test-agent-b", "10.99.2.11"]].each do |row, slug, src|
   ROW_TABLE[row] = -> {
-    case row
-    when 12 then unmet(12, "needs the Manager's permit API/UI to set agent-a → service-a,service-b")
-    when 13 then unmet(13, "needs the Manager's permit API/UI to set agent-b → service-a,service-b")
+    return unmet(row, "#{slug} has no pod — nothing to permit from") if pod_netns("cove-#{slug}").nil?
+
+    code, = post_form("/sheets/#{slug}/permits",
+                      "services" => "test-service-a test-service-b")
+    return fail!(row, "permit API answered #{code} for #{slug}") unless (200..399).cover?(code)
+
+    ok, rules, why = wait_rules { |text| forward_rules(text, src).size == 4 }
+    got = ok ? forward_rules(rules, src).size : 0
+    if ok && got == 4
+      config(row, "#{slug} permits service-a+service-b → 4 FORWARD rule(s) in the Router " \
+                  "(2 services × tcp+udp). READ, not ridden — row 14 is the packet.")
     else
-      res = []
-      { "cove-test-agent-a" => %w[cove-test-service-a cove-test-service-b],
-        "cove-test-agent-b" => %w[cove-test-service-a cove-test-service-b] }.each do |agent, svcs|
-        apid = pod_netns(agent) or next res << "#{agent}: no pod"
-        svcs.each do |svc|
-          ip = svc.end_with?("a") ? "10.99.1.10" : "10.99.1.11"
-          out, = nsented(apid, "ping -c 2 -W 2 #{ip}")
-          res << "#{agent}→#{svc}=#{out.include?('2 received') ? 'ok' : 'NO'}"
-        end
-      end
-      ok = res.all? { |r| r.end_with?("=ok") }
-      ok ? met(14, res.join(" ")) : fail!(14, res.join(" "))
+      fail!(row, "#{slug}: wanted 4 rules from #{src}, Router has #{got} #{why}")
     end
   }
 end
+
+ROW_TABLE[14] = -> {
+  res = []
+  { "cove-test-agent-a" => %w[cove-test-service-a cove-test-service-b],
+    "cove-test-agent-b" => %w[cove-test-service-a cove-test-service-b] }.each do |agent, svcs|
+    apid = pod_netns(agent) or next res << "#{agent}: no pod"
+    svcs.each do |svc|
+      ip = svc.end_with?("a") ? "10.99.1.10" : "10.99.1.11"
+      out, = nsented(apid, "ping -c 2 -W 2 #{ip}")
+      res << "#{agent}→#{svc}=#{out.include?('2 received') ? 'ok' : 'NO'}"
+    end
+  end
+  ok = res.all? { |r| r.end_with?("=ok") }
+  ok ? met(14, res.join(" ")) : fail!(14, res.join(" "))
+}
 
 ROW_TABLE[15] = -> {
   a = pod_netns("cove-test-agent-a") or return unmet(15, "no test-agent-a")
@@ -306,9 +370,34 @@ ROW_TABLE[16] = -> {
     fail!(16, "egress failed: #{out.strip} #{err.strip[0, 80]}")
 }
 
-[17, 18].each do |row|
+# 17/18: remove ONE road and prove the other still rides.
+#
+# A suite that only ever tests "everything permitted works" cannot tell a Router with
+# a default DROP from one with no rules at all. Each row closes one road and then
+# asks a packet to prove both halves: the road that was left open still carries, and
+# the road that was taken away does not. 18 restores both.
+[[17, "test-service-a", "test-service-b", "10.99.1.10", "10.99.1.11"],
+ [18, "test-service-b", "test-service-a", "10.99.1.11", "10.99.1.10"]].each do |row, kept, removed, kept_ip, removed_ip|
   ROW_TABLE[row] = -> {
-    unmet(row, "needs the Manager's permit API/UI to remove one road, then a packet to prove the other still rides")
+    pid = pod_netns("cove-test-agent-a") or return unmet(row, "test-agent-a has no pod")
+    code, = post_form("/sheets/test-agent-a/permits", "services" => kept)
+    return fail!(row, "permit API answered #{code}") unless (200..399).cover?(code)
+
+    ok, _rules, why = wait_rules { |text| forward_rules(text, "10.99.2.10").size == 2 }
+    return fail!(row, "Router did not reduce agent-a to one road #{why}") unless ok
+
+    rides, = nsented(pid, "ping -c 2 -W 2 #{kept_ip}", timeout: 8)
+    refused, = nsented(pid, "ping -c 2 -W 2 #{removed_ip}", timeout: 8)
+    kept_ok = rides.include?("2 received")
+    removed_ok = !refused.include?("received") || refused.include?(" 0 received")
+    detail = "#{kept} rides=#{kept_ok ? 'ok' : 'NO'}, #{removed} refused=#{removed_ok ? 'ok' : 'NO'}"
+    if kept_ok && removed_ok
+      post_form("/sheets/test-agent-a/permits", "services" => "test-service-a test-service-b")
+      wait_rules { |text| forward_rules(text, "10.99.2.10").size == 4 }
+      met(row, detail + " (both roads restored)")
+    else
+      fail!(row, detail)
+    end
   }
 end
 

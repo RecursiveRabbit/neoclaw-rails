@@ -1,0 +1,5 @@
+name: test-service-b
+kind: service
+image: docker.io/library/alpine:latest
+command: sleep 86400
+listen: 3000

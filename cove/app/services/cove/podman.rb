@@ -29,6 +29,13 @@ module Cove
         run("podman", "version", "--format", "{{.Client.Version}}").ok?
       end
 
+      # Why the last availability question was answered the way it was. A refusal
+      # that cannot say why is a failure with extra steps.
+      def why_unavailable
+        r = run("podman", "version", "--format", "{{.Client.Version}}")
+        r.ok? ? "available (#{r.stdout.strip})" : r.message
+      end
+
       # Every pod this Manager ever launched, as the world reports it now.
       def managed
         r = run("podman", "ps", "--filter", "label=#{LABEL}", "--format", "json")

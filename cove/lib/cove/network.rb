@@ -17,9 +17,13 @@ module Cove
   #
   # Everything here is an argv array through sudo. No shell, no interpolation.
   module Network
-    WG_NET      = ENV.fetch("COVE_WG_NET", "10.90.0.0/16")
-    ROUTER_ADDR = ENV.fetch("COVE_ROUTER_ADDR", "10.90.0.1")
-    ROUTER_TRANSPORT = ENV.fetch("COVE_ROUTER_TRANSPORT", "10.89.0.2")
+    # Every number here is a default for a bare proof harness. The Manager always
+    # passes the plan's values explicitly (see Plan), because the tunnel subnet and
+    # the Router's transport address are properties of an installation and not of
+    # this class. Left as ENV so script/net-proof still runs on its own.
+    WG_NET      = ENV.fetch("COVE_WG_NET", "10.99.0.0/16")
+    ROUTER_ADDR = ENV.fetch("COVE_ROUTER_ADDR", "10.99.0.1")
+    ROUTER_TRANSPORT = ENV.fetch("COVE_ROUTER_TRANSPORT", "10.89.4.2")
     ROUTER_PORT = Integer(ENV.fetch("COVE_ROUTER_PORT", "51820"))
     ROUTER_NAME = ENV.fetch("COVE_ROUTER_NAME", "cove-router")
     IFACE_PREFIX = "cove-wg-".freeze
@@ -62,8 +66,18 @@ module Cove
 
       # --- create -------------------------------------------------------------
       # Returns a Hash of facts; raises on the first step that fails, naming it.
-      def attach(sheet_slug:, pod_ip:, image:, command: [], router_pub:)
-        priv, pub = keypair(sheet_slug)
+      #
+      # private_key: is the ephemeral path the Manager minted for this launch. When
+      # it is given nothing is written under KEY_DIR: the pod's private key exists
+      # only as that file, for as long as the `wg set` that reads it. The proof
+      # harness passes nothing and gets the on-disk keypair instead.
+      def attach(sheet_slug:, pod_ip:, image:, command: [], router_pub:, private_key: nil,
+                 router_transport: ROUTER_TRANSPORT, router_port: ROUTER_PORT, wg_net: WG_NET)
+        priv, pub = if private_key
+                      [private_key.to_s, Keys.pubkey_of(File.read(private_key))]
+                    else
+                      keypair(sheet_slug)
+                    end
         iface = "#{IFACE_PREFIX}#{sheet_slug}"
         pod = "cove-#{sheet_slug}"
 
@@ -81,8 +95,8 @@ module Cove
         steps << sudo("ip", "addr", "add", "#{pod_ip}/32", "dev", iface)
         steps << sudo("wg", "set", iface, "private-key", priv, "listen-port", "0")
         steps << sudo("wg", "set", iface, "peer", router_pub,
-                      "endpoint", "#{ROUTER_TRANSPORT}:#{ROUTER_PORT}",
-                      "allowed-ips", WG_NET, "persistent-keepalive", "15")
+                      "endpoint", "#{router_transport}:#{router_port}",
+                      "allowed-ips", wg_net, "persistent-keepalive", "15")
         steps << sudo("ip", "link", "set", iface, "up")
         # the move
         steps << sudo("ip", "link", "set", iface, "netns", pid)
