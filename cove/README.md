@@ -33,17 +33,23 @@ Then open <http://127.0.0.1:9200/>.
 ## Run it where it belongs (a pod on z620)
 
     podman build -t localhost/cove-manager:latest -f Containerfile .
-    podman run -d --name cove-manager \
-      -p 127.0.0.1:9200:9200 \
+    # 9200 is taken by a host process on z620; the port is a property of the run.
+    podman run -d --name cove-manager-dova \
+      -p 127.0.0.1:9411:9200 \
       -v /run/user/$(id -u)/podman/podman.sock:/run/podman/podman.sock \
       -v "$PWD/state:/app/state:Z" \
       localhost/cove-manager:latest
 
-`-p 127.0.0.1:9200:9200` is the fence: the Manager is reachable from the host and from
+`-p 127.0.0.1:<port>:9200` is the fence: the Manager is reachable from the host and from
 nowhere else (§4). The socket mount is what makes the start button real; without it the
 button reports, honestly, that podman is not on the other end.
 
-## Check it rather than trust it
+## Check it rather than trust it — and know what this check is worth
+
+`soro`'s acceptance harness (`script/cove-acceptance/` in the repo) lives **outside** this
+app and never requires its classes. That one is the gate. `./script/verify` is a fast
+local loop that happens to live in the tree it tests, which means in principle the app
+could satisfy it; treat a green here as "not obviously broken", never as a witness.
 
     ./script/verify
 
