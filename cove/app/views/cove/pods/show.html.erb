@@ -22,7 +22,7 @@
 
 <h2>Inside — from the relay</h2>
 <p class="muted">
-  The relay is asked one question at a time, at <code><%= Relay.url_for(params[:slug]) %></code>.
+  The relay is asked one question at a time, at <code><%= Cove::Relay.url_for(params[:slug]) %></code>.
   It does not exist yet, so these are the questions it must learn to answer. Each refusal is
   recorded on <a href="<%= relay_wants_path %>">relay wants</a>, which is its build list.
 </p>
@@ -40,7 +40,7 @@
         <% else %>
           <span class="bad">not seen</span>
           <br><span class="muted"><%= fact.reason %></span>
-          <br><span class="muted">want recorded · <%= Relay::WANTS[fact.want] %></span>
+          <br><span class="muted">want recorded · <%= Cove::Relay::WANTS[fact.want] %></span>
         <% end %>
       </td>
     </tr>
