@@ -407,12 +407,19 @@ end
 ROW_TABLE[15] = -> {
   a = pod_netns("cove-test-agent-a") or return unmet(15, "no test-agent-a")
   b = pod_netns("cove-test-agent-b") or return unmet(15, "no test-agent-b")
+  # Same guard as R11, and for the same reason: a peer that never handshook
+  # reaches nobody, so a star test passes for the trivial reason. R15 went green
+  # on 064f59a while three of four peers had no handshake at all — a false green
+  # wearing a leak test as a costume.
+  settled, waited, note = await_handshake
+  return unmet(15, "no Router peer handshake to wait for (#{note})") unless settled
   ab, = nsented(a, "ping -c 1 -W 2 10.99.2.11")
   ba, = nsented(b, "ping -c 1 -W 2 10.99.2.10")
+  tail = "(#{note}, settled in #{waited}s)"
   if ab.include?("1 received") || ba.include?("1 received")
-    fail!(15, "agent pods can address each other — the star is broken")
+    fail!(15, "agent pods can address each other — the star is broken #{tail}")
   else
-    met(15, "agent-a ✗ agent-b, agent-b ✗ agent-a")
+    met(15, "agent-a ✗ agent-b, agent-b ✗ agent-a #{tail}")
   end
 }
 
