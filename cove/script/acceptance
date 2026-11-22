@@ -567,35 +567,40 @@ ROW_TABLE[16] = -> {
   settled, waited, note = await_handshake
   return unmet(16, note) unless settled
 
-  # Three different layers can stop an egress fetch and they have three different
-  # owners, so the detail names the FIRST one missing rather than the last one that
-  # failed. Measured 2026-11-22, and soro's ordering from his review of the same
-  # failure: no resolver in the pod at all, then no route into the tunnel
-  # (allowed-ips 10.99.0.0/16, so a packet for 1.1.1.1 never enters wg0), then no
-  # NAT at the Router. Only the third is Router-side. A row that says "could not
-  # resolve" against a pod with no /etc/resolv.conf sends a reader to the DNS
-  # question when the pod could not have resolved anything at all -- and did, for
-  # one run this morning.
-  # Evidence, not inference: the row prints what it read, because the first version
-  # of this probe read the host's file and reported the resolver as present.
+  # WHAT THIS ROW MEASURES, said before the measurements, because the first version
+  # of it implied a causal chain that does not exist. `nsented` enters only --net:
+  # the fetch below is the HOST's curl running in the POD's network namespace, so it
+  # resolves with the HOST's /etc/resolv.conf, and the pod's own resolver is not on
+  # this row's path at all. Measured 2026-11-22 — with `nameserver 1.1.1.1` written
+  # into the pod by hand, `ip route get 1.1.1.1` still answered `dev wg0` and
+  # `> /dev/tcp/1.1.1.1/443` still answered "No route to host", because the pod's
+  # peer on the Router carries allowed-ips 10.99.0.0/16 and nothing outside the
+  # tunnel has key material. So this is a NETWORK-PATH row. The pod's resolver is
+  # reported as a fact about the pod and marked as not on the path, so that nobody
+  # reads "resolver ABSENT" as the reason the fetch failed.
   resolv, _, resolv_ok = nsent_file(a, "/etc/resolv.conf")
-  resolver_state = if resolv_ok && !resolv.to_s.strip.empty?
-                     "present (#{resolv.to_s.lines.first.to_s.strip[0, 60]})"
-                   else
-                     "ABSENT — no /etc/resolv.conf in the pod"
-                   end
-  route, = nsented(a, "timeout 6 bash -c 'echo > /dev/tcp/1.1.1.1/443' && echo ROUTED", timeout: 8)
-  no_egress_route = !route.to_s.include?("ROUTED")
+  pod_resolver = if resolv_ok && !resolv.to_s.strip.empty?
+                   "present (#{resolv.to_s.lines.first.to_s.strip[0, 60]})"
+                 else
+                   "ABSENT (no /etc/resolv.conf in the pod)"
+                 end
+  allowed_text, = nsented(a, "wg show wg0 allowed-ips")
+  allowed = allowed_text.to_s.lines.map { |l| l.split.last }.compact.uniq.join(" ")
+  exited, = nsented(a, "timeout 6 bash -c 'echo > /dev/tcp/1.1.1.1/443' 2>&1", timeout: 8)
+  refused = exited.to_s.include?("No route to host") || exited.to_s.include?("not permitted")
 
   out, err, ok = nsented(a, "curl -sS -o /dev/null -w '%{http_code}' --max-time 8 https://theuncannyvalley.cc", timeout: 12)
   tail = "(#{note}, settled in #{waited}s)"
   if ok && out.strip == "200"
-    met(16, "agent-a downloaded from theuncannyvalley.cc (the explicit hole) #{tail}")
+    met(16, "the pod's namespace reached theuncannyvalley.cc #{tail}; pod resolver #{pod_resolver} (not on this path)")
   else
-    stopped = ["resolver: #{resolver_state}"]
-    stopped << "no route into the tunnel: a packet for 1.1.1.1:443 does not leave the pod" if no_egress_route
-    stopped << "fetch answered #{out.strip} #{err.strip[0, 60]}"
-    fail!(16, "egress failed — stopped at the first missing layer: #{stopped.join('; ')} #{tail}")
+    why = []
+    why << "no road out of the tunnel: a packet for 1.1.1.1:443 answers " +
+           (refused ? '"No route to host"' : "nothing") +
+           ", and the pod's peer allows only #{allowed.empty? ? 'nothing' : allowed}"
+    why << "fetch answered #{out.strip} #{err.strip[0, 60]}"
+    why << "pod resolver #{pod_resolver} — a fact about the pod, NOT this row's path: the fetch runs the host's curl in the pod's netns, so it resolves with the host's resolver"
+    fail!(16, "egress failed — #{why.join('; ')} #{tail}")
   end
 }
 
@@ -833,6 +838,16 @@ else
   fails = counts["FAIL"].to_i
   unmets = counts["UNMET"].to_i
   puts "green only if 0 FAIL and 0 UNMET — UNMET is not a pass in this suite."
+  # Read by people and by a crank, and read twice this week as "almost MET". It is
+  # not a stage: CONFIG means the row's claim was a reading and the reading matched.
+  # Such a row never promised a packet, so no packet can promote it.
+  puts "CONFIG is not a stage between MET and FAIL — it means the claim was a reading and" \
+       " the reading matched; that row never promised a packet, so no packet can promote it."
+  # Read by people and by a crank, and read twice this week as "almost MET". It is
+  # not a stage: CONFIG means the row's claim was a reading and the reading matched.
+  # Such a row never promised a packet, so no packet can promote it.
+  puts "CONFIG is not a stage between MET and FAIL — it means the claim was a reading and" \
+       " the reading matched; that row never promised a packet, so no packet can promote it."
   # Enforced, not merely printed. This exited on FAIL alone, so a run with five
   # UNMETs and no FAIL exited 0 while the sentence above it said the opposite.
   # This file's first law has always been that a missing prerequisite is UNMET with
