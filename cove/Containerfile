@@ -10,9 +10,17 @@ ENV BUNDLE_PATH=/bundle BUNDLE_JOBS=4 BUNDLE_RETRY=3
 RUN bundle install
 
 FROM docker.io/library/ruby:3.3-slim
-# podman is not a dependency of the UI: it is the UI's only way to act.
+# podman is not a dependency of the UI: it is the UI's only way to act. The rest of
+# the toolbelt is what the network needs from the host side, and it is in this image
+# because the Manager is the thing that does the work (§15 row 2): a WireGuard
+# interface is born in the host namespace and moved into the pod's, so the Manager
+# must be able to say `ip`, `wg` and `nsenter` itself. It is a launch argument that
+# decides whether it can (see the report: rootful, --network host, --pid=host,
+# --privileged). A missing tool here is a row that fails with a reason, never a row
+# that passes for the wrong one.
 RUN apt-get update -qq \
- && apt-get install -y -qq --no-install-recommends podman ca-certificates >/dev/null \
+ && apt-get install -y -qq --no-install-recommends podman ca-certificates \
+      wireguard-tools iproute2 iptables sudo >/dev/null \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 ENV BUNDLE_PATH=/bundle \
@@ -24,6 +32,8 @@ ENV BUNDLE_PATH=/bundle \
 COPY --from=gems /bundle /bundle
 COPY . /app
 EXPOSE 9200
-# --bind: the fence is the address. The Manager answers on the host bridge only;
-# it is not published to the LAN and has no authentication by design (cove.md §3).
-CMD ["bundle", "exec", "puma", "-b", "tcp://0.0.0.0:9200", "-e", "production", "config.ru"]
+# --bind: the fence is the address. The Manager answers on 127.0.0.1 only; it is not
+# published to the LAN and has no authentication by design (cove.md §3). COVE_BIND
+# lets a deployment keep that promise without relying on the container runtime to
+# publish it: with --network host the process itself owns the bind address.
+CMD ["sh", "-c", "exec bundle exec puma -b tcp://${COVE_BIND:-0.0.0.0:9200} -e production config.ru"]

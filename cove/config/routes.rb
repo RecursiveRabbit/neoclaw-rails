@@ -9,9 +9,13 @@ Rails.application.routes.draw do
     # Sheets: the only durable documents. A sheet is created, edited, and rendered.
     resources :sheets, only: %i[index new create edit update], param: :slug
     post "sheets/:slug/start", to: "sheets#start", as: :start_sheet
+    post "sheets/:slug/permits", to: "sheets#permits", as: :sheet_permits
 
     # Pods: never stored, always queried.
     get  "pods",             to: "pods#index"
+    # The teardown row goes before the :slug routes so the literal is never read as
+    # a slug by a future reader, and so `destroy_all` can never be a pod that exists.
+    post "pods/destroy_all", to: "pods#destroy_all", as: :destroy_all_pods
     get  "pods/:slug",       to: "pods#show",  as: :pod
     post "pods/:slug/stop",  to: "pods#stop"
 
@@ -21,6 +25,5 @@ Rails.application.routes.draw do
     # The seam, visible. Reading the rendered file is how you check the Manager.
     get "router.conf", to: "router#show", as: :router_config
     post "router.conf/render", to: "router#render_now"
-
   end
 end

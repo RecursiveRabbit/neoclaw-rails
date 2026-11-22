@@ -126,9 +126,10 @@ def apply(peers, permits, router, first:)
     end
     run!("ip", "link", "set", IFACE, "up")
   else
-    # The Router's key and listen port do not change on a re-apply (the Manager
-    # holds the key, spec §4), so the diff is peers only — and syncconf leaves the
-    # interface up, so established tunnels are not reset.
+    # The Router's key does not CHANGE on a re-apply (the Manager holds it, spec §4),
+    # so the diff is peers only — and syncconf leaves the interface up, so established
+    # tunnels are not reset. "Does not change" was read for a day as "does not need
+    # re-asserting", and that reading cost the fleet: see below.
     conf = +"[Interface]\n"
     conf << "ListenPort = #{router['listen']}\n"
     peers.each_value do |p|
@@ -139,6 +140,28 @@ def apply(peers, permits, router, first:)
     File.write(tmp, conf)
     run!("wg", "syncconf", IFACE, tmp)
     File.unlink(tmp)
+    # What was MEASURED on z620 2026-11-22: after one in-place apply, `wg show wg0`
+    # printed no public key; four peers kept their endpoints and allowed-ips and
+    # every one of them went silent; every row that reads the file still read a
+    # correct configuration. Setting the key by hand restored four handshakes in
+    # under four seconds, and the next render took it away again.
+    #
+    # What that means, stated no more strongly than the control supports: the sync
+    # conf's [Interface] block named only ListenPort, and after the sync the device
+    # had no identity. wg(8) describes setconf as applying the fields the block
+    # NAMES and removing all peers; on wireguard-tools v1.0.20210914 the observed
+    # behaviour is that an unnamed PrivateKey does not survive an in-place sync --
+    # a scratch netns, key set, sync with ListenPort alone: public key gone; the
+    # same sync with PrivateKey named: public key back. soro read the same page and
+    # expected the other outcome, which is why the assertion at the tail of `apply`
+    # exists: the docs and the box disagree, so the code must not take either on
+    # faith. The key is re-asserted here from the read-only mount by PATH, so it
+    # lands in neither the sync conf nor argv.
+    #
+    # Known and accepted: between the sync and this line the device is keyless for
+    # well under a millisecond. A peer handshaking exactly there is dropped and
+    # retries. It is not worth closing and it is worth saying.
+    run!("wg", "set", IFACE, "private-key", KEY, "listen-port", router["listen"].to_s)
   end
 
   # One atomic replace of the whole filter table: at no instant is the chain
@@ -158,6 +181,17 @@ def apply(peers, permits, router, first:)
   else
     out, err, st = Open3.capture3("iptables-restore", stdin_data: rules)
     die "iptables-restore failed: #{err.strip.empty? ? out.strip : err.strip}" unless st.success?
+  end
+
+  # Soro's condition, 2026-11-22, and he is right that it is the condition and not
+  # a nicety: the fix made the state correct, it did not make the fault loud, and
+  # this fault cost a day precisely because nothing announced it. A verb that cannot
+  # confirm must not report success. At the tail of apply so that the `first:` path
+  # is covered by the same assertion as the in-place one.
+  pub = run!("wg", "show", IFACE, "public-key").to_s.strip
+  if pub.empty?
+    die "apply left the Router with no identity: `wg show #{IFACE} public-key` is empty " \
+        "(#{peers.size} peer(s) programmed, key re-asserted from #{KEY})"
   end
 end
 

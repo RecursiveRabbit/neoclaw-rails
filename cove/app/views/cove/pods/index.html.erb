@@ -9,6 +9,23 @@
   <div class="alert">podman could not be read: <%= @error %></div>
 <% end %>
 
+<form action="<%= destroy_all_pods_path %>" method="post" style="margin:1rem 0"
+      onsubmit="return confirm('destroy the test pods (cove-test-*)? anything with another name is left standing, and the answer will name it.');">
+  <input type="hidden" name="authenticity_token" value="<%= form_authenticity_token %>">
+  <button class="go" type="submit">destroy the test pods</button>
+  <span class="muted">the teardown row, as a button, scoped: <code>cove-test-*</code> gone, everything else
+  left standing and named in the answer, Router emptied, addresses kept on the sheets.</span>
+</form>
+
+<form action="<%= destroy_all_pods_path %>" method="post" style="margin:1rem 0"
+      onsubmit="return confirm('destroy EVERY pod this Manager launched, including anything a person made? the Router keeps its file and loses its peers. this one is not scoped.');">
+  <input type="hidden" name="authenticity_token" value="<%= form_authenticity_token %>">
+  <input type="hidden" name="scope" value="all">
+  <button type="submit">destroy every pod</button>
+  <span class="muted">scope <code>all</code>: every pod carrying this Manager's label, fixtures or not. This is the one
+  that needs a reason, so it is not the default and it says so.</span>
+</form>
+
 <table>
   <thead><tr><th>sheet</th><th>pod</th><th>image</th><th>status (as podman reports it)</th><th>created</th><th></th></tr></thead>
   <tbody>

@@ -1,0 +1,5 @@
+name: test-service-a
+kind: service
+image: docker.io/library/python:3.12-alpine
+command: python3 -m http.server 3000 --bind 0.0.0.0
+listen: 3000

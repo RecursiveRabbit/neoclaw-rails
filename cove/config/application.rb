@@ -13,6 +13,14 @@ require "action_controller/railtie"
 # namespace (`Cove` is already defined by this file), and Zeitwerk will not load a file
 # that claims a constant already in place.
 require_relative "../lib/cove/state"
+# The rest of the library is required for the same reason, in the order the
+# dependencies run: the plan reads state and names pools, the keys live in state,
+# and the network is the only thing that talks to the kernel. Rails 8 does not put
+# lib/ on the autoload path, and a constant that resolves in development because a
+# test loaded it is exactly the kind of green that cannot fail.
+require_relative "../lib/cove/plan"
+require_relative "../lib/cove/keys"
+require_relative "../lib/cove/network"
 
 module Cove
   class Application < Rails::Application

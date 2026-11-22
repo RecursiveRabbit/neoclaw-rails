@@ -12,16 +12,18 @@
 
 <table>
   <thead>
-    <tr><th>sheet</th><th>harness</th><th>model</th><th>image</th><th>services allowed</th><th>saved</th><th></th></tr>
+    <tr><th>sheet</th><th>kind</th><th>address</th><th>harness</th><th>model</th><th>image</th><th>services allowed</th><th>saved</th><th></th></tr>
   </thead>
   <tbody>
   <% if @sheets.empty? %>
-    <tr><td colspan="7" class="muted">no sheets yet — <a href="<%= new_sheet_path %>">write one</a></td></tr>
+    <tr><td colspan="9" class="muted">no sheets yet — <a href="<%= new_sheet_path %>">write one</a></td></tr>
   <% end %>
   <% @sheets.each do |sheet| %>
     <tr>
       <td><a href="<%= edit_sheet_path(sheet.slug) %>"><strong><%= sheet.name %></strong></a><br>
           <code class="muted"><%= sheet.slug %>.yml</code></td>
+      <td><%= sheet.kind %><%= " :#{sheet.listen}" if sheet.service? %></td>
+      <td><code><%= sheet.pod_ip.presence || "—" %></code></td>
       <td><%= sheet.harness.presence || "—" %></td>
       <td><%= sheet.model.presence || "—" %></td>
       <td><code><%= sheet.image %></code></td>

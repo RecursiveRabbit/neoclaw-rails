@@ -1,5 +1,7 @@
 module Cove
   class PodsController < ApplicationController
+    # The suite drives this one; see the note on SheetsController's forgery skip.
+    skip_forgery_protection only: %i[destroy_all]
     def index
       @sheets = Sheet.all.index_by(&:slug)
       @error = nil
@@ -33,11 +35,34 @@ module Cove
     def stop
       name = "cove-#{params[:slug]}"
       result = Podman.stop(name)
-      RouterConfig.write!
+      RouterConfig.write!(Plan.network_map)
       if result.ok?
         redirect_to pods_path, notice: "podman stopped #{name}"
       else
         redirect_to pod_path(params[:slug]), alert: "podman could not stop #{name}: #{result.message[0, 400]}"
+      end
+    end
+
+    # Evans' teardown row: every pod this Manager launched, gone, and nothing left
+    # standing on the Router. The answer is a redirect, because the page the caller
+    # should look at is the pod list — which is a query against the world, made after
+    # the fact, and therefore the only honest witness that the pods are gone.
+    def destroy_all
+      # The default is the acceptance fleet. `scope=all` levels the box and has to be
+      # asked for by name, because the caller that presses this most often is the crank
+      # every thirty minutes, and a routine measurement must never be able to take a
+      # hand's pod with it. A fence you have to walk around on purpose is a fence.
+      # "fixtures" (default) | "all" | one sheet's slug. Only the first is reachable
+      # by a bare POST, because the caller that presses this most often is the crank,
+      # and a routine measurement must never be able to take a hand's pod with it.
+      # A fence you have to walk around on purpose is a fence.
+      scope = params[:scope].to_s.strip
+      scope = "fixtures" if scope.empty?
+      result = Launch.destroy_all!(scope: scope)
+      if result.ok?
+        redirect_to pods_path, notice: result.message
+      else
+        redirect_to pods_path, alert: "teardown incomplete: #{result.message[0, 600]}"
       end
     end
 
