@@ -129,6 +129,25 @@ def await_handshake(timeout: 10.0)
   end
 end
 
+
+# The intent is the only place a service's address is decided, so both the row that
+# permits one and the row that checks one read it from there rather than from a literal.
+# R6 used to hardcode 10.88.0.3, which meant it was asserting against a number in its
+# own source rather than against what the Manager decided.
+def service_address(name)
+  text, _, ok = sudo_sh("cat #{COVE_STATE}/router.conf")
+  return nil unless ok
+
+  line = text.to_s.lines.find { |l| l.start_with?(%(service "#{name}")) }
+  return nil if line.nil?
+
+  addr = line[/address="([^"]*)"/, 1]
+  port = line[/port="([^"]*)"/, 1]
+  return nil if addr.to_s.empty? || port.to_s.empty?
+
+  [addr, port.to_i]
+end
+
 def pod_netns(name)
   out, = sh("sudo -n podman inspect #{name} --format '{{.State.Pid}}' 2>/dev/null")
   pid = out.strip
@@ -410,7 +429,8 @@ ROW_TABLE[6] = -> {
   #              forgejo's reply is addressed to 10.99.2.10, which the host routes
   #              `via 10.0.0.1 dev enp1s0` -- its LAN gateway, not the Router.
   # So the gate is a road with an on-ramp at one end and a return path at the other.
-  probe = "10.88.0.3"   # forgejo, from services.yml: always resolvable
+  probe, probe_port = service_address("forgejo")
+  return unmet(6, "the intent names no service called forgejo, so there is nothing to permit") if probe.nil?
   return unmet(6, "no Router") if in_router("iptables-save").first.nil?
   t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
   code, = post_form("/sheets/test-agent-a/permits", "services" => "forgejo")
@@ -419,7 +439,7 @@ ROW_TABLE[6] = -> {
 
   applied = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0) * 1000).round(0)
   pid = pod_netns("cove-test-agent-a")
-  rode = pid ? opens?(pid, probe, 3000, timeout: 4) : false
+  rode = pid ? opens?(pid, probe, probe_port, timeout: 4) : false
 
   # Emptying the list is the one state the row can restore without knowing what the
   # previous run left behind: whatever it was, the next rows set their own permits.
@@ -908,6 +928,45 @@ ROW_TABLE[22] = -> {
 
 }
 
+# 23. Every service the intent names answers at the address it names.
+#
+# 2026-11-22: the service book said `forgejo: 10.88.0.3:3000` and the container lived at
+# 10.88.0.71. Every SYN was forwarded by the Router to an address with no listener, and
+# distinguishing that from a shut road took two beats and three people, because no
+# instrument in this suite compares a document to the world. R6 measures an apply, R14
+# measures a road through the tunnel, and neither notices that the service it names does
+# not exist where it says it does.
+#
+# This is not a permit and not a packet through the tunnel: it is a liveness check of the
+# documents, from the host, against the addresses the Manager actually rendered. A service
+# addressed INSIDE the tunnel is a pod this Manager launched and is skipped here -- its
+# reachability is R14's business, not the book's.
+ROW_TABLE[23] = -> {
+  text, why, ok = sudo_sh("cat #{COVE_STATE}/router.conf")
+  return unmet(23, "could not read the intent: #{why}") unless ok
+
+  svcs = text.to_s.lines.grep(/^service /).map do |l|
+    [l[/service "([^"]*)"/, 1], l[/address="([^"]*)"/, 1], l[/port="([^"]*)"/, 1]]
+  end
+  return unmet(23, "the intent names no services, so there is nothing to check") if svcs.empty?
+
+  tunnel = ENV.fetch("COVE_TUNNEL_PREFIX", "10.99.")
+  outside = svcs.reject { |_n, a, _p| a.to_s.start_with?(tunnel) }
+  if outside.empty?
+    return unmet(23, "every service in the intent is inside the tunnel (#{tunnel}), so the book has no world-side addresses to check")
+  end
+
+  dead = outside.reject { |_n, a, p| tcp(a, p.to_i, timeout: 3) == :open }
+  if dead.empty?
+    met(23, "#{outside.size} world-side service(s) in the intent, every one answering at the address the book claims " \
+            "(#{outside.map { |n, a, p| "#{n}=#{a}:#{p}" }.join(', ')})")
+  else
+    fail!(23, "#{dead.size} of #{outside.size} world-side service(s) have nothing listening at the address the book " \
+              "claims: #{dead.map { |n, a, p| "#{n} (#{a}:#{p})" }.join(', ')}. No road to these can ever carry, and " \
+              "nothing else in this suite can tell a stale address from a shut road.")
+  end
+}
+
 # ---- --prove-instrument ----------------------------------------------------
 # Build both situations the suite must never miss, in a throwaway netns, and
 # require the check under test to catch each one.
@@ -952,7 +1011,7 @@ if ARGV.include?("--prove-instrument")
 elsif ARGV.include?("--list")
   puts "R0c  fixture set (test-agent-b, test-service-a, test-service-b) — built before any pod row"
   puts "R0d  the addresses the setup assigned are recorded as peers in the intent"
-  (1..22).each { |i| puts format("%2d  %s", i, ROW_TABLE[i] ? "implemented" : "—") }
+  (1..23).each { |i| puts format("%2d  %s", i, ROW_TABLE[i] ? "implemented" : "—") }
 else
   # Two runs in the same minute destroy each other's fixtures: one run's
   # destroy_all tears down the pods the other is still measuring, and the
@@ -978,7 +1037,7 @@ else
   BASELINE[:pods] = podman_names.grep(/^cove-test-/)
   puts "baseline host wg interfaces: #{BASELINE[:wg_ifaces].empty? ? '(none)' : BASELINE[:wg_ifaces].join(' ')}"
   puts
-  rows = wanted.empty? ? (1..22).to_a : wanted
+  rows = wanted.empty? ? (1..23).to_a : wanted
   build_fixtures if wanted.empty? || pod_dependent?(wanted)
   check_addresses_recorded if wanted.empty? || pod_dependent?(wanted)
   rows.each do |i|
