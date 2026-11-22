@@ -126,9 +126,10 @@ def apply(peers, permits, router, first:)
     end
     run!("ip", "link", "set", IFACE, "up")
   else
-    # The Router's key and listen port do not change on a re-apply (the Manager
-    # holds the key, spec §4), so the diff is peers only — and syncconf leaves the
-    # interface up, so established tunnels are not reset.
+    # The Router's key does not CHANGE on a re-apply (the Manager holds it, spec §4),
+    # so the diff is peers only — and syncconf leaves the interface up, so established
+    # tunnels are not reset. "Does not change" was read for a day as "does not need
+    # re-asserting", and that reading cost the fleet: see below.
     conf = +"[Interface]\n"
     conf << "ListenPort = #{router['listen']}\n"
     peers.each_value do |p|
@@ -139,6 +140,14 @@ def apply(peers, permits, router, first:)
     File.write(tmp, conf)
     run!("wg", "syncconf", IFACE, tmp)
     File.unlink(tmp)
+    run!("wg", "set", IFACE, "private-key", KEY, "listen-port", router["listen"].to_s)
+    # syncconf builds the device from this file's [Interface] block and CLEARS what
+    # the block does not name -- PrivateKey included. Measured on z620 2026-11-22:
+    # one in-place apply and `wg show wg0` printed no public key; four peers held
+    # endpoints and allowed-ips, every one of them went silent, and every row that
+    # reads the file still read a correct configuration. Setting the key by hand
+    # restored the four handshakes in under four seconds. So the key is re-asserted
+    # here, from the same read-only file, rather than pasted into /tmp.
   end
 
   # One atomic replace of the whole filter table: at no instant is the chain
