@@ -881,22 +881,31 @@ ROW_TABLE[22] = -> {
   sleep 1
   after, _, _ = sudo_sh("grep -E '^pubkey:' #{path}")
   recovered = after.to_s.split(":", 2)[1].to_s.strip.gsub("'", "")
-  peers, = in_router("wg show wg0 peers 2>/dev/null | wc -l")
+  peers_out, = in_router("wg show wg0 peers 2>/dev/null")
+  peer_present = peers_out.to_s.lines.map(&:strip).include?(key)
+
+  # Assert BEFORE tidying up. The first version tore the pod down first and then asked
+  # the Router whether the peer was there, so the answer was always "no" for a reason
+  # the row had just caused itself -- and then blamed the wrong conjunct in its message.
+  verdict =
+    if recovered == key && peer_present
+      [:met, "blanked #{slug}'s pubkey with its pod running; the Manager asked the pod and put it " \
+             "back (#{key[0, 8]}…), so no peer was subtracted and the pod never went dark (http #{code})"]
+    elsif recovered != key
+      [:fail, "#{slug} was blanked and the sheet did NOT come back: it holds " \
+              "#{recovered.empty? ? 'nothing' : recovered[0, 8] + '…'} (was #{key[0, 8]}…). " \
+              "Nothing will ever ask the pod what its key is, so the peer is gone for good."]
+    else
+      # Two conjuncts, two messages. A verdict that cannot say which half failed is the
+      # same fault as a refusal with an empty reason.
+      [:fail, "#{slug}'s sheet came back (#{key[0, 8]}…) but the Router holds no peer for it: " \
+              "the recovery healed the document and something subtracted the peer anyway (http #{code})."]
+    end
 
   # Leave the box as this row found it.
   post_form("/pods/destroy_all?scope=#{slug}", {}) if raised
+  verdict[0] == :met ? met(22, verdict[1]) : fail!(22, verdict[1])
 
-  if recovered == key && peers.to_s.strip.to_i.positive?
-    met(22, "blanked #{slug}'s pubkey with its pod running; the Manager asked the pod and put it back " \
-            "(#{key[0, 8]}…), so no peer was subtracted and the pod never went dark (http #{code})")
-  else
-    # Put the sheet back so the rest of the run is not measuring this row's damage.
-    sudo_sh(%(sed -i "s|^pubkey:.*|pubkey: #{key}|" #{path}))
-    fail!(22, "#{slug} was blanked and did NOT come back: sheet holds " \
-              "#{recovered.empty? ? 'nothing' : recovered[0, 8] + '…'} (was #{key[0, 8]}…), Router peers=" \
-              "#{peers.to_s.strip} (http #{code}). A live pod's peer was subtracted; the sheet has been " \
-              "restored by hand so the rest of this run is not measuring the damage.")
-  end
 }
 
 # ---- --prove-instrument ----------------------------------------------------
