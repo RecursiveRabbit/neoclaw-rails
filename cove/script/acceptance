@@ -384,7 +384,30 @@ ROW_TABLE[6] = -> {
   # So the ride is attempted WHILE the road is open, and it decides the label:
   #   crosses    -> MET, and the road still closes again
   #   does not   -> CONFIG, naming exactly why, because the apply half did happen
-  # It promotes itself the day baseline egress lands, with no edit needed.
+  #
+  # WHAT WOULD ACTUALLY PROMOTE IT, corrected 2026-11-22 by soro and then measured.
+  # An earlier version of this comment said the row "promotes itself the day baseline
+  # egress lands, with no edit needed". It would not have. The probe is forgejo at
+  # 10.88.0.3, which is outside 10.99.0.0/16, and a pod does not encrypt for a
+  # destination outside its peer's allowed-ips whatever the Router permits --
+  # allowed-ips is the pod's cryptokey routing table, not just an ACL. Baseline egress
+  # adds the model API destination, not 10.88.0.0/24.
+  #
+  # And it is worse than "would not have": under full-egress the pod's allowed-ips
+  # becomes 0.0.0.0/0, which DOES contain 10.88.0.3, so the row would have gone green
+  # for a reason it does not name -- the same defect as a MET that never carried a
+  # packet, one layer out.
+  #
+  # Measured, so that nobody has to re-derive it. Both halves are needed:
+  #   term 4  10.88.0.3/32 added to the pod's allowed-ips by hand
+  #           -> without it: "No route to host" in 1052 ms
+  #           -> with it:    the SYN leaves and crosses the tunnel
+  #   NAT     the Router translating the return path
+  #           -> without it: the connection still HANGS (rc=124 at 5005 ms); the
+  #              Router accepted the SYN (its FORWARD DROP counter did not move) and
+  #              forgejo's reply is addressed to 10.99.2.10, which the host routes
+  #              `via 10.0.0.1 dev enp1s0` -- its LAN gateway, not the Router.
+  # So the gate is a road with an on-ramp at one end and a return path at the other.
   probe = "10.88.0.3"   # forgejo, from services.yml: always resolvable
   return unmet(6, "no Router") if in_router("iptables-save").first.nil?
   t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
@@ -407,8 +430,9 @@ ROW_TABLE[6] = -> {
            "and closed again without a relaunch (http #{code}/#{code2})")
   else
     config(6, "permit applied in #{applied} ms and removed in one apply, no relaunch (http #{code}/#{code2}). " \
-              "READ, not ridden: no connection to #{probe}:3000 crossed, because the pod's peer allows only " \
-              "10.99.0.0/16. This row becomes MET by itself when baseline egress lands.")
+              "READ, not ridden: no connection to #{probe}:3000 crossed. It needs two things that do not " \
+              "exist yet — #{probe}/32 in the pod's allowed-ips (a pod does not encrypt outside it) and the " \
+              "Router translating the return path (measured: with the first alone the connection still hangs).")
   end
 }
 
