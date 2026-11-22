@@ -702,7 +702,18 @@ ROW_TABLE[16] = -> {
   fwd_before = ufw_count.call
   out, err, ok = nsented(a, "curl -sS -o /dev/null -w '%{http_code}' --max-time 8 https://theuncannyvalley.cc", timeout: 12)
   drops = ufw_count.call - fwd_before
-  forward_ok = drops.zero?
+  # Three-valued, because two were a lie. Zero fall-through means either "the host accepts
+  # pod packets" or "no pod packet was ever generated" -- and with term 4 absent, or with the
+  # fetch dying at name resolution first, the second is what happened. The first version of
+  # this printed `forward-accepts` for a run in which nothing was tested, which is the same
+  # fault as an empty refusal reason wearing a friendlier face.
+  forward = if !term4
+              "untested(term 4 absent: no pod packet can leave the tunnel)"
+            elsif drops.positive?
+              "DROPS(#{drops} fell through to the policy drop)"
+            else
+              "accepts"
+            end
 
   addr_out, = nsented(a, "ip -o -4 addr show wg0")
   pod_addr = addr_out.to_s[/inet (\d+\.\d+\.\d+\.\d+)/, 1]
@@ -723,7 +734,7 @@ ROW_TABLE[16] = -> {
                 end
 
   conditions = "term4=#{term4 ? 'present' : "ABSENT(#{term4_note})"} " \
-               "· forward-#{forward_ok ? 'accepts' : "DROPS(#{drops} fell through)"} " \
+               "· forward=#{forward} " \
                "· return-#{return_ok ? 'via Router' : "WRONG(#{route_line[0, 48]})"} " \
                "· subnet=#{subnet_note}"
 
