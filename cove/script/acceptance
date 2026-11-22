@@ -722,7 +722,11 @@ ROW_TABLE[16] = -> {
   end
 
   egress_cidr = allowed.split(",").find { |c| !c.start_with?("10.99.") }
-  egress_ip = egress_cidr.to_s.split("/").first
+  # """.split("/").first" is nil, not "". Two outcomes in my head (a CIDR or nothing) and
+  # three in Ruby (a CIDR, or an empty array whose first element is nil). The fourth law was
+  # written an hour before this line and did not save it, because I enumerated MY outcomes and
+  # not the language's.
+  egress_ip = egress_cidr.nil? ? "" : egress_cidr.split("/").first.to_s
   fwd_before = ufw_count.call
   tx_before = pod_tx.call
   nsented(a, "timeout 4 bash -c '</dev/tcp/#{egress_ip}/9'", timeout: 6) unless egress_ip.empty?
