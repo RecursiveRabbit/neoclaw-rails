@@ -84,28 +84,36 @@ end
 def await_handshake(timeout: 10.0)
   started = Time.now
   loop do
-    # `latest-handshakes`, plural. The singular is not a parameter of `wg show`: wg
-    # answers "Invalid parameter" and its usage text ON STDOUT, so a grep-shaped
-    # reader sees output and no error and waits out its whole timeout on a command
-    # that never ran. Measured 2026-11-20 on z620.
-    out, why, ok = in_router("wg show wg0 latest-handshakes 2>&1")
-    return [false, 0.0, "the Router could not be asked: #{why.to_s.strip.empty? ? 'no answer' : why.to_s.strip}"] unless ok
+    # Transport is soro's: parse the whole `wg show wg0` body rather than a
+    # subcommand, so the gate reads a wg build that lacks `latest-handshakes`.
+    # No `2>/dev/null` and no `2>&1` — silencing the instrument is how an empty
+    # reason got reported in the first place, and folding stderr into stdout would
+    # turn "no such device" into "no peers". `why` carries the Router's own words.
+    out, why, ok = in_router("wg show wg0")
+    unless ok
+      said = why.to_s.strip
+      return [false, 0.0, said.empty? ? "wg failed and said nothing" : said]
+    end
 
-    lines = out.to_s.lines.map(&:strip).reject(&:empty?)
-    if lines.empty?
-      # Nothing to wait for is a different claim from a peer that has not spoken.
-      return [false, 0.0, "the Router holds no peers to wait for"] if (Time.now - started) > 1.0
+    body = out.to_s
+    peers = body.scan(/^peer: /).size
+    shook = body.scan(/latest handshake: \d/).size
+    waited = (Time.now - started).round(1)
+
+    # Nothing to wait for is a different claim from a peer that has not spoken, and
+    # "0/0 handshook" says neither. Give the Router's render one second to land, then
+    # name the empty case, because R20 and R11 both read that answer as a fact.
+    if peers.zero?
+      return [false, 0.0, "the Router holds no peers to wait for"] if waited > 1.0
       sleep 0.25
       next
     end
 
-    spoken = lines.reject { |l| l.split.last.to_s == "0" }
-    waited = (Time.now - started).round(1)
-    return [true, waited, "#{lines.size} peer(s)"] if spoken.size == lines.size
-    if (Time.now - started) > timeout
+    return [true, waited, "#{peers} peer(s)"] if shook == peers
+    if waited > timeout
       # A refusal that cannot say why is a failure with extra steps.
-      return [false, waited, "#{spoken.size}/#{lines.size} handshook within #{timeout}s " \
-                             "(#{lines.size - spoken.size} silent)"]
+      return [false, waited, "#{shook}/#{peers} handshook within #{timeout}s " \
+                             "(#{peers - shook} silent)"]
     end
     sleep 0.25
   end
@@ -530,12 +538,19 @@ ROW_TABLE[14] = -> {
 ROW_TABLE[15] = -> {
   a = pod_netns("cove-test-agent-a") or return unmet(15, "no test-agent-a")
   b = pod_netns("cove-test-agent-b") or return unmet(15, "no test-agent-b")
+  # Same guard as R11, and for the same reason: a peer that never handshook
+  # reaches nobody, so a star test passes for the trivial reason. R15 went green
+  # on 064f59a while three of four peers had no handshake at all — a false green
+  # wearing a leak test as a costume.
+  settled, waited, note = await_handshake
+  return unmet(15, "no Router peer handshake to wait for (#{note})") unless settled
   ab, = nsented(a, "ping -c 1 -W 2 10.99.2.11")
   ba, = nsented(b, "ping -c 1 -W 2 10.99.2.10")
+  tail = "(#{note}, settled in #{waited}s)"
   if ab.include?("1 received") || ba.include?("1 received")
-    fail!(15, "agent pods can address each other — the star is broken")
+    fail!(15, "agent pods can address each other — the star is broken #{tail}")
   else
-    met(15, "agent-a ✗ agent-b, agent-b ✗ agent-a")
+    met(15, "agent-a ✗ agent-b, agent-b ✗ agent-a #{tail}")
   end
 }
 
