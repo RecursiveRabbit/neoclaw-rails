@@ -24,6 +24,15 @@ module Cove
   module Launch
     PEER_WAIT = Float(ENV.fetch("COVE_PEER_WAIT", "10"))
 
+    # The teardown's fence.
+    #
+    # A fixture is a sheet whose slug the acceptance suite names, and every one of them
+    # begins with `test-`. Anything else on this box was made by a hand, and a hand's pod
+    # is not a fixture however it is labelled. Before this fence, a button pressed by the
+    # crank every thirty minutes and a button pressed by a person were the same event,
+    # and only one of those two callers can be trusted with it.
+    FIXTURE_PREFIX = "test-"
+
     Result = Struct.new(:ok, :message, :facts, keyword_init: true) do
       def ok? = !!ok
     end
@@ -126,18 +135,25 @@ module Cove
         false
       end
 
-      def destroy_all!
+      def destroy_all!(scope: :fixtures)
         # The list of things to destroy comes from the WORLD, not from the documents:
         # every pod carrying the managed label except the Router. Measuring taught
-        # this the hard way today — a sheet-derived list left one pod standing because
+        # this the hard way — a sheet-derived list left one pod standing because
         # `podman container exists` answered for a name before its pod was listed,
         # and a teardown that walks the documents inherits every disagreement between
         # the documents and the world. A sheet is a document; a teardown destroys pods.
-        names = Podman.run(*Cove.sudo_prefix, "podman", "ps", "--filter", "label=cove.managed=1",
-                           "--format", "{{.Names}}").stdout.split("\n").map(&:strip)
+        world = Podman.run(*Cove.sudo_prefix, "podman", "ps", "--filter", "label=cove.managed=1",
+                           "--format", "{{.Names}}").stdout.split("\n").map(&:strip).reject(&:empty?)
+
+        # Scope is applied AFTER the world list, never to the documents. Narrowing the
+        # sheets first would hide a pod instead of sparing it, and a teardown that
+        # cannot see a pod cannot report that it left it standing.
+        wide = scope.to_sym == :all
+        names = world.select { |n| n != RouterPod::NAME && (wide || n.start_with?("cove-#{FIXTURE_PREFIX}")) }
+        spared = world - names - [RouterPod::NAME]
+
         doomed = Sheet.all.select { |s| names.include?(s.pod_name) }
-        orphans = names.reject { |n| n.empty? || n == RouterPod::NAME }
-                        .reject { |n| doomed.any? { |s| s.pod_name == n } }
+        orphans = names.reject { |n| doomed.any? { |s| s.pod_name == n } }
         failures = []
         doomed.each do |s|
           r = destroy!(s)
@@ -153,11 +169,16 @@ module Cove
           failures << "#{n}: #{r.message}" unless r.ok?
         end
 
+        # The answer names the fence and what it declined to touch. A teardown whose
+        # report does not say what it spared is how you find out later, from the wreckage.
+        label = wide ? "scope all" : "scope test fixtures"
+        note = spared.empty? ? "" : "; left standing, outside scope: #{spared.join(' ')}"
         if failures.empty?
           gone = (doomed.map(&:pod_name) + orphans)
-          Result.new(ok: true, message: gone.empty? ? "no pods to destroy" : "destroyed #{gone.join(' ')}")
+          Result.new(ok: true,
+                     message: "#{gone.empty? ? 'no pods in scope' : "destroyed #{gone.join(' ')}"} (#{label}#{note})")
         else
-          Result.new(ok: false, message: failures.join("; "))
+          Result.new(ok: false, message: "#{failures.join('; ')} (#{label}#{note})")
         end
       rescue Cove::DocumentError => e
         Result.new(ok: false, message: e.message)

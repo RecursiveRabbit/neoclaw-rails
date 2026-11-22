@@ -48,7 +48,12 @@ module Cove
     # should look at is the pod list — which is a query against the world, made after
     # the fact, and therefore the only honest witness that the pods are gone.
     def destroy_all
-      result = Launch.destroy_all!
+      # The default is the acceptance fleet. `scope=all` levels the box and has to be
+      # asked for by name, because the caller that presses this most often is the crank
+      # every thirty minutes, and a routine measurement must never be able to take a
+      # hand's pod with it. A fence you have to walk around on purpose is a fence.
+      scope = params[:scope].to_s == "all" ? :all : :fixtures
+      result = Launch.destroy_all!(scope: scope)
       if result.ok?
         redirect_to pods_path, notice: result.message
       else
