@@ -35,6 +35,15 @@
 #      measure. When the precondition is false the dependent part says
 #      `untested(precondition false: <the part that failed>)` -- never a bare `untested`,
 #      which cannot be told from "we forgot to run that part", and never a value.
+#      The preference between the two shapes, from soro: a part that CAN measure its own
+#      precondition does so; a part that cannot says it is untested. What a part must never
+#      do is borrow the row's evidence and answer for it.
+#      And the missing member of a value list is almost always the degenerate one. For every
+#      value an instrument handles, ask what it does with the empty string, the empty list,
+#      zero, nil, and absent -- an enumeration short by one is usually short there, and a
+#      case written from the happy path never visits it. Two failures in one week came from
+#      exactly that: `"".split("/")` is [] in Ruby and [''] in Python, and `to_i` on the
+#      output of a command that did not run is 0, which reads as a measurement.
 #
 # It runs against a clone, never a working copy (the slice-one lesson is row zero):
 # a dirty tree or an unrecorded head is a FAIL before any system row is attempted.
@@ -712,9 +721,14 @@ ROW_TABLE[16] = -> {
   # a value for a condition nothing measured. Now the row generates its own literal-IP probe
   # to an address term 4 actually covers, and reads the pod's own transmit counter to prove a
   # packet left. If none left, the part says so and names what stopped it.
+  # nil, not 0, when it cannot be read. `nft` is not in need_instruments! and a missing
+  # binary, a permission problem or a renamed chain all produce empty output, and
+  # "".to_i == 0 would then read as "no packets fell through" -- a green on a condition
+  # nothing measured. Found by asking this instrument soro's question: what does it do with
+  # the degenerate case?
   ufw_count = lambda do
-    out, = sudo_sh("nft list chain ip filter FORWARD 2>/dev/null | awk '/jump ufw-before-forward/{print $3}'")
-    out.to_s.strip.to_i
+    out, _err, ok = sudo_sh("nft list chain ip filter FORWARD 2>/dev/null | awk '/jump ufw-before-forward/{print $3}'")
+    ok && !out.to_s.strip.empty? ? out.to_s.strip.to_i : nil
   end
   pod_tx = lambda do
     o, = nsented(a, "wg show wg0 transfer")
@@ -731,8 +745,11 @@ ROW_TABLE[16] = -> {
   tx_before = pod_tx.call
   nsented(a, "timeout 4 bash -c '</dev/tcp/#{egress_ip}/9'", timeout: 6) unless egress_ip.empty?
   left = pod_tx.call > tx_before
-  drops = ufw_count.call - fwd_before
-  forward = if egress_ip.empty?
+  fwd_after = ufw_count.call
+  drops = (fwd_before.nil? || fwd_after.nil?) ? nil : fwd_after - fwd_before
+  forward = if fwd_before.nil? || fwd_after.nil?
+              "untested(precondition false: the host's fall-through counter could not be read, so nothing here was measured)"
+            elsif egress_ip.empty?
               "untested(precondition false: term4=ABSENT, so no destination outside the tunnel is permitted)"
             elsif !left
               "untested(precondition false: no packet left the pod for #{egress_ip}, so the host's forward path was not exercised)"
