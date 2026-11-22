@@ -430,7 +430,7 @@ ROW_TABLE[9] = -> {
 # 10. All four reach the Router.
 ROW_TABLE[10] = -> {
   settled, waited, note = await_handshake
-  return unmet(10, "no Router peer handshake to wait for (#{note})") unless settled
+  return unmet(10, note) unless settled
   fails = []
   %w[cove-test-agent-a cove-test-agent-b cove-test-service-a cove-test-service-b].each do |n|
     pid = pod_netns(n) or next fails << "#{n}: no pod"
@@ -465,7 +465,7 @@ ROW_TABLE[11] = -> {
   # A leak test is only as good as the link being up: a tunnel that has not
   # handshaked leaks nothing for the trivial reason. Wait, then try.
   settled, waited, note = await_handshake
-  return unmet(11, "no Router peer handshake to wait for (#{note})") unless settled
+  return unmet(11, note) unless settled
   to_host, = nsented(a, "ping -c 1 -W 2 10.99.0.3")
   to_b, = nsented(a, "ping -c 1 -W 2 10.99.2.11")
   leaked = []
@@ -518,7 +518,7 @@ ROW_TABLE[14] = -> {
   # to tell a dead route from a slow peer. The wait is his; the packet below is a
   # connection, because a permit names a port.
   settled, waited, note = await_handshake
-  return unmet(14, "no Router peer handshake to wait for (#{note})") unless settled
+  return unmet(14, note) unless settled
 
   res = []
   { "cove-test-agent-a" => { "cove-test-service-a" => "10.99.1.10",
@@ -543,7 +543,7 @@ ROW_TABLE[15] = -> {
   # on 064f59a while three of four peers had no handshake at all — a false green
   # wearing a leak test as a costume.
   settled, waited, note = await_handshake
-  return unmet(15, "no Router peer handshake to wait for (#{note})") unless settled
+  return unmet(15, note) unless settled
   ab, = nsented(a, "ping -c 1 -W 2 10.99.2.11")
   ba, = nsented(b, "ping -c 1 -W 2 10.99.2.10")
   tail = "(#{note}, settled in #{waited}s)"
@@ -557,7 +557,7 @@ ROW_TABLE[15] = -> {
 ROW_TABLE[16] = -> {
   a = pod_netns("cove-test-agent-a") or return unmet(16, "no test-agent-a")
   settled, waited, note = await_handshake
-  return unmet(16, "no Router peer handshake to wait for (#{note})") unless settled
+  return unmet(16, note) unless settled
   out, err, ok = nsented(a, "curl -sS -o /dev/null -w '%{http_code}' --max-time 8 https://theuncannyvalley.cc", timeout: 12)
   tail = "(#{note}, settled in #{waited}s)"
   (ok && out.strip == "200") ? met(16, "agent-a downloaded from theuncannyvalley.cc (the explicit hole) #{tail}") :
@@ -574,6 +574,20 @@ ROW_TABLE[16] = -> {
  [18, "test-service-b", "test-service-a", "10.99.1.11", "10.99.1.10"]].each do |row, kept, removed, kept_ip, removed_ip|
   ROW_TABLE[row] = -> {
     pid = pod_netns("cove-test-agent-a") or return unmet(row, "test-agent-a has no pod")
+
+    # A road cannot be measured over a dead tunnel. Without this, "rides=NO" sends a
+    # reader into the permit code for a fault one layer down, and in the run of
+    # 2026-11-22 it did exactly that: 3 of 4 peers had never handshaked, so every
+    # road read closed and the row reported the permits as the reason. R10 owns
+    # "the star is up"; this row only owns "which road is open". The suite's own law:
+    # a missing prerequisite is UNMET with the reason, never a skip and never a pass.
+    reach, = nsented(pid, "ping -c 1 -W 2 10.99.0.1")
+    unless reach.to_s.include?("1 received")
+      return unmet(row, "agent-a cannot reach the Router, so its own peer has not handshaked and no road " \
+                        "can be measured: a packet that never left cannot show which road was open. " \
+                        "Row 10 owns this.")
+    end
+
     code, = post_form("/sheets/test-agent-a/permits", "services" => kept)
     return fail!(row, "permit API answered #{code}") unless (200..399).cover?(code)
 
