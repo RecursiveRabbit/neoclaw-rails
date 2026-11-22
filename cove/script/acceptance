@@ -25,10 +25,31 @@
 #      `--prove-instrument` builds both situations on purpose and requires this suite
 #      to catch each one. A guard that cannot fail is the defect.
 #
+#   4. ENUMERATE THE OUTCOMES BEFORE WRITING THE BRANCH. A two-branch instrument is always
+#      making a claim about the third case, silently, in whichever branch the unmeasured
+#      input falls into -- which is why the same defect turned up three times in one week in
+#      three different rows, written by someone who had just fixed the previous one. If the
+#      value list comes first, the branches have to fit it; if the branches come first they
+#      fit each other and lie about the rest.
+#      And: a row may not report on a condition whose PRECONDITION it did not itself
+#      measure. When the precondition is false the dependent part says
+#      `untested(precondition false: <the part that failed>)` -- never a bare `untested`,
+#      which cannot be told from "we forgot to run that part", and never a value.
+#      The preference between the two shapes, from soro: a part that CAN measure its own
+#      precondition does so; a part that cannot says it is untested. What a part must never
+#      do is borrow the row's evidence and answer for it.
+#      And the missing member of a value list is almost always the degenerate one. For every
+#      value an instrument handles, ask what it does with the empty string, the empty list,
+#      zero, nil, and absent -- an enumeration short by one is usually short there, and a
+#      case written from the happy path never visits it. Two failures in one week came from
+#      exactly that: `"".split("/")` is [] in Ruby and [''] in Python, and `to_i` on the
+#      output of a command that did not run is 0, which reads as a measurement.
+#
 # It runs against a clone, never a working copy (the slice-one lesson is row zero):
 # a dirty tree or an unrecorded head is a FAIL before any system row is attempted.
 
 require "open3"
+require "ipaddr"
 require "json"
 require "time"
 
@@ -41,6 +62,15 @@ COVE_STATE = ENV.fetch("COVE_STATE", "/home/sexton/cove-state").freeze
 NOW = Time.now.utc.iso8601
 
 ROWS = []
+
+# Rows that are red for reasons this repository cannot fix. Not a colour and not an excuse:
+# they stay FAIL and they stay counted. The summary line says which of them is nobody's
+# work this afternoon, so the red keeps its meaning instead of becoming weather.
+BLOCKED_ON = {
+  16 => "ops (host forward accept + return route) and Evans (subnet move); 1 of its 4 conditions is in this repo",
+  24 => "Evans or ops (move Cove's tunnel subnet off a live /24)"
+}.freeze
+
 
 def say(id, status, detail)
   ROWS << [id, status, detail]
@@ -127,6 +157,25 @@ def await_handshake(timeout: 10.0)
     end
     sleep 0.25
   end
+end
+
+
+# The intent is the only place a service's address is decided, so both the row that
+# permits one and the row that checks one read it from there rather than from a literal.
+# R6 used to hardcode 10.88.0.3, which meant it was asserting against a number in its
+# own source rather than against what the Manager decided.
+def service_address(name)
+  text, _, ok = sudo_sh("cat #{COVE_STATE}/router.conf")
+  return nil unless ok
+
+  line = text.to_s.lines.find { |l| l.start_with?(%(service "#{name}")) }
+  return nil if line.nil?
+
+  addr = line[/address="([^"]*)"/, 1]
+  port = line[/port="([^"]*)"/, 1]
+  return nil if addr.to_s.empty? || port.to_s.empty?
+
+  [addr, port.to_i]
 end
 
 def pod_netns(name)
@@ -410,7 +459,8 @@ ROW_TABLE[6] = -> {
   #              forgejo's reply is addressed to 10.99.2.10, which the host routes
   #              `via 10.0.0.1 dev enp1s0` -- its LAN gateway, not the Router.
   # So the gate is a road with an on-ramp at one end and a return path at the other.
-  probe = "10.88.0.3"   # forgejo, from services.yml: always resolvable
+  probe, probe_port = service_address("forgejo")
+  return unmet(6, "the intent names no service called forgejo, so there is nothing to permit") if probe.nil?
   return unmet(6, "no Router") if in_router("iptables-save").first.nil?
   t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
   code, = post_form("/sheets/test-agent-a/permits", "services" => "forgejo")
@@ -419,7 +469,7 @@ ROW_TABLE[6] = -> {
 
   applied = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0) * 1000).round(0)
   pid = pod_netns("cove-test-agent-a")
-  rode = pid ? opens?(pid, probe, 3000, timeout: 4) : false
+  rode = pid ? opens?(pid, probe, probe_port, timeout: 4) : false
 
   # Emptying the list is the one state the row can restore without knowing what the
   # previous run left behind: whatever it was, the next rows set their own permits.
@@ -636,62 +686,120 @@ ROW_TABLE[16] = -> {
   settled, waited, note = await_handshake
   return unmet(16, note) unless settled
 
-  # WHAT THIS ROW MEASURES, said before the measurements, because the first version
-  # of it implied a causal chain that does not exist. `nsented` enters only --net:
-  # the fetch below is the HOST's curl running in the POD's network namespace, so it
-  # resolves with the HOST's /etc/resolv.conf, and the pod's own resolver is not on
-  # this row's path at all. Measured 2026-11-22 — with `nameserver 1.1.1.1` written
-  # into the pod by hand, `ip route get 1.1.1.1` still answered `dev wg0` and
-  # `> /dev/tcp/1.1.1.1/443` still answered "No route to host", because the pod's
-  # peer on the Router carries allowed-ips 10.99.0.0/16 and nothing outside the
-  # THE FOUR LAYERS AND THEIR SIGNATURES, so a failure can be located rather than
-  # guessed. Measured on z620 2026-11-22 inside a live agent pod, and benched
-  # independently by soro in a throwaway netns:
+  # WHAT THIS ROW MEASURES, said before the measurements. `nsented` enters only --net, so
+  # the fetch below is the HOST's curl in the POD's netns: it resolves with the host's
+  # /etc/resolv.conf, and the pod's own resolver is not on this row's path. Measured
+  # 2026-11-22: with a pod resolver written in by hand, `ip route get 1.1.1.1` still
+  # answered `dev wg0` and the packet still died one hop later.
   #
-  #   layer 1  pod default route    absent  -> ENETUNREACH at once (~0 ms)
-  #   layer 2  peer allowed-ips     narrow  -> EHOSTUNREACH after ~1 s ("No route to host")
-  #   layer 3  Router FORWARD rule  absent  -> silent drop; connect hangs
-  #   layer 4  NAT / masquerade     absent  -> silent drop; connect hangs
+  # IT IS A COMPOUND, AND A COMPOUND THAT ONLY SAYS "FAIL" WITHHOLDS PROGRESS. Four
+  # independent things have to be true and none of them is Cove's alone. Land any three and
+  # a bare FAIL reads identically to landing none -- so each condition is measured and
+  # printed, in the same claim shape the document rows use, and the person who lands one
+  # sees it acknowledged:
   #
-  # Layer 1 is PRESENT, so the "does the default route survive the netns move"
-  # question is answered for a launched pod and the answer is yes:
-  # `ip route show table all` gives `default dev wg0 scope link`, wg0 is UP,LOWER_UP,
-  # and `ip route get 1.1.1.1` answers `dev wg0 src 10.99.2.10`.
+  #   term4     the destination is inside the pod's allowed-ips (Soro's fourth term; also
+  #             the pod's INGRESS filter, which is why it must be here and not just in the
+  #             Router's rules)
+  #   forward   a pod-sourced packet does not fall through the host's chains to the policy
+  #             drop -- measured with the same ufw-before-forward counter that located it
+  #   return    the host routes the pod's subnet back through the Router, not its LAN
+  #   subnet    the plan does not overlap a network this host already holds
   #
-  # Layers 2, 3 and 4 are ONE change wearing four hats, and fixing 2 alone makes the
-  # failure WORSE to read rather than better. Measured: with allowed-ips 10.99.0.0/16
-  # a connect to 1.1.1.1:443 fails in 1011 ms with an error; widened to 0.0.0.0/0 by
-  # hand the SYN crosses the tunnel (the Router's peer receive counter moved
-  # 980 -> 1460 bytes) and is then dropped by `Chain FORWARD (policy DROP)` with no
-  # matching rule, and the connect hangs past 6 s. Slower and quieter. There is no
-  # useful partial fix here, and this row must not be "cleared" by adding a route.
-  #
-  # tunnel has key material. So this is a NETWORK-PATH row. The pod's resolver is
-  # reported as a fact about the pod and marked as not on the path, so that nobody
-  # reads "resolver ABSENT" as the reason the fetch failed.
-  resolv, _, resolv_ok = nsent_file(a, "/etc/resolv.conf")
-  pod_resolver = if resolv_ok && !resolv.to_s.strip.empty?
-                   "present (#{resolv.to_s.lines.first.to_s.strip[0, 60]})"
-                 else
-                   "ABSENT (no /etc/resolv.conf in the pod)"
-                 end
+  # The four DNS answers of the egress ruling cannot be printed yet: there is no resolver
+  # in the pod, so there is no answer to classify. When one exists this row must say which
+  # of REFUSED / NXDOMAIN / SERVFAIL / an address the pod got, for an in-set name and an
+  # out-of-set name. Writing that now would be code no run can exercise.
   allowed_text, = nsented(a, "wg show wg0 allowed-ips")
-  allowed = allowed_text.to_s.lines.map { |l| l.split.last }.compact.uniq.join(" ")
-  exited, = nsented(a, "timeout 6 bash -c 'echo > /dev/tcp/1.1.1.1/443' 2>&1", timeout: 8)
-  refused = exited.to_s.include?("No route to host") || exited.to_s.include?("not permitted")
+  allowed = allowed_text.to_s.lines.map { |l| l.split.last }.compact.uniq.join(",")
+  term4_note = allowed.empty? ? "unknown" : allowed
+  term4 = !allowed.empty? && (allowed.split(",").any? { |c| !c.start_with?("10.99.") })
+
+  # `forward` carries its own precondition. Counting the host's fall-through counter around
+  # the ROW'S FETCH was wrong twice over: with no resolver the fetch dies at name resolution
+  # and generates no packet at all, so zero fall-through got reported as "the host accepts" --
+  # a value for a condition nothing measured. Now the row generates its own literal-IP probe
+  # to an address term 4 actually covers, and reads the pod's own transmit counter to prove a
+  # packet left. If none left, the part says so and names what stopped it.
+  # nil, not 0, when it cannot be read. `nft` is not in need_instruments! and a missing
+  # binary, a permission problem or a renamed chain all produce empty output, and
+  # "".to_i == 0 would then read as "no packets fell through" -- a green on a condition
+  # nothing measured. Found by asking this instrument soro's question: what does it do with
+  # the degenerate case?
+  ufw_count = lambda do
+    out, _err, ok = sudo_sh("nft list chain ip filter FORWARD 2>/dev/null | awk '/jump ufw-before-forward/{print $3}'")
+    ok && !out.to_s.strip.empty? ? out.to_s.strip.to_i : nil
+  end
+  pod_tx = lambda do
+    o, = nsented(a, "wg show wg0 transfer")
+    o.to_s.lines.map { |l| l.split[2].to_i }.sum
+  end
+
+  egress_cidr = allowed.split(",").find { |c| !c.start_with?("10.99.") }
+  # """.split("/").first" is nil, not "". Two outcomes in my head (a CIDR or nothing) and
+  # three in Ruby (a CIDR, or an empty array whose first element is nil). The fourth law was
+  # written an hour before this line and did not save it, because I enumerated MY outcomes and
+  # not the language's.
+  egress_ip = egress_cidr.nil? ? "" : egress_cidr.split("/").first.to_s
+  fwd_before = ufw_count.call
+  tx_before = pod_tx.call
+  nsented(a, "timeout 4 bash -c '</dev/tcp/#{egress_ip}/9'", timeout: 6) unless egress_ip.empty?
+  left = pod_tx.call > tx_before
+  fwd_after = ufw_count.call
+  drops = (fwd_before.nil? || fwd_after.nil?) ? nil : fwd_after - fwd_before
+  forward = if fwd_before.nil? || fwd_after.nil?
+              "untested(precondition false: the host's fall-through counter could not be read, so nothing here was measured)"
+            elsif egress_ip.empty?
+              "untested(precondition false: term4=ABSENT, so no destination outside the tunnel is permitted)"
+            elsif !left
+              "untested(precondition false: no packet left the pod for #{egress_ip}, so the host's forward path was not exercised)"
+            elsif drops.positive?
+              "DROPS(#{drops} of the pod's packets fell through to the policy drop)"
+            else
+              "accepts(#{egress_ip} left the pod and did not fall through)"
+            end
 
   out, err, ok = nsented(a, "curl -sS -o /dev/null -w '%{http_code}' --max-time 8 https://theuncannyvalley.cc", timeout: 12)
+
+  addr_out, = nsented(a, "ip -o -4 addr show wg0")
+  pod_addr = addr_out.to_s[/inet (\d+\.\d+\.\d+\.\d+)/, 1]
+  plan_text, = sudo_sh("cat #{COVE_STATE}/plan.yml")
+  transport = plan_text.to_s[/transport:\s*(\S+)/, 1]
+  route_out, = sh("ip route get #{pod_addr} 2>/dev/null")
+  route_line = route_out.to_s.strip.lines.first.to_s.strip
+  return_state =
+    if pod_addr.to_s.empty?
+      "untested(precondition false: the pod holds no wg0 address to route back to)"
+    elsif transport.to_s.empty?
+      "untested(precondition false: plan.yml names no router transport, so there is nothing to compare the route against)"
+    elsif route_out.to_s.include?(transport.to_s)
+      "via Router(#{transport})"
+    else
+      "WRONG(#{route_line[0, 48]})"
+    end
+
+  occupancy = plan_occupancy
+  subnet_note = if occupancy.nil?
+                  "untested(precondition false: plan.yml or this host's addresses could not be read)"
+                elsif occupancy[:collides]
+                  "COLLIDES(#{occupancy[:occupied].map { |i, ad| "#{ad} on #{i}" }.join('+')}#{occupancy[:clash] ? " / router on #{occupancy[:clash][0]}" : ''})"
+                else
+                  "free"
+                end
+
+  conditions = "term4=#{term4 ? 'present' : "ABSENT(#{term4_note})"} " \
+               "· forward=#{forward} " \
+               "· return=#{return_state} " \
+               "· subnet=#{subnet_note}"
+
+  resolv, _re, _rok = nsent_file(a, "/etc/resolv.conf")
+  dns = resolv.to_s.strip.empty? ? "ABSENT(no /etc/resolv.conf in the pod)" : "present(#{resolv.to_s.lines.first.to_s.strip[0, 40]})"
   tail = "(#{note}, settled in #{waited}s)"
+
   if ok && out.strip == "200"
-    met(16, "the pod's namespace reached theuncannyvalley.cc #{tail}; pod resolver #{pod_resolver} (not on this path)")
+    met(16, "the pod's namespace reached theuncannyvalley.cc #{tail} — #{conditions} · dns=#{dns}")
   else
-    why = []
-    why << "no road out of the tunnel: a packet for 1.1.1.1:443 answers " +
-           (refused ? '"No route to host"' : "nothing") +
-           ", and the pod's peer allows only #{allowed.empty? ? 'nothing' : allowed}"
-    why << "fetch answered #{out.strip} #{err.strip[0, 60]}"
-    why << "pod resolver #{pod_resolver} — a fact about the pod, NOT this row's path: the fetch runs the host's curl in the pod's netns, so it resolves with the host's resolver"
-    fail!(16, "egress failed — #{why.join('; ')} #{tail}")
+    fail!(16, "egress failed #{tail} — #{conditions} · dns=#{dns} · fetch answered #{out.strip} #{err.strip[0, 50]}")
   end
 }
 
@@ -908,6 +1016,131 @@ ROW_TABLE[22] = -> {
 
 }
 
+
+# The plan's claim on the world, measured once and shared. R24 reports it as a document
+# assertion; R16 prints it as one of its four conditions. Two rows, one measurement --
+# a second computation of the same fact is a second thing to drift.
+def plan_occupancy
+  text, _, ok = sudo_sh("cat #{COVE_STATE}/plan.yml")
+  return nil unless ok
+
+  network = text.to_s[/^network:\s*(\S+)/, 1]
+  router_addr = text.to_s[/^\s+address:\s*(\S+)/, 1]
+  return nil if network.nil?
+
+  plan_net = (IPAddr.new(network) rescue nil)
+  return nil if plan_net.nil?
+
+  addrs, = sh("ip -o -4 addr show")
+  host = addrs.to_s.lines.map { |l| [l.split[1].to_s, l.split[3].to_s.split("/").first] }
+  occupied = host.reject { |i, _a| i == "lo" }.select do |_i, a|
+    (IPAddr.new(a) rescue nil) && plan_net.include?(IPAddr.new(a))
+  end
+  r_ip = router_addr.to_s.split("/").first
+  clash = r_ip.empty? ? nil : host.find { |_i, a| a == r_ip }
+
+  { network: network, router_addr: router_addr, occupied: occupied, clash: clash,
+    collides: !(occupied.empty? && clash.nil?) }
+end
+
+# ---- document assertions ---------------------------------------------------
+#
+# A document in this system is not prose: every one of them asserts something about the
+# world, and until today nothing in this suite checked those assertions against it. Three
+# of the five faults behind the egress investigation were exactly that gap:
+#
+#   services.yml      "forgejo is at 10.88.0.3:3000"   nothing was there at all
+#   plan.yml          "the tunnel is 10.99.0.0/16"     a live /24 sat inside it, and its
+#                                                     router address was the host's own
+#   plan.rb           "a peer allowed a subnet the Router does not route is a permit to
+#                     nowhere"                        a property asserted in a comment,
+#                                                     never once measured
+#
+# The rule these rows share: an assertion is checkable or it is a rumour. Each row takes
+# one document, extracts what it claims about the world, and names every claim that is
+# false -- so a document that has quietly stopped being true says which sentence.
+#
+# Not to be confused with CONFIG: CONFIG is "the claim was a reading and the reading
+# matched". These rows go and look, so their answer is MET or FAIL.
+def document_assertions(id, document, claims)
+  if claims.empty?
+    return unmet(id, "#{document} makes no assertion this row knows how to check")
+  end
+
+  falsehoods = claims.reject { |_c, ok| ok }.map(&:first)
+  if falsehoods.empty?
+    met(id, "#{document}: #{claims.size} assertion(s) about the world, every one true " \
+            "(#{claims.map(&:first).join('; ')})")
+  else
+    fail!(id, "#{document}: #{falsehoods.size} of #{claims.size} assertion(s) about the world are FALSE — " \
+              "#{falsehoods.join('; ')}")
+  end
+end
+
+# 23. Every service the intent names answers at the address it names.
+#
+# 2026-11-22: the service book said `forgejo: 10.88.0.3:3000` and the container lived at
+# 10.88.0.71. Every SYN was forwarded by the Router to an address with no listener, and
+# distinguishing that from a shut road took two beats and three people, because no
+# instrument in this suite compares a document to the world. R6 measures an apply, R14
+# measures a road through the tunnel, and neither notices that the service it names does
+# not exist where it says it does.
+#
+# This is not a permit and not a packet through the tunnel: it is a liveness check of the
+# documents, from the host, against the addresses the Manager actually rendered. A service
+# addressed INSIDE the tunnel is a pod this Manager launched and is skipped here -- its
+# reachability is R14's business, not the book's.
+ROW_TABLE[23] = -> {
+  text, why, ok = sudo_sh("cat #{COVE_STATE}/router.conf")
+  return unmet(23, "could not read the intent: #{why}") unless ok
+
+  svcs = text.to_s.lines.grep(/^service /).map do |l|
+    [l[/service "([^"]*)"/, 1], l[/address="([^"]*)"/, 1], l[/port="([^"]*)"/, 1]]
+  end
+  return unmet(23, "the intent names no services, so there is nothing to check") if svcs.empty?
+
+  tunnel = ENV.fetch("COVE_TUNNEL_PREFIX", "10.99.")
+  outside = svcs.reject { |_n, a, _p| a.to_s.start_with?(tunnel) }
+  if outside.empty?
+    return unmet(23, "every service in the intent is inside the tunnel (#{tunnel}), so the book has no world-side addresses to check")
+  end
+
+  dead = outside.reject { |_n, a, p| tcp(a, p.to_i, timeout: 3) == :open }
+  if dead.empty?
+    met(23, "#{outside.size} world-side service(s) in the intent, every one answering at the address the book claims " \
+            "(#{outside.map { |n, a, p| "#{n}=#{a}:#{p}" }.join(', ')})")
+  else
+    fail!(23, "#{dead.size} of #{outside.size} world-side service(s) have nothing listening at the address the book " \
+              "claims: #{dead.map { |n, a, p| "#{n} (#{a}:#{p})" }.join(', ')}. No road to these can ever carry, and " \
+              "nothing else in this suite can tell a stale address from a shut road.")
+  end
+}
+
+# 24. Every subnet and address plan.yml claims is the plan's alone.
+#
+# The plan says the numbers are a decision and not a default. It does not, and has never,
+# said whether the numbers are still FREE. Measured on z620 2026-11-22: the tunnel
+# 10.99.0.0/16 contains podman4's 10.99.0.1/24, a bridge with three containers of an
+# unrelated test stack on it, and the Router's own address 10.99.0.1/16 is that same
+# bridge's address. That is why the host routes a pod's reply to its LAN gateway: on this
+# host, "10.99.0.1" is already somebody.
+ROW_TABLE[24] = -> {
+  plan = plan_occupancy
+  return unmet(24, "could not read plan.yml or this host's addresses") if plan.nil?
+
+  claims = []
+  claims << [plan[:occupied].empty? ? "the tunnel #{plan[:network]} holds no address this host already has" :
+                                       "the tunnel #{plan[:network]} ALREADY holds #{plan[:occupied].map { |i, a| "#{a} on #{i}" }.join(', ')}",
+             plan[:occupied].empty?]
+  unless plan[:router_addr].to_s.split("/").first.to_s.empty?
+    claims << [plan[:clash].nil? ? "the Router address #{plan[:router_addr]} is not already an address on this host" :
+                                   "the Router address #{plan[:router_addr]} IS this host's own #{plan[:clash][0]} address",
+               plan[:clash].nil?]
+  end
+
+  document_assertions(24, "plan.yml", claims)
+}
+
 # ---- --prove-instrument ----------------------------------------------------
 # Build both situations the suite must never miss, in a throwaway netns, and
 # require the check under test to catch each one.
@@ -952,7 +1185,7 @@ if ARGV.include?("--prove-instrument")
 elsif ARGV.include?("--list")
   puts "R0c  fixture set (test-agent-b, test-service-a, test-service-b) — built before any pod row"
   puts "R0d  the addresses the setup assigned are recorded as peers in the intent"
-  (1..22).each { |i| puts format("%2d  %s", i, ROW_TABLE[i] ? "implemented" : "—") }
+  (1..24).each { |i| puts format("%2d  %s", i, ROW_TABLE[i] ? "implemented" : "—") }
 else
   # Two runs in the same minute destroy each other's fixtures: one run's
   # destroy_all tears down the pods the other is still measuring, and the
@@ -978,7 +1211,7 @@ else
   BASELINE[:pods] = podman_names.grep(/^cove-test-/)
   puts "baseline host wg interfaces: #{BASELINE[:wg_ifaces].empty? ? '(none)' : BASELINE[:wg_ifaces].join(' ')}"
   puts
-  rows = wanted.empty? ? (1..22).to_a : wanted
+  rows = wanted.empty? ? (1..24).to_a : wanted
   build_fixtures if wanted.empty? || pod_dependent?(wanted)
   check_addresses_recorded if wanted.empty? || pod_dependent?(wanted)
   rows.each do |i|
@@ -990,7 +1223,11 @@ else
     begin
       fn.call
     rescue StandardError => e
-      fail!(i, "#{e.class}: #{e.message[0, 120]}")
+      # Where it broke, not only what it said. An exception inside a row is the one case
+      # this suite cannot describe honestly by design -- it is a bug in the instrument --
+      # so at least give the reader the line.
+      where = (e.backtrace || []).find { |b| b.include?("acceptance") }.to_s.split(":").last(2).join(":")
+      fail!(i, "#{e.class}: #{e.message[0, 120]}" + (where.empty? ? "" : " at #{where}"))
     end
   end
   counts = ROWS.group_by { |r| r[1] }.transform_values(&:size)
@@ -998,6 +1235,15 @@ else
   puts counts.map { |k, v| "#{v} #{k}" }.join(", ")
   fails = counts["FAIL"].to_i
   unmets = counts["UNMET"].to_i
+  # A red nobody can fix in this repo is a different object from a red somebody can. Not a
+  # new colour -- the FAIL keeps its force and stays in the count -- but a line under the
+  # tally saying whether any of it is the reader's. A false red trains people to ignore the
+  # instrument; a permanent true red does it more slowly and more thoroughly.
+  blocked = ROWS.select { |r| r[1] == "FAIL" && BLOCKED_ON.key?(r[0]) }
+  if blocked.any?
+    puts "FAIL: #{counts['FAIL'].to_i - blocked.size} actionable in this repo, #{blocked.size} awaiting a decision outside it"
+    blocked.each { |id, _s| puts "  R#{id} \u2190 #{BLOCKED_ON[id]}" }
+  end
   puts "green only if 0 FAIL and 0 UNMET — UNMET is not a pass in this suite."
   # Read by people and by a crank, and read twice this week as "almost MET". It is
   # not a stage: CONFIG means the row's claim was a reading and the reading matched.

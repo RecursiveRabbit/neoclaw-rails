@@ -2,7 +2,14 @@ services:
   # A service is a name and an address. Nothing else is the Manager's business.
   # Evans: edit this file with any editor; the Manager re-reads it on every render
   # and on every page load. Names here are the two the spec used as examples.
+  #
+  # CORRECTED 2026-11-22. Both addresses below were wrong, and nothing in the system
+  # compared them to the world: forgejo resolved to a container at 10.88.0.71, vikunja
+  # to a listener on 10.0.0.2, and the two addresses written here had nothing behind
+  # them at all. Every SYN to them was forwarded by the Router and died at a host with
+  # no one to answer, which reads exactly like a shut road — it cost three people two
+  # beats to tell apart. R23 now compares this file to the world on every run.
   - name: forgejo
-    address: 10.88.0.3:3000
+    address: 10.88.0.71:3000
   - name: vikunja
-    address: 10.88.0.4:3456
+    address: 10.0.0.2:3456

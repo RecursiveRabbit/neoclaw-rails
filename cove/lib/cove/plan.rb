@@ -67,8 +67,15 @@ module Cove
       def router_listen   = data.dig("router", "listen").to_i
       def router_transport = data.dig("router", "transport").to_s
       # The tunnel subnet, as a CIDR, for a peer's allowed-ips. Derived from the
-      # router's own address so the two cannot drift apart: a peer allowed a
-      # subnet the Router does not route is a permit to nowhere.
+      # router's own address so the two cannot drift apart.
+      #
+      # "A peer allowed a subnet the Router does not route is a permit to nowhere" stood
+      # here as a comment for three days and was never once measured -- the exact shape
+      # of the fault it describes. It is measured now, from both ends: R6 and R16 ride
+      # what the pod will actually encrypt for, R8 asserts every pod's default route,
+      # and R22 proves a pod that loses its peer identity gets it back rather than being
+      # silently subtracted. A property asserted in prose is a rumour until a row says
+      # otherwise, so this comment now names its rows instead of being one.
       def wg_net          = data["network"].to_s
       def router_ip       = router_address.split("/").first.to_s
       def router_port     = router_listen
