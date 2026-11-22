@@ -199,6 +199,12 @@ module Cove
       # Any mutation anywhere calls this; there is nowhere else to call.
       def write!(net = nil)
         agents = Sheet.all
+        # Before the render, heal any sheet that has an address but has lost its public
+        # key. A peer line needs both, so a sheet missing its key renders as absent and
+        # the Router subtracts a LIVE pod's peer -- measured, twice, with nothing
+        # reported. See Cove::Recover for why the repair is possible and why it lives
+        # here: this is the one function every intent change passes through.
+        Cove::Recover.identities!(agents)
         # NOT ServiceBook.all. A service is a name and an address, and it can come
         # from two places: the book (things already running somewhere) and a
         # service-kind sheet (a thing this Manager launched on the tunnel). The plan
