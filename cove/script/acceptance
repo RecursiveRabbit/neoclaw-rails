@@ -575,6 +575,28 @@ ROW_TABLE[16] = -> {
   # into the pod by hand, `ip route get 1.1.1.1` still answered `dev wg0` and
   # `> /dev/tcp/1.1.1.1/443` still answered "No route to host", because the pod's
   # peer on the Router carries allowed-ips 10.99.0.0/16 and nothing outside the
+  # THE FOUR LAYERS AND THEIR SIGNATURES, so a failure can be located rather than
+  # guessed. Measured on z620 2026-11-22 inside a live agent pod, and benched
+  # independently by soro in a throwaway netns:
+  #
+  #   layer 1  pod default route    absent  -> ENETUNREACH at once (~0 ms)
+  #   layer 2  peer allowed-ips     narrow  -> EHOSTUNREACH after ~1 s ("No route to host")
+  #   layer 3  Router FORWARD rule  absent  -> silent drop; connect hangs
+  #   layer 4  NAT / masquerade     absent  -> silent drop; connect hangs
+  #
+  # Layer 1 is PRESENT, so the "does the default route survive the netns move"
+  # question is answered for a launched pod and the answer is yes:
+  # `ip route show table all` gives `default dev wg0 scope link`, wg0 is UP,LOWER_UP,
+  # and `ip route get 1.1.1.1` answers `dev wg0 src 10.99.2.10`.
+  #
+  # Layers 2, 3 and 4 are ONE change wearing four hats, and fixing 2 alone makes the
+  # failure WORSE to read rather than better. Measured: with allowed-ips 10.99.0.0/16
+  # a connect to 1.1.1.1:443 fails in 1011 ms with an error; widened to 0.0.0.0/0 by
+  # hand the SYN crosses the tunnel (the Router's peer receive counter moved
+  # 980 -> 1460 bytes) and is then dropped by `Chain FORWARD (policy DROP)` with no
+  # matching rule, and the connect hangs past 6 s. Slower and quieter. There is no
+  # useful partial fix here, and this row must not be "cleared" by adding a route.
+  #
   # tunnel has key material. So this is a NETWORK-PATH row. The pod's resolver is
   # reported as a fact about the pod and marked as not on the path, so that nobody
   # reads "resolver ABSENT" as the reason the fetch failed.
