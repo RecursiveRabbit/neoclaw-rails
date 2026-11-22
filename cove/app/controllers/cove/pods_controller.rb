@@ -52,7 +52,12 @@ module Cove
       # asked for by name, because the caller that presses this most often is the crank
       # every thirty minutes, and a routine measurement must never be able to take a
       # hand's pod with it. A fence you have to walk around on purpose is a fence.
-      scope = params[:scope].to_s == "all" ? :all : :fixtures
+      # "fixtures" (default) | "all" | one sheet's slug. Only the first is reachable
+      # by a bare POST, because the caller that presses this most often is the crank,
+      # and a routine measurement must never be able to take a hand's pod with it.
+      # A fence you have to walk around on purpose is a fence.
+      scope = params[:scope].to_s.strip
+      scope = "fixtures" if scope.empty?
       result = Launch.destroy_all!(scope: scope)
       if result.ok?
         redirect_to pods_path, notice: result.message

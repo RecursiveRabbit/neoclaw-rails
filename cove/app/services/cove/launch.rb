@@ -135,6 +135,14 @@ module Cove
         false
       end
 
+      def label_for(sel)
+        case sel.to_s
+        when "all"      then "scope all"
+        when "fixtures" then "scope test fixtures"
+        else "scope one sheet: #{sel}"
+        end
+      end
+
       def destroy_all!(scope: :fixtures)
         # The list of things to destroy comes from the WORLD, not from the documents:
         # every pod carrying the managed label except the Router. Measuring taught
@@ -148,8 +156,23 @@ module Cove
         # Scope is applied AFTER the world list, never to the documents. Narrowing the
         # sheets first would hide a pod instead of sparing it, and a teardown that
         # cannot see a pod cannot report that it left it standing.
-        wide = scope.to_sym == :all
-        names = world.select { |n| n != RouterPod::NAME && (wide || n.start_with?("cove-#{FIXTURE_PREFIX}")) }
+        #
+        # Three scopes, and only one of them can be reached by a bare POST:
+        #   "fixtures" (default) — the acceptance fleet, by slug prefix;
+        #   "all"                — the box-level teardown, by name only;
+        #   "<slug>"             — exactly one sheet, so a test row can prove the fence
+        #                          on a box that might be holding somebody else's pod.
+        sel = scope.to_s
+        names =
+          case sel
+          when "all"      then world - [RouterPod::NAME]
+          when "fixtures" then world.select { |n| n != RouterPod::NAME && n.start_with?("cove-#{FIXTURE_PREFIX}") }
+          else
+            sheet = Sheet.find(sel)
+            return Result.new(ok: false, message: "no sheet named #{sel} (#{label_for('fixtures')} is the default)") if sheet.nil?
+
+            world & [sheet.pod_name]
+          end
         spared = world - names - [RouterPod::NAME]
 
         doomed = Sheet.all.select { |s| names.include?(s.pod_name) }
@@ -171,7 +194,7 @@ module Cove
 
         # The answer names the fence and what it declined to touch. A teardown whose
         # report does not say what it spared is how you find out later, from the wreckage.
-        label = wide ? "scope all" : "scope test fixtures"
+        label = label_for(sel)
         note = spared.empty? ? "" : "; left standing, outside scope: #{spared.join(' ')}"
         if failures.empty?
           gone = (doomed.map(&:pod_name) + orphans)
