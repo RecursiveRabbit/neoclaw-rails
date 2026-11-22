@@ -29,6 +29,7 @@
 # a dirty tree or an unrecorded head is a FAIL before any system row is attempted.
 
 require "open3"
+require "ipaddr"
 require "json"
 require "time"
 
@@ -928,6 +929,40 @@ ROW_TABLE[22] = -> {
 
 }
 
+# ---- document assertions ---------------------------------------------------
+#
+# A document in this system is not prose: every one of them asserts something about the
+# world, and until today nothing in this suite checked those assertions against it. Three
+# of the five faults behind the egress investigation were exactly that gap:
+#
+#   services.yml      "forgejo is at 10.88.0.3:3000"   nothing was there at all
+#   plan.yml          "the tunnel is 10.99.0.0/16"     a live /24 sat inside it, and its
+#                                                     router address was the host's own
+#   plan.rb           "a peer allowed a subnet the Router does not route is a permit to
+#                     nowhere"                        a property asserted in a comment,
+#                                                     never once measured
+#
+# The rule these rows share: an assertion is checkable or it is a rumour. Each row takes
+# one document, extracts what it claims about the world, and names every claim that is
+# false -- so a document that has quietly stopped being true says which sentence.
+#
+# Not to be confused with CONFIG: CONFIG is "the claim was a reading and the reading
+# matched". These rows go and look, so their answer is MET or FAIL.
+def document_assertions(id, document, claims)
+  if claims.empty?
+    return unmet(id, "#{document} makes no assertion this row knows how to check")
+  end
+
+  falsehoods = claims.reject { |_c, ok| ok }.map(&:first)
+  if falsehoods.empty?
+    met(id, "#{document}: #{claims.size} assertion(s) about the world, every one true " \
+            "(#{claims.map(&:first).join('; ')})")
+  else
+    fail!(id, "#{document}: #{falsehoods.size} of #{claims.size} assertion(s) about the world are FALSE — " \
+              "#{falsehoods.join('; ')}")
+  end
+end
+
 # 23. Every service the intent names answers at the address it names.
 #
 # 2026-11-22: the service book said `forgejo: 10.88.0.3:3000` and the container lived at
@@ -965,6 +1000,52 @@ ROW_TABLE[23] = -> {
               "claims: #{dead.map { |n, a, p| "#{n} (#{a}:#{p})" }.join(', ')}. No road to these can ever carry, and " \
               "nothing else in this suite can tell a stale address from a shut road.")
   end
+}
+
+# 24. Every subnet and address plan.yml claims is the plan's alone.
+#
+# The plan says the numbers are a decision and not a default. It does not, and has never,
+# said whether the numbers are still FREE. Measured on z620 2026-11-22: the tunnel
+# 10.99.0.0/16 contains podman4's 10.99.0.1/24, a bridge with three containers of an
+# unrelated test stack on it, and the Router's own address 10.99.0.1/16 is that same
+# bridge's address. That is why the host routes a pod's reply to its LAN gateway: on this
+# host, "10.99.0.1" is already somebody.
+ROW_TABLE[24] = -> {
+  plan_text, why, ok = sudo_sh("cat #{COVE_STATE}/plan.yml")
+  return unmet(24, "could not read plan.yml: #{why}") unless ok
+
+  network = plan_text.to_s[/^network:\s*(\S+)/, 1]
+  router_addr = plan_text.to_s[/^\s+address:\s*(\S+)/, 1]
+  return unmet(24, "plan.yml names no network") if network.nil?
+
+  begin
+    plan_net = IPAddr.new(network)
+  rescue StandardError => e
+    return fail!(24, "plan.yml network #{network.inspect} does not parse: #{e.message}")
+  end
+
+  addrs, _, aok = sh("ip -o -4 addr show")
+  return unmet(24, "could not read this host's addresses") unless aok
+  host = addrs.to_s.lines.map { |l| [l.split[1].to_s, l.split[3].to_s.split("/").first] }
+
+  occupied = host.reject { |iface, _a| iface == "lo" }.select do |_iface, a|
+    (IPAddr.new(a) rescue nil) && plan_net.include?(IPAddr.new(a))
+  end
+
+  claims = []
+  claims << [occupied.empty? ? "the tunnel #{network} holds no address this host already has" :
+                               "the tunnel #{network} ALREADY holds #{occupied.map { |i, a| "#{a} on #{i}" }.join(', ')}",
+             occupied.empty?]
+
+  r_ip = router_addr.to_s.split("/").first
+  unless r_ip.empty?
+    clash = host.find { |_iface, a| a == r_ip }
+    claims << [clash.nil? ? "the Router address #{router_addr} is not already an address on this host" :
+                            "the Router address #{router_addr} IS this host's own #{clash[0]} address",
+               clash.nil?]
+  end
+
+  document_assertions(24, "plan.yml", claims)
 }
 
 # ---- --prove-instrument ----------------------------------------------------
@@ -1011,7 +1092,7 @@ if ARGV.include?("--prove-instrument")
 elsif ARGV.include?("--list")
   puts "R0c  fixture set (test-agent-b, test-service-a, test-service-b) — built before any pod row"
   puts "R0d  the addresses the setup assigned are recorded as peers in the intent"
-  (1..23).each { |i| puts format("%2d  %s", i, ROW_TABLE[i] ? "implemented" : "—") }
+  (1..24).each { |i| puts format("%2d  %s", i, ROW_TABLE[i] ? "implemented" : "—") }
 else
   # Two runs in the same minute destroy each other's fixtures: one run's
   # destroy_all tears down the pods the other is still measuring, and the
@@ -1037,7 +1118,7 @@ else
   BASELINE[:pods] = podman_names.grep(/^cove-test-/)
   puts "baseline host wg interfaces: #{BASELINE[:wg_ifaces].empty? ? '(none)' : BASELINE[:wg_ifaces].join(' ')}"
   puts
-  rows = wanted.empty? ? (1..23).to_a : wanted
+  rows = wanted.empty? ? (1..24).to_a : wanted
   build_fixtures if wanted.empty? || pod_dependent?(wanted)
   check_addresses_recorded if wanted.empty? || pod_dependent?(wanted)
   rows.each do |i|
