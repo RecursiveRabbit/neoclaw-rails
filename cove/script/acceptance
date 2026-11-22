@@ -417,14 +417,29 @@ ROW_TABLE[7] = -> {
 
 # 8. Each pod has no network access except through WireGuard.
 ROW_TABLE[8] = -> {
+  # Two claims, and the second one is here because nobody had ever checked it.
+  # One: each pod sees exactly lo + wg0. Two: each pod has a DEFAULT ROUTE via wg0.
+  # `Cove::Network` adds the address after moving the device into the pod's netns and
+  # adds the default route immediately after, and nothing has ever re-read it -- so
+  # "does the route survive the move" was an open question carried for two days and
+  # argued over instead of looked at. Measured 2026-11-22: it survives. It is a row
+  # now so that it cannot become a memory.
   bad = []
   %w[cove-test-agent-a cove-test-agent-b cove-test-service-a cove-test-service-b].each do |n|
     pid = pod_netns(n) or next bad << "#{n}: no pod"
     out, = nsented(pid, "ip -o link show | awk -F': ' '{print $2}' | grep -v lo")
     ifaces = out.split("\n").map(&:strip).reject(&:empty?)
-    bad << "#{n}: #{ifaces.join(',')}" unless ifaces == ["wg0"]
+    bad << "#{n}: interfaces #{ifaces.join(',')}" unless ifaces == ["wg0"]
+    routes, = nsented(pid, "ip route show")
+    default = routes.to_s.lines.find { |l| l.start_with?("default ") }
+    if default.nil?
+      bad << "#{n}: no default route (#{routes.to_s.strip.split('\n').first.to_s[0, 60]})"
+    elsif !default.include?("dev wg0")
+      bad << "#{n}: default route is not via wg0 (#{default.strip[0, 60]})"
+    end
   end
-  bad.empty? ? met(8, "all four see exactly lo + wg0") : fail!(8, bad.join(" | "))
+  bad.empty? ? met(8, "all four see exactly lo + wg0, and all four have a default route via wg0") :
+    fail!(8, bad.join(" | "))
 }
 
 # 9. Neither agent reaches host services.
