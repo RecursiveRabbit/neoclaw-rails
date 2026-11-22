@@ -152,11 +152,15 @@ module Cove
       # with no address cannot be permitted. So "not yet launched" renders as
       # absent, and the sheet's services render as unresolved — never as a guess.
       #
-      # No endpoint is written for a pod peer, and that is deliberate: with the
-      # host-born ordering the pod's UDP socket is opened on the host, so its source
-      # port is the host's to choose and the Manager does not know it. The Router
-      # learns it from the first handshake, and persistent-keepalive makes sure
-      # there is one.
+      # An endpoint IS written for a pod peer (see peer_endpoint). This paragraph used
+      # to say the opposite, and it was read as the opposite for three days: with the
+      # host-born ordering the pod's UDP socket is opened on the host at the underlay
+      # gateway, which the Manager DOES know, so the endpoint is renderable and the
+      # Router does not have to wait to learn it. The old text argued that it could
+      # not be known and that the Router would learn it from the first handshake --
+      # which was true of the build on the box and false of this code, and the gap
+      # between the two cost a day. A comment that is a true sentence about a
+      # different program is the fault, not the fix.
       def network_map
         peers = {}
         Sheet.all.sort_by(&:slug).each do |s|

@@ -558,10 +558,32 @@ ROW_TABLE[16] = -> {
   a = pod_netns("cove-test-agent-a") or return unmet(16, "no test-agent-a")
   settled, waited, note = await_handshake
   return unmet(16, note) unless settled
+
+  # Three different layers can stop an egress fetch and they have three different
+  # owners, so the detail names the FIRST one missing rather than the last one that
+  # failed. Measured 2026-11-22, and soro's ordering from his review of the same
+  # failure: no resolver in the pod at all, then no route into the tunnel
+  # (allowed-ips 10.99.0.0/16, so a packet for 1.1.1.1 never enters wg0), then no
+  # NAT at the Router. Only the third is Router-side. A row that says "could not
+  # resolve" against a pod with no /etc/resolv.conf sends a reader to the DNS
+  # question when the pod could not have resolved anything at all -- and did, for
+  # one run this morning.
+  resolv, = nsented(a, "cat /etc/resolv.conf 2>&1")
+  resolver_missing = resolv.to_s.strip.empty? || resolv.to_s.include?("No such file")
+  route, = nsented(a, "timeout 6 bash -c 'echo > /dev/tcp/1.1.1.1/443' && echo ROUTED", timeout: 8)
+  no_egress_route = !route.to_s.include?("ROUTED")
+
   out, err, ok = nsented(a, "curl -sS -o /dev/null -w '%{http_code}' --max-time 8 https://theuncannyvalley.cc", timeout: 12)
   tail = "(#{note}, settled in #{waited}s)"
-  (ok && out.strip == "200") ? met(16, "agent-a downloaded from theuncannyvalley.cc (the explicit hole) #{tail}") :
-    fail!(16, "egress failed: #{out.strip} #{err.strip[0, 80]} #{tail}")
+  if ok && out.strip == "200"
+    met(16, "agent-a downloaded from theuncannyvalley.cc (the explicit hole) #{tail}")
+  else
+    stopped = []
+    stopped << "no resolver: /etc/resolv.conf #{resolver_missing ? 'is absent' : 'is present'}" if resolver_missing
+    stopped << "no route into the tunnel: a packet for 1.1.1.1:443 does not leave the pod" if no_egress_route
+    stopped << "fetch answered #{out.strip} #{err.strip[0, 60]}"
+    fail!(16, "egress failed — stopped at the first missing layer: #{stopped.join('; ')} #{tail}")
+  end
 }
 
 # 17/18: remove ONE road and prove the other still rides.
