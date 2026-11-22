@@ -831,6 +831,15 @@ else
   puts
   puts counts.map { |k, v| "#{v} #{k}" }.join(", ")
   fails = counts["FAIL"].to_i
+  unmets = counts["UNMET"].to_i
   puts "green only if 0 FAIL and 0 UNMET — UNMET is not a pass in this suite."
-  exit(fails.zero? ? 0 : 1)
+  # Enforced, not merely printed. This exited on FAIL alone, so a run with five
+  # UNMETs and no FAIL exited 0 while the sentence above it said the opposite.
+  # This file's first law has always been that a missing prerequisite is UNMET with
+  # the reason, "never a skip, never a pass"; the exit code was the one place that
+  # law was not applied. A suite that could not measure must not report success --
+  # the same shape as router.conf's header, and the same shape as the Router apply
+  # that reported success with no identity: prose and code telling different stories
+  # about the same artefact.
+  exit((fails + unmets).zero? ? 0 : 1)
 end
