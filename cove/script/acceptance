@@ -854,7 +854,17 @@ ROW_TABLE[21] = -> {
 ROW_TABLE[22] = -> {
   slug = "test-agent-b"
   pod = "cove-test-agent-b"
-  return unmet(22, "#{pod} is not running — nothing to lose an identity for") unless podman_names.include?(pod)
+  # Row 19 has already torn the fixture set down by the time this row runs, so it
+  # stands up its own pod and takes it away again. A row that needs a pod must not
+  # inherit one from a row it cannot see, and it must not leave one behind on a board
+  # whose last rows assert there are none.
+  raised = false
+  unless podman_names.include?(pod)
+    post_form("/sheets/#{slug}/start", {})
+    sleep 3
+    raised = true
+    return unmet(22, "#{pod} could not be started, so there is nothing to lose an identity for") unless podman_names.include?(pod)
+  end
 
   path = "#{COVE_STATE}/agents/#{slug}.yml"
   before, _, ok = sudo_sh("grep -E '^pubkey:' #{path}")
@@ -872,6 +882,9 @@ ROW_TABLE[22] = -> {
   after, _, _ = sudo_sh("grep -E '^pubkey:' #{path}")
   recovered = after.to_s.split(":", 2)[1].to_s.strip.gsub("'", "")
   peers, = in_router("wg show wg0 peers 2>/dev/null | wc -l")
+
+  # Leave the box as this row found it.
+  post_form("/pods/destroy_all?scope=#{slug}", {}) if raised
 
   if recovered == key && peers.to_s.strip.to_i.positive?
     met(22, "blanked #{slug}'s pubkey with its pod running; the Manager asked the pod and put it back " \
