@@ -204,7 +204,14 @@ module Cove
         # the Router subtracts a LIVE pod's peer -- measured, twice, with nothing
         # reported. See Cove::Recover for why the repair is possible and why it lives
         # here: this is the one function every intent change passes through.
-        Cove::Recover.identities!(agents)
+        healed = Cove::Recover.identities!(agents)
+        # The map the caller passed was built from the sheets as they were BEFORE the
+        # heal, so a recovered peer is missing from it -- the repair applied after the
+        # thing it repairs had already been read. R22 caught exactly this: the sheet came
+        # back and the Router still held no peer for it. Recompute whenever something
+        # actually changed; when nothing did, the caller's map is still true and costs
+        # nothing.
+        net = Plan.network_map if net && !healed.empty?
         # NOT ServiceBook.all. A service is a name and an address, and it can come
         # from two places: the book (things already running somewhere) and a
         # service-kind sheet (a thing this Manager launched on the tunnel). The plan
