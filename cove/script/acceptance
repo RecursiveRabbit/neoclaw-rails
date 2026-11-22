@@ -843,11 +843,6 @@ else
   # Such a row never promised a packet, so no packet can promote it.
   puts "CONFIG is not a stage between MET and FAIL — it means the claim was a reading and" \
        " the reading matched; that row never promised a packet, so no packet can promote it."
-  # Read by people and by a crank, and read twice this week as "almost MET". It is
-  # not a stage: CONFIG means the row's claim was a reading and the reading matched.
-  # Such a row never promised a packet, so no packet can promote it.
-  puts "CONFIG is not a stage between MET and FAIL — it means the claim was a reading and" \
-       " the reading matched; that row never promised a packet, so no packet can promote it."
   # Enforced, not merely printed. This exited on FAIL alone, so a run with five
   # UNMETs and no FAIL exited 0 while the sentence above it said the opposite.
   # This file's first law has always been that a missing prerequisite is UNMET with
