@@ -75,6 +75,14 @@ def nsented(path, cmd, timeout: 15)
   sudo_sh("nsenter --net=#{path} #{cmd}", timeout: timeout)
 end
 
+# A file read has to enter the MOUNT namespace as well. `nsented` enters only --net,
+# so `nsented(pid, "cat /etc/resolv.conf")` reads the HOST's file and answers a
+# question nobody asked. Measured 2026-11-22: the pod has no /etc/resolv.conf at all,
+# and the first version of row 16 reported the resolver as present because of this.
+def nsent_file(path, file, timeout: 8)
+  sudo_sh("nsenter --net=#{path} --mount=#{path} cat #{file} 2>&1", timeout: timeout)
+end
+
 # A fresh WireGuard peer carries nothing until it has handshaked, and the first
 # ICMP to leave before that is dropped. Measured 2026-11-20: R10 reported the
 # Router unreachable, and the same ping by hand three minutes later answered 2/2
@@ -568,7 +576,7 @@ ROW_TABLE[16] = -> {
   # resolve" against a pod with no /etc/resolv.conf sends a reader to the DNS
   # question when the pod could not have resolved anything at all -- and did, for
   # one run this morning.
-  resolv, = nsented(a, "cat /etc/resolv.conf 2>&1")
+  resolv, = nsent_file(a, "/etc/resolv.conf")
   resolver_missing = resolv.to_s.strip.empty? || resolv.to_s.include?("No such file")
   route, = nsented(a, "timeout 6 bash -c 'echo > /dev/tcp/1.1.1.1/443' && echo ROUTED", timeout: 8)
   no_egress_route = !route.to_s.include?("ROUTED")
