@@ -43,6 +43,15 @@ NOW = Time.now.utc.iso8601
 
 ROWS = []
 
+# Rows that are red for reasons this repository cannot fix. Not a colour and not an excuse:
+# they stay FAIL and they stay counted. The summary line says which of them is nobody's
+# work this afternoon, so the red keeps its meaning instead of becoming weather.
+BLOCKED_ON = {
+  16 => "ops (host forward accept + return route) and Evans (subnet move); 1 of its 4 conditions is in this repo",
+  24 => "Evans or ops (move Cove's tunnel subnet off a live /24)"
+}.freeze
+
+
 def say(id, status, detail)
   ROWS << [id, status, detail]
   printf("%-4s %-7s %s\n", id, status, detail)
@@ -657,62 +666,75 @@ ROW_TABLE[16] = -> {
   settled, waited, note = await_handshake
   return unmet(16, note) unless settled
 
-  # WHAT THIS ROW MEASURES, said before the measurements, because the first version
-  # of it implied a causal chain that does not exist. `nsented` enters only --net:
-  # the fetch below is the HOST's curl running in the POD's network namespace, so it
-  # resolves with the HOST's /etc/resolv.conf, and the pod's own resolver is not on
-  # this row's path at all. Measured 2026-11-22 — with `nameserver 1.1.1.1` written
-  # into the pod by hand, `ip route get 1.1.1.1` still answered `dev wg0` and
-  # `> /dev/tcp/1.1.1.1/443` still answered "No route to host", because the pod's
-  # peer on the Router carries allowed-ips 10.99.0.0/16 and nothing outside the
-  # THE FOUR LAYERS AND THEIR SIGNATURES, so a failure can be located rather than
-  # guessed. Measured on z620 2026-11-22 inside a live agent pod, and benched
-  # independently by soro in a throwaway netns:
+  # WHAT THIS ROW MEASURES, said before the measurements. `nsented` enters only --net, so
+  # the fetch below is the HOST's curl in the POD's netns: it resolves with the host's
+  # /etc/resolv.conf, and the pod's own resolver is not on this row's path. Measured
+  # 2026-11-22: with a pod resolver written in by hand, `ip route get 1.1.1.1` still
+  # answered `dev wg0` and the packet still died one hop later.
   #
-  #   layer 1  pod default route    absent  -> ENETUNREACH at once (~0 ms)
-  #   layer 2  peer allowed-ips     narrow  -> EHOSTUNREACH after ~1 s ("No route to host")
-  #   layer 3  Router FORWARD rule  absent  -> silent drop; connect hangs
-  #   layer 4  NAT / masquerade     absent  -> silent drop; connect hangs
+  # IT IS A COMPOUND, AND A COMPOUND THAT ONLY SAYS "FAIL" WITHHOLDS PROGRESS. Four
+  # independent things have to be true and none of them is Cove's alone. Land any three and
+  # a bare FAIL reads identically to landing none -- so each condition is measured and
+  # printed, in the same claim shape the document rows use, and the person who lands one
+  # sees it acknowledged:
   #
-  # Layer 1 is PRESENT, so the "does the default route survive the netns move"
-  # question is answered for a launched pod and the answer is yes:
-  # `ip route show table all` gives `default dev wg0 scope link`, wg0 is UP,LOWER_UP,
-  # and `ip route get 1.1.1.1` answers `dev wg0 src 10.99.2.10`.
+  #   term4     the destination is inside the pod's allowed-ips (Soro's fourth term; also
+  #             the pod's INGRESS filter, which is why it must be here and not just in the
+  #             Router's rules)
+  #   forward   a pod-sourced packet does not fall through the host's chains to the policy
+  #             drop -- measured with the same ufw-before-forward counter that located it
+  #   return    the host routes the pod's subnet back through the Router, not its LAN
+  #   subnet    the plan does not overlap a network this host already holds
   #
-  # Layers 2, 3 and 4 are ONE change wearing four hats, and fixing 2 alone makes the
-  # failure WORSE to read rather than better. Measured: with allowed-ips 10.99.0.0/16
-  # a connect to 1.1.1.1:443 fails in 1011 ms with an error; widened to 0.0.0.0/0 by
-  # hand the SYN crosses the tunnel (the Router's peer receive counter moved
-  # 980 -> 1460 bytes) and is then dropped by `Chain FORWARD (policy DROP)` with no
-  # matching rule, and the connect hangs past 6 s. Slower and quieter. There is no
-  # useful partial fix here, and this row must not be "cleared" by adding a route.
-  #
-  # tunnel has key material. So this is a NETWORK-PATH row. The pod's resolver is
-  # reported as a fact about the pod and marked as not on the path, so that nobody
-  # reads "resolver ABSENT" as the reason the fetch failed.
-  resolv, _, resolv_ok = nsent_file(a, "/etc/resolv.conf")
-  pod_resolver = if resolv_ok && !resolv.to_s.strip.empty?
-                   "present (#{resolv.to_s.lines.first.to_s.strip[0, 60]})"
-                 else
-                   "ABSENT (no /etc/resolv.conf in the pod)"
-                 end
+  # The four DNS answers of the egress ruling cannot be printed yet: there is no resolver
+  # in the pod, so there is no answer to classify. When one exists this row must say which
+  # of REFUSED / NXDOMAIN / SERVFAIL / an address the pod got, for an in-set name and an
+  # out-of-set name. Writing that now would be code no run can exercise.
   allowed_text, = nsented(a, "wg show wg0 allowed-ips")
-  allowed = allowed_text.to_s.lines.map { |l| l.split.last }.compact.uniq.join(" ")
-  exited, = nsented(a, "timeout 6 bash -c 'echo > /dev/tcp/1.1.1.1/443' 2>&1", timeout: 8)
-  refused = exited.to_s.include?("No route to host") || exited.to_s.include?("not permitted")
+  allowed = allowed_text.to_s.lines.map { |l| l.split.last }.compact.uniq.join(",")
+  term4_note = allowed.empty? ? "unknown" : allowed
+  term4 = !allowed.empty? && (allowed.split(",").any? { |c| !c.start_with?("10.99.") })
 
+  ufw_count = lambda do
+    out, = sudo_sh("nft list chain ip filter FORWARD 2>/dev/null | awk '/jump ufw-before-forward/{print $3}'")
+    out.to_s.strip.to_i
+  end
+  fwd_before = ufw_count.call
   out, err, ok = nsented(a, "curl -sS -o /dev/null -w '%{http_code}' --max-time 8 https://theuncannyvalley.cc", timeout: 12)
+  drops = ufw_count.call - fwd_before
+  forward_ok = drops.zero?
+
+  addr_out, = nsented(a, "ip -o -4 addr show wg0")
+  pod_addr = addr_out.to_s[/inet (\d+\.\d+\.\d+\.\d+)/, 1]
+  plan_text, = sudo_sh("cat #{COVE_STATE}/plan.yml")
+  transport = plan_text.to_s[/transport:\s*(\S+)/, 1]
+  route_out, = sh("ip route get #{pod_addr} 2>/dev/null")
+  route_line = route_out.to_s.strip.lines.first.to_s.strip
+  return_ok = !pod_addr.to_s.empty? && !transport.to_s.empty? && route_out.to_s.include?(transport.to_s)
+
+  occupancy = plan_occupancy
+  subnet_ok = occupancy && !occupancy[:collides]
+  subnet_note = if occupancy.nil?
+                  "unknown"
+                elsif occupancy[:collides]
+                  "COLLIDES(#{occupancy[:occupied].map { |i, ad| "#{ad} on #{i}" }.join('+')}#{occupancy[:clash] ? " / router on #{occupancy[:clash][0]}" : ''})"
+                else
+                  "free"
+                end
+
+  conditions = "term4=#{term4 ? 'present' : "ABSENT(#{term4_note})"} " \
+               "· forward-#{forward_ok ? 'accepts' : "DROPS(#{drops} fell through)"} " \
+               "· return-#{return_ok ? 'via Router' : "WRONG(#{route_line[0, 48]})"} " \
+               "· subnet=#{subnet_note}"
+
+  resolv, _re, _rok = nsent_file(a, "/etc/resolv.conf")
+  dns = resolv.to_s.strip.empty? ? "ABSENT(no /etc/resolv.conf in the pod)" : "present(#{resolv.to_s.lines.first.to_s.strip[0, 40]})"
   tail = "(#{note}, settled in #{waited}s)"
+
   if ok && out.strip == "200"
-    met(16, "the pod's namespace reached theuncannyvalley.cc #{tail}; pod resolver #{pod_resolver} (not on this path)")
+    met(16, "the pod's namespace reached theuncannyvalley.cc #{tail} — #{conditions} · dns=#{dns}")
   else
-    why = []
-    why << "no road out of the tunnel: a packet for 1.1.1.1:443 answers " +
-           (refused ? '"No route to host"' : "nothing") +
-           ", and the pod's peer allows only #{allowed.empty? ? 'nothing' : allowed}"
-    why << "fetch answered #{out.strip} #{err.strip[0, 60]}"
-    why << "pod resolver #{pod_resolver} — a fact about the pod, NOT this row's path: the fetch runs the host's curl in the pod's netns, so it resolves with the host's resolver"
-    fail!(16, "egress failed — #{why.join('; ')} #{tail}")
+    fail!(16, "egress failed #{tail} — #{conditions} · dns=#{dns} · fetch answered #{out.strip} #{err.strip[0, 50]}")
   end
 }
 
@@ -929,6 +951,33 @@ ROW_TABLE[22] = -> {
 
 }
 
+
+# The plan's claim on the world, measured once and shared. R24 reports it as a document
+# assertion; R16 prints it as one of its four conditions. Two rows, one measurement --
+# a second computation of the same fact is a second thing to drift.
+def plan_occupancy
+  text, _, ok = sudo_sh("cat #{COVE_STATE}/plan.yml")
+  return nil unless ok
+
+  network = text.to_s[/^network:\s*(\S+)/, 1]
+  router_addr = text.to_s[/^\s+address:\s*(\S+)/, 1]
+  return nil if network.nil?
+
+  plan_net = (IPAddr.new(network) rescue nil)
+  return nil if plan_net.nil?
+
+  addrs, = sh("ip -o -4 addr show")
+  host = addrs.to_s.lines.map { |l| [l.split[1].to_s, l.split[3].to_s.split("/").first] }
+  occupied = host.reject { |i, _a| i == "lo" }.select do |_i, a|
+    (IPAddr.new(a) rescue nil) && plan_net.include?(IPAddr.new(a))
+  end
+  r_ip = router_addr.to_s.split("/").first
+  clash = r_ip.empty? ? nil : host.find { |_i, a| a == r_ip }
+
+  { network: network, router_addr: router_addr, occupied: occupied, clash: clash,
+    collides: !(occupied.empty? && clash.nil?) }
+end
+
 # ---- document assertions ---------------------------------------------------
 #
 # A document in this system is not prose: every one of them asserts something about the
@@ -1011,38 +1060,17 @@ ROW_TABLE[23] = -> {
 # bridge's address. That is why the host routes a pod's reply to its LAN gateway: on this
 # host, "10.99.0.1" is already somebody.
 ROW_TABLE[24] = -> {
-  plan_text, why, ok = sudo_sh("cat #{COVE_STATE}/plan.yml")
-  return unmet(24, "could not read plan.yml: #{why}") unless ok
-
-  network = plan_text.to_s[/^network:\s*(\S+)/, 1]
-  router_addr = plan_text.to_s[/^\s+address:\s*(\S+)/, 1]
-  return unmet(24, "plan.yml names no network") if network.nil?
-
-  begin
-    plan_net = IPAddr.new(network)
-  rescue StandardError => e
-    return fail!(24, "plan.yml network #{network.inspect} does not parse: #{e.message}")
-  end
-
-  addrs, _, aok = sh("ip -o -4 addr show")
-  return unmet(24, "could not read this host's addresses") unless aok
-  host = addrs.to_s.lines.map { |l| [l.split[1].to_s, l.split[3].to_s.split("/").first] }
-
-  occupied = host.reject { |iface, _a| iface == "lo" }.select do |_iface, a|
-    (IPAddr.new(a) rescue nil) && plan_net.include?(IPAddr.new(a))
-  end
+  plan = plan_occupancy
+  return unmet(24, "could not read plan.yml or this host's addresses") if plan.nil?
 
   claims = []
-  claims << [occupied.empty? ? "the tunnel #{network} holds no address this host already has" :
-                               "the tunnel #{network} ALREADY holds #{occupied.map { |i, a| "#{a} on #{i}" }.join(', ')}",
-             occupied.empty?]
-
-  r_ip = router_addr.to_s.split("/").first
-  unless r_ip.empty?
-    clash = host.find { |_iface, a| a == r_ip }
-    claims << [clash.nil? ? "the Router address #{router_addr} is not already an address on this host" :
-                            "the Router address #{router_addr} IS this host's own #{clash[0]} address",
-               clash.nil?]
+  claims << [plan[:occupied].empty? ? "the tunnel #{plan[:network]} holds no address this host already has" :
+                                       "the tunnel #{plan[:network]} ALREADY holds #{plan[:occupied].map { |i, a| "#{a} on #{i}" }.join(', ')}",
+             plan[:occupied].empty?]
+  unless plan[:router_addr].to_s.split("/").first.to_s.empty?
+    claims << [plan[:clash].nil? ? "the Router address #{plan[:router_addr]} is not already an address on this host" :
+                                   "the Router address #{plan[:router_addr]} IS this host's own #{plan[:clash][0]} address",
+               plan[:clash].nil?]
   end
 
   document_assertions(24, "plan.yml", claims)
@@ -1138,6 +1166,15 @@ else
   puts counts.map { |k, v| "#{v} #{k}" }.join(", ")
   fails = counts["FAIL"].to_i
   unmets = counts["UNMET"].to_i
+  # A red nobody can fix in this repo is a different object from a red somebody can. Not a
+  # new colour -- the FAIL keeps its force and stays in the count -- but a line under the
+  # tally saying whether any of it is the reader's. A false red trains people to ignore the
+  # instrument; a permanent true red does it more slowly and more thoroughly.
+  blocked = ROWS.select { |r| r[1] == "FAIL" && BLOCKED_ON.key?(r[0]) }
+  if blocked.any?
+    puts "FAIL: #{counts['FAIL'].to_i - blocked.size} actionable in this repo, #{blocked.size} awaiting a decision outside it"
+    blocked.each { |id, _s| puts "  R#{id} \u2190 #{BLOCKED_ON[id]}" }
+  end
   puts "green only if 0 FAIL and 0 UNMET — UNMET is not a pass in this suite."
   # Read by people and by a crank, and read twice this week as "almost MET". It is
   # not a stage: CONFIG means the row's claim was a reading and the reading matched.
