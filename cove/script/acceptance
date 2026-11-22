@@ -367,6 +367,24 @@ ROW_TABLE[5] = -> {
 # services.yml and therefore always resolves; the fleet's own services have no
 # address until row 7 launches them, which is after this.
 ROW_TABLE[6] = -> {
+  # DEMOTED from MET to CONFIG on 2026-11-22, and the demotion is the row's own point.
+  #
+  # This row was labelled MET and its message said "a real road opened in place". It
+  # measured one thing: that an iptables rule appeared and disappeared after two
+  # applies. It never carried a packet -- and it could not have, because the target is
+  # unreachable from the pod: `> /dev/tcp/10.88.0.3/3000` inside cove-test-agent-a
+  # answers "No route to host", since the pod's peer allows only 10.99.0.0/16.
+  #
+  # That is the fault the suite's own second law exists to prevent -- "a rule that
+  # exists but carries no packet -> rows assert traffic, and a config-layer reading is
+  # labelled CONFIG, never MET" -- committed by the row next door to three that obey
+  # it. A row is MET when the claim crossed the wire. This claim is a reading of the
+  # device, and it is a good reading; a reading is not a ride.
+  #
+  # So the ride is attempted WHILE the road is open, and it decides the label:
+  #   crosses    -> MET, and the road still closes again
+  #   does not   -> CONFIG, naming exactly why, because the apply half did happen
+  # It promotes itself the day baseline egress lands, with no edit needed.
   probe = "10.88.0.3"   # forgejo, from services.yml: always resolvable
   return unmet(6, "no Router") if in_router("iptables-save").first.nil?
   t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
@@ -375,13 +393,23 @@ ROW_TABLE[6] = -> {
   return fail!(6, "no apply within 4s (http #{code}) #{why}") unless ok_open
 
   applied = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0) * 1000).round(0)
+  pid = pod_netns("cove-test-agent-a")
+  rode = pid ? opens?(pid, probe, 3000, timeout: 4) : false
+
   # Emptying the list is the one state the row can restore without knowing what the
   # previous run left behind: whatever it was, the next rows set their own permits.
   code2, = post_form("/sheets/test-agent-a/permits", "services" => "")
   ok_close, _r2, why2 = wait_rules { |rules| rules.lines.grep(/-d #{Regexp.escape(probe)}\/32/).empty? }
   return fail!(6, "the road opened in #{applied} ms but did not close again (http #{code2}) #{why2}") unless ok_close
 
-  met(6, "a real road opened in place in #{applied} ms and closed again — no relaunch (http #{code}/#{code2})")
+  if rode
+    met(6, "the road to #{probe}:3000 carried a connection, opened in place in #{applied} ms, " \
+           "and closed again without a relaunch (http #{code}/#{code2})")
+  else
+    config(6, "permit applied in #{applied} ms and removed in one apply, no relaunch (http #{code}/#{code2}). " \
+              "READ, not ridden: no connection to #{probe}:3000 crossed, because the pod's peer allows only " \
+              "10.99.0.0/16. This row becomes MET by itself when baseline egress lands.")
+  end
 }
 
 # 7. Four pods on the network.
@@ -417,14 +445,29 @@ ROW_TABLE[7] = -> {
 
 # 8. Each pod has no network access except through WireGuard.
 ROW_TABLE[8] = -> {
+  # Two claims, and the second one is here because nobody had ever checked it.
+  # One: each pod sees exactly lo + wg0. Two: each pod has a DEFAULT ROUTE via wg0.
+  # `Cove::Network` adds the address after moving the device into the pod's netns and
+  # adds the default route immediately after, and nothing has ever re-read it -- so
+  # "does the route survive the move" was an open question carried for two days and
+  # argued over instead of looked at. Measured 2026-11-22: it survives. It is a row
+  # now so that it cannot become a memory.
   bad = []
   %w[cove-test-agent-a cove-test-agent-b cove-test-service-a cove-test-service-b].each do |n|
     pid = pod_netns(n) or next bad << "#{n}: no pod"
     out, = nsented(pid, "ip -o link show | awk -F': ' '{print $2}' | grep -v lo")
     ifaces = out.split("\n").map(&:strip).reject(&:empty?)
-    bad << "#{n}: #{ifaces.join(',')}" unless ifaces == ["wg0"]
+    bad << "#{n}: interfaces #{ifaces.join(',')}" unless ifaces == ["wg0"]
+    routes, = nsented(pid, "ip route show")
+    default = routes.to_s.lines.find { |l| l.start_with?("default ") }
+    if default.nil?
+      bad << "#{n}: no default route (#{routes.to_s.strip.split('\n').first.to_s[0, 60]})"
+    elsif !default.include?("dev wg0")
+      bad << "#{n}: default route is not via wg0 (#{default.strip[0, 60]})"
+    end
   end
-  bad.empty? ? met(8, "all four see exactly lo + wg0") : fail!(8, bad.join(" | "))
+  bad.empty? ? met(8, "all four see exactly lo + wg0, and all four have a default route via wg0") :
+    fail!(8, bad.join(" | "))
 }
 
 # 9. Neither agent reaches host services.
@@ -567,35 +610,62 @@ ROW_TABLE[16] = -> {
   settled, waited, note = await_handshake
   return unmet(16, note) unless settled
 
-  # Three different layers can stop an egress fetch and they have three different
-  # owners, so the detail names the FIRST one missing rather than the last one that
-  # failed. Measured 2026-11-22, and soro's ordering from his review of the same
-  # failure: no resolver in the pod at all, then no route into the tunnel
-  # (allowed-ips 10.99.0.0/16, so a packet for 1.1.1.1 never enters wg0), then no
-  # NAT at the Router. Only the third is Router-side. A row that says "could not
-  # resolve" against a pod with no /etc/resolv.conf sends a reader to the DNS
-  # question when the pod could not have resolved anything at all -- and did, for
-  # one run this morning.
-  # Evidence, not inference: the row prints what it read, because the first version
-  # of this probe read the host's file and reported the resolver as present.
+  # WHAT THIS ROW MEASURES, said before the measurements, because the first version
+  # of it implied a causal chain that does not exist. `nsented` enters only --net:
+  # the fetch below is the HOST's curl running in the POD's network namespace, so it
+  # resolves with the HOST's /etc/resolv.conf, and the pod's own resolver is not on
+  # this row's path at all. Measured 2026-11-22 — with `nameserver 1.1.1.1` written
+  # into the pod by hand, `ip route get 1.1.1.1` still answered `dev wg0` and
+  # `> /dev/tcp/1.1.1.1/443` still answered "No route to host", because the pod's
+  # peer on the Router carries allowed-ips 10.99.0.0/16 and nothing outside the
+  # THE FOUR LAYERS AND THEIR SIGNATURES, so a failure can be located rather than
+  # guessed. Measured on z620 2026-11-22 inside a live agent pod, and benched
+  # independently by soro in a throwaway netns:
+  #
+  #   layer 1  pod default route    absent  -> ENETUNREACH at once (~0 ms)
+  #   layer 2  peer allowed-ips     narrow  -> EHOSTUNREACH after ~1 s ("No route to host")
+  #   layer 3  Router FORWARD rule  absent  -> silent drop; connect hangs
+  #   layer 4  NAT / masquerade     absent  -> silent drop; connect hangs
+  #
+  # Layer 1 is PRESENT, so the "does the default route survive the netns move"
+  # question is answered for a launched pod and the answer is yes:
+  # `ip route show table all` gives `default dev wg0 scope link`, wg0 is UP,LOWER_UP,
+  # and `ip route get 1.1.1.1` answers `dev wg0 src 10.99.2.10`.
+  #
+  # Layers 2, 3 and 4 are ONE change wearing four hats, and fixing 2 alone makes the
+  # failure WORSE to read rather than better. Measured: with allowed-ips 10.99.0.0/16
+  # a connect to 1.1.1.1:443 fails in 1011 ms with an error; widened to 0.0.0.0/0 by
+  # hand the SYN crosses the tunnel (the Router's peer receive counter moved
+  # 980 -> 1460 bytes) and is then dropped by `Chain FORWARD (policy DROP)` with no
+  # matching rule, and the connect hangs past 6 s. Slower and quieter. There is no
+  # useful partial fix here, and this row must not be "cleared" by adding a route.
+  #
+  # tunnel has key material. So this is a NETWORK-PATH row. The pod's resolver is
+  # reported as a fact about the pod and marked as not on the path, so that nobody
+  # reads "resolver ABSENT" as the reason the fetch failed.
   resolv, _, resolv_ok = nsent_file(a, "/etc/resolv.conf")
-  resolver_state = if resolv_ok && !resolv.to_s.strip.empty?
-                     "present (#{resolv.to_s.lines.first.to_s.strip[0, 60]})"
-                   else
-                     "ABSENT — no /etc/resolv.conf in the pod"
-                   end
-  route, = nsented(a, "timeout 6 bash -c 'echo > /dev/tcp/1.1.1.1/443' && echo ROUTED", timeout: 8)
-  no_egress_route = !route.to_s.include?("ROUTED")
+  pod_resolver = if resolv_ok && !resolv.to_s.strip.empty?
+                   "present (#{resolv.to_s.lines.first.to_s.strip[0, 60]})"
+                 else
+                   "ABSENT (no /etc/resolv.conf in the pod)"
+                 end
+  allowed_text, = nsented(a, "wg show wg0 allowed-ips")
+  allowed = allowed_text.to_s.lines.map { |l| l.split.last }.compact.uniq.join(" ")
+  exited, = nsented(a, "timeout 6 bash -c 'echo > /dev/tcp/1.1.1.1/443' 2>&1", timeout: 8)
+  refused = exited.to_s.include?("No route to host") || exited.to_s.include?("not permitted")
 
   out, err, ok = nsented(a, "curl -sS -o /dev/null -w '%{http_code}' --max-time 8 https://theuncannyvalley.cc", timeout: 12)
   tail = "(#{note}, settled in #{waited}s)"
   if ok && out.strip == "200"
-    met(16, "agent-a downloaded from theuncannyvalley.cc (the explicit hole) #{tail}")
+    met(16, "the pod's namespace reached theuncannyvalley.cc #{tail}; pod resolver #{pod_resolver} (not on this path)")
   else
-    stopped = ["resolver: #{resolver_state}"]
-    stopped << "no route into the tunnel: a packet for 1.1.1.1:443 does not leave the pod" if no_egress_route
-    stopped << "fetch answered #{out.strip} #{err.strip[0, 60]}"
-    fail!(16, "egress failed — stopped at the first missing layer: #{stopped.join('; ')} #{tail}")
+    why = []
+    why << "no road out of the tunnel: a packet for 1.1.1.1:443 answers " +
+           (refused ? '"No route to host"' : "nothing") +
+           ", and the pod's peer allows only #{allowed.empty? ? 'nothing' : allowed}"
+    why << "fetch answered #{out.strip} #{err.strip[0, 60]}"
+    why << "pod resolver #{pod_resolver} — a fact about the pod, NOT this row's path: the fetch runs the host's curl in the pod's netns, so it resolves with the host's resolver"
+    fail!(16, "egress failed — #{why.join('; ')} #{tail}")
   end
 }
 
@@ -831,6 +901,20 @@ else
   puts
   puts counts.map { |k, v| "#{v} #{k}" }.join(", ")
   fails = counts["FAIL"].to_i
+  unmets = counts["UNMET"].to_i
   puts "green only if 0 FAIL and 0 UNMET — UNMET is not a pass in this suite."
-  exit(fails.zero? ? 0 : 1)
+  # Read by people and by a crank, and read twice this week as "almost MET". It is
+  # not a stage: CONFIG means the row's claim was a reading and the reading matched.
+  # Such a row never promised a packet, so no packet can promote it.
+  puts "CONFIG is not a stage between MET and FAIL — it means the claim was a reading and" \
+       " the reading matched; that row never promised a packet, so no packet can promote it."
+  # Enforced, not merely printed. This exited on FAIL alone, so a run with five
+  # UNMETs and no FAIL exited 0 while the sentence above it said the opposite.
+  # This file's first law has always been that a missing prerequisite is UNMET with
+  # the reason, "never a skip, never a pass"; the exit code was the one place that
+  # law was not applied. A suite that could not measure must not report success --
+  # the same shape as router.conf's header, and the same shape as the Router apply
+  # that reported success with no identity: prose and code telling different stories
+  # about the same artefact.
+  exit((fails + unmets).zero? ? 0 : 1)
 end

@@ -171,7 +171,14 @@ module Cove
         header = []
         header << "# cove router intent v#{NETWORK_VERSION} — the whole network, rewritten whole."
         header << "# Read by the Router and by nothing else. Do not edit: the Manager overwrites this file."
-        header << "# The last line of this file is the sha256 of every line above it; a short file cannot pass."
+        # The sentence here used to say "the last line of this file is the sha256 of
+        # every line above it", which was false in both halves: the digest is the
+        # fourth line, and it covers what comes BELOW it. The desk filed it on
+        # 2026-11-20 (pass 42, Finding 1) and it has been rendered to whoever opened
+        # /router.conf ever since -- an instrument under oath with prose about the
+        # instrument that was not, in the one place a reader is invited to check.
+        header << "# body-sha256 on the next line covers every line BELOW it, the footer included."
+        header << "# It cannot be the last line: the footer is part of the body it hashes. A short file cannot pass."
         header << "body-sha256 #{Digest::SHA256.hexdigest(body_text)}"
         header.join("\n") + "\n" + body_text
       end
