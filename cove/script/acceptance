@@ -1202,7 +1202,11 @@ else
     begin
       fn.call
     rescue StandardError => e
-      fail!(i, "#{e.class}: #{e.message[0, 120]}")
+      # Where it broke, not only what it said. An exception inside a row is the one case
+      # this suite cannot describe honestly by design -- it is a bug in the instrument --
+      # so at least give the reader the line.
+      where = (e.backtrace || []).find { |b| b.include?("acceptance") }.to_s.split(":").last(2).join(":")
+      fail!(i, "#{e.class}: #{e.message[0, 120]}" + (where.empty? ? "" : " at #{where}"))
     end
   end
   counts = ROWS.group_by { |r| r[1] }.transform_values(&:size)
