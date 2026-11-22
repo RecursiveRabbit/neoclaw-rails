@@ -367,6 +367,24 @@ ROW_TABLE[5] = -> {
 # services.yml and therefore always resolves; the fleet's own services have no
 # address until row 7 launches them, which is after this.
 ROW_TABLE[6] = -> {
+  # DEMOTED from MET to CONFIG on 2026-11-22, and the demotion is the row's own point.
+  #
+  # This row was labelled MET and its message said "a real road opened in place". It
+  # measured one thing: that an iptables rule appeared and disappeared after two
+  # applies. It never carried a packet -- and it could not have, because the target is
+  # unreachable from the pod: `> /dev/tcp/10.88.0.3/3000` inside cove-test-agent-a
+  # answers "No route to host", since the pod's peer allows only 10.99.0.0/16.
+  #
+  # That is the fault the suite's own second law exists to prevent -- "a rule that
+  # exists but carries no packet -> rows assert traffic, and a config-layer reading is
+  # labelled CONFIG, never MET" -- committed by the row next door to three that obey
+  # it. A row is MET when the claim crossed the wire. This claim is a reading of the
+  # device, and it is a good reading; a reading is not a ride.
+  #
+  # So the ride is attempted WHILE the road is open, and it decides the label:
+  #   crosses    -> MET, and the road still closes again
+  #   does not   -> CONFIG, naming exactly why, because the apply half did happen
+  # It promotes itself the day baseline egress lands, with no edit needed.
   probe = "10.88.0.3"   # forgejo, from services.yml: always resolvable
   return unmet(6, "no Router") if in_router("iptables-save").first.nil?
   t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
@@ -375,13 +393,23 @@ ROW_TABLE[6] = -> {
   return fail!(6, "no apply within 4s (http #{code}) #{why}") unless ok_open
 
   applied = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0) * 1000).round(0)
+  pid = pod_netns("cove-test-agent-a")
+  rode = pid ? opens?(pid, probe, 3000, timeout: 4) : false
+
   # Emptying the list is the one state the row can restore without knowing what the
   # previous run left behind: whatever it was, the next rows set their own permits.
   code2, = post_form("/sheets/test-agent-a/permits", "services" => "")
   ok_close, _r2, why2 = wait_rules { |rules| rules.lines.grep(/-d #{Regexp.escape(probe)}\/32/).empty? }
   return fail!(6, "the road opened in #{applied} ms but did not close again (http #{code2}) #{why2}") unless ok_close
 
-  met(6, "a real road opened in place in #{applied} ms and closed again — no relaunch (http #{code}/#{code2})")
+  if rode
+    met(6, "the road to #{probe}:3000 carried a connection, opened in place in #{applied} ms, " \
+           "and closed again without a relaunch (http #{code}/#{code2})")
+  else
+    config(6, "permit applied in #{applied} ms and removed in one apply, no relaunch (http #{code}/#{code2}). " \
+              "READ, not ridden: no connection to #{probe}:3000 crossed, because the pod's peer allows only " \
+              "10.99.0.0/16. This row becomes MET by itself when baseline egress lands.")
+  end
 }
 
 # 7. Four pods on the network.
