@@ -35,7 +35,9 @@ require "time"
 REF   = ENV.fetch("COVE_REF", File.expand_path("../..", __dir__)).freeze
 MGMT  = ENV.fetch("COVE_MANAGER", "http://127.0.0.1:9411").freeze
 HOST  = ENV.fetch("COVE_HOST", "z620").freeze
-ROUTER = ENV.fetch("COVE_ROUTER_NAME", "cove-router").freeze
+ROUTER = ENV.fetch("COVE_ROUTER_NAME", "cove-router")
+# The Manager's state directory, host-side. R22 is the only row that writes to it.
+COVE_STATE = ENV.fetch("COVE_STATE", "/home/sexton/cove-state").freeze
 NOW = Time.now.utc.iso8601
 
 ROWS = []
@@ -237,7 +239,7 @@ FIXTURE_PODS = {
 
 # Every row that reads a pod. A subset run that touches none of these does not
 # need the fixture set and should not pay for it.
-def pod_dependent?(rows) = (rows & [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]).any?
+def pod_dependent?(rows) = (rows & [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]).any?
 
 def build_fixtures
   started = FIXTURE_SHEETS.map { |slug| "#{slug}(#{http("/sheets/#{slug}/start", method: "POST").first})" }
@@ -384,7 +386,30 @@ ROW_TABLE[6] = -> {
   # So the ride is attempted WHILE the road is open, and it decides the label:
   #   crosses    -> MET, and the road still closes again
   #   does not   -> CONFIG, naming exactly why, because the apply half did happen
-  # It promotes itself the day baseline egress lands, with no edit needed.
+  #
+  # WHAT WOULD ACTUALLY PROMOTE IT, corrected 2026-11-22 by soro and then measured.
+  # An earlier version of this comment said the row "promotes itself the day baseline
+  # egress lands, with no edit needed". It would not have. The probe is forgejo at
+  # 10.88.0.3, which is outside 10.99.0.0/16, and a pod does not encrypt for a
+  # destination outside its peer's allowed-ips whatever the Router permits --
+  # allowed-ips is the pod's cryptokey routing table, not just an ACL. Baseline egress
+  # adds the model API destination, not 10.88.0.0/24.
+  #
+  # And it is worse than "would not have": under full-egress the pod's allowed-ips
+  # becomes 0.0.0.0/0, which DOES contain 10.88.0.3, so the row would have gone green
+  # for a reason it does not name -- the same defect as a MET that never carried a
+  # packet, one layer out.
+  #
+  # Measured, so that nobody has to re-derive it. Both halves are needed:
+  #   term 4  10.88.0.3/32 added to the pod's allowed-ips by hand
+  #           -> without it: "No route to host" in 1052 ms
+  #           -> with it:    the SYN leaves and crosses the tunnel
+  #   NAT     the Router translating the return path
+  #           -> without it: the connection still HANGS (rc=124 at 5005 ms); the
+  #              Router accepted the SYN (its FORWARD DROP counter did not move) and
+  #              forgejo's reply is addressed to 10.99.2.10, which the host routes
+  #              `via 10.0.0.1 dev enp1s0` -- its LAN gateway, not the Router.
+  # So the gate is a road with an on-ramp at one end and a return path at the other.
   probe = "10.88.0.3"   # forgejo, from services.yml: always resolvable
   return unmet(6, "no Router") if in_router("iptables-save").first.nil?
   t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
@@ -407,8 +432,9 @@ ROW_TABLE[6] = -> {
            "and closed again without a relaunch (http #{code}/#{code2})")
   else
     config(6, "permit applied in #{applied} ms and removed in one apply, no relaunch (http #{code}/#{code2}). " \
-              "READ, not ridden: no connection to #{probe}:3000 crossed, because the pod's peer allows only " \
-              "10.99.0.0/16. This row becomes MET by itself when baseline egress lands.")
+              "READ, not ridden: no connection to #{probe}:3000 crossed. It needs two things that do not " \
+              "exist yet — #{probe}/32 in the pod's allowed-ips (a pod does not encrypt outside it) and the " \
+              "Router translating the return path (measured: with the first alone the connection still hangs).")
   end
 }
 
@@ -812,6 +838,76 @@ ROW_TABLE[21] = -> {
     fail!(21, "#{accepts.size} rule(s) survived teardown: #{accepts.first.strip}")
 }
 
+# 22. A sheet that loses its peer identity gets it back from the pod.
+#
+# Measured on z620 2026-11-22: blanking one sheet's `pubkey` while its pod was running
+# took router.conf from 1 peer to 0 on the next render, and kept it at 0 on the render
+# after that. A live pod went dark, no error was reported anywhere, and nothing in the
+# system would ever ask the pod what its key was. Nothing else on this board costs
+# production state when it fails.
+#
+# The pod is the only authority on its own public key -- the Manager discarded the
+# private half on purpose and never kept more than the public one -- so the loss is
+# recoverable, and the Manager now asks before every render. This row stages the drain
+# on purpose. It is the only row that writes to the Manager's state directory, and it
+# restores the sheet itself if the recovery does not.
+ROW_TABLE[22] = -> {
+  slug = "test-agent-b"
+  pod = "cove-test-agent-b"
+  # Row 19 has already torn the fixture set down by the time this row runs, so it
+  # stands up its own pod and takes it away again. A row that needs a pod must not
+  # inherit one from a row it cannot see, and it must not leave one behind on a board
+  # whose last rows assert there are none.
+  raised = false
+  unless podman_names.include?(pod)
+    post_form("/sheets/#{slug}/start", {})
+    sleep 3
+    raised = true
+    return unmet(22, "#{pod} could not be started, so there is nothing to lose an identity for") unless podman_names.include?(pod)
+  end
+
+  path = "#{COVE_STATE}/agents/#{slug}.yml"
+  before, _, ok = sudo_sh("grep -E '^pubkey:' #{path}")
+  return unmet(22, "could not read #{path}") unless ok
+
+  key = before.to_s.split(":", 2)[1].to_s.strip.gsub("'", "")
+  return unmet(22, "#{slug} has no pubkey to lose — the sheet is already empty") if key.empty?
+
+  # Stage the fault, with the pod still running and untouched.
+  _, _, blanked = sudo_sh(%(sed -i "s|^pubkey:.*|pubkey: ''|" #{path}))
+  return unmet(22, "could not blank #{path}") unless blanked
+
+  code, = http("/router.conf/render", method: "POST", timeout: 60)
+  sleep 1
+  after, _, _ = sudo_sh("grep -E '^pubkey:' #{path}")
+  recovered = after.to_s.split(":", 2)[1].to_s.strip.gsub("'", "")
+  peers_out, = in_router("wg show wg0 peers 2>/dev/null")
+  peer_present = peers_out.to_s.lines.map(&:strip).include?(key)
+
+  # Assert BEFORE tidying up. The first version tore the pod down first and then asked
+  # the Router whether the peer was there, so the answer was always "no" for a reason
+  # the row had just caused itself -- and then blamed the wrong conjunct in its message.
+  verdict =
+    if recovered == key && peer_present
+      [:met, "blanked #{slug}'s pubkey with its pod running; the Manager asked the pod and put it " \
+             "back (#{key[0, 8]}…), so no peer was subtracted and the pod never went dark (http #{code})"]
+    elsif recovered != key
+      [:fail, "#{slug} was blanked and the sheet did NOT come back: it holds " \
+              "#{recovered.empty? ? 'nothing' : recovered[0, 8] + '…'} (was #{key[0, 8]}…). " \
+              "Nothing will ever ask the pod what its key is, so the peer is gone for good."]
+    else
+      # Two conjuncts, two messages. A verdict that cannot say which half failed is the
+      # same fault as a refusal with an empty reason.
+      [:fail, "#{slug}'s sheet came back (#{key[0, 8]}…) but the Router holds no peer for it: " \
+              "the recovery healed the document and something subtracted the peer anyway (http #{code})."]
+    end
+
+  # Leave the box as this row found it.
+  post_form("/pods/destroy_all?scope=#{slug}", {}) if raised
+  verdict[0] == :met ? met(22, verdict[1]) : fail!(22, verdict[1])
+
+}
+
 # ---- --prove-instrument ----------------------------------------------------
 # Build both situations the suite must never miss, in a throwaway netns, and
 # require the check under test to catch each one.
@@ -856,7 +952,7 @@ if ARGV.include?("--prove-instrument")
 elsif ARGV.include?("--list")
   puts "R0c  fixture set (test-agent-b, test-service-a, test-service-b) — built before any pod row"
   puts "R0d  the addresses the setup assigned are recorded as peers in the intent"
-  (1..21).each { |i| puts format("%2d  %s", i, ROW_TABLE[i] ? "implemented" : "—") }
+  (1..22).each { |i| puts format("%2d  %s", i, ROW_TABLE[i] ? "implemented" : "—") }
 else
   # Two runs in the same minute destroy each other's fixtures: one run's
   # destroy_all tears down the pods the other is still measuring, and the
@@ -882,7 +978,7 @@ else
   BASELINE[:pods] = podman_names.grep(/^cove-test-/)
   puts "baseline host wg interfaces: #{BASELINE[:wg_ifaces].empty? ? '(none)' : BASELINE[:wg_ifaces].join(' ')}"
   puts
-  rows = wanted.empty? ? (1..21).to_a : wanted
+  rows = wanted.empty? ? (1..22).to_a : wanted
   build_fixtures if wanted.empty? || pod_dependent?(wanted)
   check_addresses_recorded if wanted.empty? || pod_dependent?(wanted)
   rows.each do |i|
