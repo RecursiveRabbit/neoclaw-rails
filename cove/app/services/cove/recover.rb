@@ -38,10 +38,24 @@ module Cove
       # caller can say so. Silence here would be the same fault as an empty refusal
       # reason: a repair nobody announced is a repair nobody can audit.
       def identities!(sheets)
+        # "A sheet with an address and no key" is not the unusual case -- it is the NORMAL
+        # resting state, because teardown clears the key and keeps the address on purpose.
+        # Measured on z620 2026-11-22: four of five sheets sat in it, so every render ran
+        # four `podman inspect` calls and cost 296 ms, on a path this file's own comment
+        # claimed was "one pass in memory". The comment was wrong and the cost was real.
+        #
+        # One listing answers "is there anything to ask" for all of them: a sheet whose pod
+        # is not running has nothing to say, and asking it per-sheet is four process calls
+        # to learn what one already said.
+        candidates = sheets.select { |s| s.pubkey.to_s.empty? && !s.pod_ip.to_s.empty? }
+        return [] if candidates.empty?
+
+        live = live_pod_names
         healed = []
-        sheets.each do |sheet|
-          next unless sheet.pubkey.to_s.empty?
-          next if sheet.pod_ip.to_s.empty?
+        candidates.each do |sheet|
+          # If the listing failed we do not know, so we ask rather than skip: recovery is
+          # the safety property, and losing it to save a process call is the wrong trade.
+          next if live && !live.include?(sheet.pod_name)
 
           key = live_pubkey(sheet.pod_name)
           next if key.nil?
@@ -51,6 +65,17 @@ module Cove
           healed << "#{sheet.slug}=#{key[0, 8]}…"
         end
         healed
+      end
+
+      # nil, not [], when podman cannot be asked -- the difference between "nothing is
+      # running" and "we do not know what is running" is the difference between skipping a
+      # heal and silently losing one.
+      def live_pod_names
+        out = Podman.run(*Cove.sudo_prefix, "podman", "ps", "--filter", "label=cove.managed=1",
+                         "--format", "{{.Names}}")
+        return nil unless out.ok?
+
+        out.stdout.to_s.split("\n").map(&:strip).reject(&:empty?)
       end
 
       private
