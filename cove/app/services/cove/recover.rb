@@ -66,13 +66,20 @@ module Cove
         p = pid.stdout.to_s.strip
         return nil if p.empty? || p == "0"
 
-        out = Network.sudo("nsenter", "-t", p, "-n", "wg", "show", WG_IFACE, "public-key")
-        return nil unless out.ok?
+        # Network.sudo returns a Step (:ok, :argv, :out, :err). Podman.sudo returns a
+        # different result with :stdout. The first version of this called `stdout` on a
+        # Step, raised NoMethodError, and was swallowed by a blanket `rescue
+        # StandardError` that turned the bug into "nothing to do" -- so the recovery
+        # silently did nothing and R22 caught it on the first run. There is no rescue
+        # here now, on purpose: if asking a pod raises, the render should fail loudly
+        # rather than quietly subtract a live peer. The cases that are expected to fail
+        # -- podman unavailable, pod not running, no such device -- all come back as a
+        # failed Step, not an exception.
+        step = Network.sudo("nsenter", "-t", p, "-n", "wg", "show", WG_IFACE, "public-key")
+        return nil unless step.ok?
 
-        key = out.stdout.to_s.strip
+        key = step.out.to_s.strip
         key.empty? ? nil : key
-      rescue StandardError
-        nil
       end
     end
   end
