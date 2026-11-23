@@ -49,6 +49,7 @@
 # a dirty tree or an unrecorded head is a FAIL before any system row is attempted.
 
 require "open3"
+require "yaml"
 require "ipaddr"
 require "json"
 require "time"
@@ -975,10 +976,20 @@ ROW_TABLE[22] = -> {
   end
 
   path = "#{COVE_STATE}/agents/#{slug}.yml"
-  before, _, ok = sudo_sh("grep -E '^pubkey:' #{path}")
+  # Parse the sheet as the document it is. The old read was
+  #   grep '^pubkey:' | split(":") | strip | gsub("'", "")
+  # which strips SINGLE quotes and leaves a DOUBLE quote in place -- and Psych quotes
+  # any plain scalar whose first character is '+' or '/'. Measured on z620
+  # 2026-11-23: 10 of 300 freshly generated keys were dumped quoted (3.33%), which is
+  # exactly 2 of the 64 base64 first characters. A quoted key has the right type and
+  # the right length plus two and equals nothing, so the row reported "the Router
+  # holds no peer for it" while the Router held that very peer. Reproduced once with
+  # the parts printed: `router.conf 1 peer line(s) WITH the key; Router 1 peer(s),
+  # key present: no`. Nothing subtracted anything; the row compared a quoted string.
+  raw, _, ok = sudo_sh("cat #{path}")
   return unmet(22, "could not read #{path}") unless ok
 
-  key = before.to_s.split(":", 2)[1].to_s.strip.gsub("'", "")
+  key = ((YAML.safe_load(raw) rescue nil) || {})["pubkey"].to_s.strip
   return unmet(22, "#{slug} has no pubkey to lose — the sheet is already empty") if key.empty?
 
   # Stage the fault, with the pod still running and untouched.
@@ -987,10 +998,24 @@ ROW_TABLE[22] = -> {
 
   code, = http("/router.conf/render", method: "POST", timeout: 60)
   sleep 1
-  after, _, _ = sudo_sh("grep -E '^pubkey:' #{path}")
-  recovered = after.to_s.split(":", 2)[1].to_s.strip.gsub("'", "")
+  raw_after, _, _ = sudo_sh("cat #{path}")
+  recovered = ((YAML.safe_load(raw_after) rescue nil) || {})["pubkey"].to_s.strip
   peers_out, = in_router("wg show wg0 peers 2>/dev/null")
   peer_present = peers_out.to_s.lines.map(&:strip).include?(key)
+
+  # THE PARTS (soro, 2026-11-23). This row went red twice in ninety minutes -- 09:55 and
+  # 11:25 -- and both times it printed two booleans and an http code that is always 302,
+  # so nobody could say which side lost the peer: the file or the device. Read both,
+  # before any cleanup rewrites either. A verdict that cannot say which half failed is
+  # the same fault as a refusal with an empty reason.
+  conf_text, = sudo_sh("cat #{COVE_STATE}/router.conf")
+  conf_peer_lines = conf_text.to_s.lines.grep(/^peer /).map(&:strip)
+  key_in_file = conf_text.to_s.include?(key)
+  named = conf_peer_lines.map { |l| [l[/peer "([^"]*)"/, 1].to_s, l[/address="([^"]*)"/, 1].to_s].join(" ") }
+  parts = "parts: router.conf #{conf_peer_lines.size} peer line(s)" \
+          "#{key_in_file ? ' WITH the key' : ' WITHOUT the key'}; " \
+          "Router #{peers_out.to_s.lines.size} peer(s), key present: #{peer_present ? 'yes' : 'no'}" \
+          "#{named.empty? ? '' : ' | ' + named.join(', ')}"
 
   # Assert BEFORE tidying up. The first version tore the pod down first and then asked
   # the Router whether the peer was there, so the answer was always "no" for a reason
@@ -1007,8 +1032,23 @@ ROW_TABLE[22] = -> {
       # Two conjuncts, two messages. A verdict that cannot say which half failed is the
       # same fault as a refusal with an empty reason.
       [:fail, "#{slug}'s sheet came back (#{key[0, 8]}…) but the Router holds no peer for it: " \
-              "the recovery healed the document and something subtracted the peer anyway (http #{code})."]
+              "the recovery healed the document and something subtracted the peer anyway (http #{code}); #{parts}"]
     end
+
+  # The discriminator, taken AFTER the verdict so it cannot change it: if a SECOND render
+  # puts the peer back, the first render's map was built before the heal (a stale map,
+  # not a subtraction). If it does not, the render is producing a correct file and the
+  # Router is not taking it. Those are two different bugs and one POST tells them apart.
+  if !peer_present && recovered == key
+    code2, = http("/router.conf/render", method: "POST", timeout: 60)
+    sleep 1
+    conf2, = sudo_sh("cat #{COVE_STATE}/router.conf")
+    peers2, = in_router("wg show wg0 peers 2>/dev/null")
+    again = peers2.to_s.lines.map(&:strip).include?(key)
+    verdict[1] += "; a SECOND render (http #{code2}) left router.conf at " \
+                  "#{conf2.to_s.lines.grep(/^peer /).size} peer line(s) and the Router at " \
+                  "#{peers2.to_s.lines.size} peer(s), key present: #{again ? 'yes' : 'no'}"
+  end
 
   # Leave the box as this row found it.
   post_form("/pods/destroy_all?scope=#{slug}", {}) if raised
