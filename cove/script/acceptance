@@ -703,7 +703,15 @@ ROW_TABLE[16] = -> {
   #             the pod's INGRESS filter, which is why it must be here and not just in the
   #             Router's rules)
   #   forward   a pod-sourced packet does not fall through the host's chains to the policy
-  #             drop -- measured with the same ufw-before-forward counter that located it
+  #             drop -- measured with the same ufw-before-forward counter that located it.
+  #             UNDER THE RULING THIS MEASURES THE ROUTER'S EGRESS, NOT THE POD'S (Evans
+  #             2026-11-23: "the host is essentially giving the Router web access, not the
+  #             Agent pods"). It becomes the right instrument the moment the Router
+  #             translates: the pod's packet then leaves the Router with the Router's own
+  #             source, so the counter on the host's forward path counts Router-sourced
+  #             traffic. Until then it counts a 10.99.2.x packet the host should never
+  #             have been asked to forward, and that difference is exactly what the
+  #             Router's new nat table closes.
   #   return    the host routes the pod's subnet back through the Router, not its LAN
   #   subnet    the plan does not overlap a network this host already holds
   #
@@ -711,10 +719,20 @@ ROW_TABLE[16] = -> {
   # in the pod, so there is no answer to classify. When one exists this row must say which
   # of REFUSED / NXDOMAIN / SERVFAIL / an address the pod got, for an in-set name and an
   # out-of-set name. Writing that now would be code no run can exercise.
+  # TERM FOUR, AS THE RULING STATES IT (Evans 2026-11-23: "the default gateway for all
+  # pods ... all connections go through the router"). The fourth term used to pass on
+  # ANY CIDR outside 10.99 -- which is satisfied by a single /32 road, so the row was
+  # green for a pod that could reach exactly one address and nothing else. That was a
+  # claim about egress written as a claim about a road. The ruling is 0.0.0.0/0, so the
+  # row now asserts that string and nothing weaker.
+  #
+  # Every CIDR on every peer line, not `split.last`: a peer with `10.99.0.0/16 0.0.0.0/0`
+  # has two, and reading only the last one made the answer depend on the order wg prints.
   allowed_text, = nsented(a, "wg show wg0 allowed-ips")
-  allowed = allowed_text.to_s.lines.map { |l| l.split.last }.compact.uniq.join(",")
-  term4_note = allowed.empty? ? "unknown" : allowed
-  term4 = !allowed.empty? && (allowed.split(",").any? { |c| !c.start_with?("10.99.") })
+  cidrs = allowed_text.to_s.lines.flat_map { |l| l.split[1..].to_a }.compact.uniq
+  allowed = cidrs.join(" ")
+  term4_note = cidrs.empty? ? "unknown" : allowed
+  term4 = cidrs.include?("0.0.0.0/0")
 
   # `forward` carries its own precondition. Counting the host's fall-through counter around
   # the ROW'S FETCH was wrong twice over: with no resolver the fetch dies at name resolution
@@ -768,6 +786,23 @@ ROW_TABLE[16] = -> {
   transport = plan_text.to_s[/transport:\s*(\S+)/, 1]
   route_out, = sh("ip route get #{pod_addr} 2>/dev/null")
   route_line = route_out.to_s.strip.lines.first.to_s.strip
+  # THE RETURN PATH, AS THE RULING STATES IT (Evans 2026-11-23: "Replies cannot go
+  # through the LAN gateway. That path needs to be blocked."). This condition used to
+  # read `WRONG(...)` for a packet the host would hand to its LAN gateway. That is the
+  # path the ruling says must be CLOSED, not rerouted -- so there are three states now
+  # and only two of them are good:
+  #
+  #   via Router(<transport>)  replies come back through the tunnel
+  #   BLOCKED(<what>)          the host refuses to hand the packet to the LAN at all
+  #   LAN-PATH-OPEN(<route>)   the old WRONG, renamed: a route that still offers the
+  #                            packet to the LAN gateway. Red, and red on purpose.
+  #
+  # BLOCKED is read from the route's own verdict (unreachable / prohibit / blackhole),
+  # which is the one form of block this row can see. A firewall-side block with an open
+  # route will read LAN-PATH-OPEN, and that is deliberate rather than a gap: an open
+  # route plus a rule is one misconfiguration away from carrying, and the row should not
+  # be able to call that settled. If the desk blocks by rule and wants that arm read too,
+  # say so and it gets a fourth measurement.
   return_state =
     if pod_addr.to_s.empty?
       "untested(precondition false: the pod holds no wg0 address to route back to)"
@@ -775,8 +810,10 @@ ROW_TABLE[16] = -> {
       "untested(precondition false: plan.yml names no router transport, so there is nothing to compare the route against)"
     elsif route_out.to_s.include?(transport.to_s)
       "via Router(#{transport})"
+    elsif route_line.match?(/unreachable|prohibit|blackhole/)
+      "BLOCKED(#{route_line[0, 48]})"
     else
-      "WRONG(#{route_line[0, 48]})"
+      "LAN-PATH-OPEN(#{route_line[0, 48]})"
     end
 
   occupancy = plan_occupancy
@@ -788,7 +825,7 @@ ROW_TABLE[16] = -> {
                   "free"
                 end
 
-  conditions = "term4=#{term4 ? 'present' : "ABSENT(#{term4_note})"} " \
+  conditions = "term4=#{term4 ? "present(0.0.0.0/0)" : "ABSENT(#{term4_note})"} " \
                "· forward=#{forward} " \
                "· return=#{return_state} " \
                "· subnet=#{subnet_note}"
