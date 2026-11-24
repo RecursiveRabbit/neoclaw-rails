@@ -110,10 +110,28 @@ end
 
 # A file read has to enter the MOUNT namespace as well. `nsented` enters only --net,
 # so `nsented(pid, "cat /etc/resolv.conf")` reads the HOST's file and answers a
-# question nobody asked. Measured 2026-11-22: the pod has no /etc/resolv.conf at all,
-# and the first version of row 16 reported the resolver as present because of this.
+# question nobody asked.
+#
+# AND THE MOUNT NAMESPACE IS A DIFFERENT FILE. `pod_netns` hands back
+# `/proc/<pid>/ns/net`, and this helper used to pass that same path to --mount as
+# well. nsenter then tries to reassociate CLONE_NEWNS to a NET namespace and fails
+# with EINVAL, printing nothing — so the caller saw an empty file and row 16 reported
+# `dns=ABSENT(no /etc/resolv.conf in the pod)` while the pod's resolver was present
+# and correct. Measured on z620 2026-11-24, both ways, on one pid:
+#
+#   --mount=/proc/PID/ns/net  -> "reassociate to namespace 'ns/mnt' failed:
+#                                Invalid argument", no output   <- the row
+#   --mount=/proc/PID/ns/mnt  -> "# Written by Cove at attach time from plan.yml
+#                                (dns.resolver). nameserver 10.89.4.1"   <- the pod
+#
+# This also puts the 2026-11-22 note in doubt: "the pod has no /etc/resolv.conf at
+# all" was read by this instrument, and this instrument could not have read a pod
+# file that day either. The safe thing to say is that the file's absence was never
+# measured; what was measured is that a broken probe prints the same nothing as a
+# missing file.
 def nsent_file(path, file, timeout: 8)
-  sudo_sh("nsenter --net=#{path} --mount=#{path} cat #{file}", timeout: timeout)
+  mnt = path.to_s.sub(%r{/ns/net\z}, "/ns/mnt")
+  sudo_sh("nsenter --net=#{path} --mount=#{mnt} cat #{file}", timeout: timeout)
 end
 
 # A fresh WireGuard peer carries nothing until it has handshaked, and the first
@@ -936,6 +954,18 @@ ROW_TABLE[16] = -> {
 
     ok, _rules, why = wait_rules { |text| forward_rules(text, plan_addr(:agent, num: 10)).size == 2 }
     return fail!(row, "Router did not reduce agent-a to one road #{why}") unless ok
+
+    # The addresses come from the plan, by the numbers the block above passes in. Before
+    # 2026-11-24 this destructured literals out of the table; when the plan moved, the
+    # literals became numbers and these two uses were left behind, so rows 17 and 18
+    # raised NameError and reported the world as broken. A row that cannot run must say
+    # so as a row that cannot run. Found by running the suite, which is the only way it
+    # was ever going to be found.
+    kept_ip = plan_addr(:service, num: kept_num)
+    removed_ip = plan_addr(:service, num: removed_num)
+    if kept_ip.nil? || removed_ip.nil?
+      return unmet(row, "plan.yml names no service pool, so there is no address to take a road to")
+    end
 
     kept_ok = opens?(pid, kept_ip, 3000, timeout: 8)
     removed_ok = !opens?(pid, removed_ip, 3000, timeout: 3)
