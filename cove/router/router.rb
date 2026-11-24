@@ -43,32 +43,6 @@ def run!(*argv)
   out
 end
 
-# A read, for facts about the box this Router is running in. DRY does not suppress
-# reads: a dry run that cannot see the box would print a plan about a different one.
-def read_cmd(*argv)
-  out, _err, st = Open3.capture3(*argv)
-  st.success? ? out.to_s : ""
-end
-
-# The tunnel's own network, taken from the prefix on the Router's own address. Not a
-# second value to keep in step with plan.yml: when the range moves, this follows the
-# address the file already carries, and the two cannot disagree.
-def tunnel_net(router)
-  require "ipaddr"
-  addr = router["address"].to_s
-  net = (IPAddr.new(addr) rescue nil)
-  return nil if net.nil?
-
-  "#{net}/#{net.prefix}"
-end
-
-# The device the Router leaves by: whatever owns the default route. A hard-coded eth0
-# would be a second place to change when the underlay moves, and a wrong one to debug
-# when it moves without this.
-def underlay_dev
-  read_cmd("ip", "-4", "route", "show", "default")[%r{\bdev\s+(\S+)}, 1]
-end
-
 # ---- the file must be whole ------------------------------------------------
 def verify(raw)
   digest_line = raw[/^body-sha256 ([0-9a-f]{64})$/, 1]
@@ -203,31 +177,31 @@ def apply(peers, permits, router, first:)
   end
   rules << "COMMIT\n"
 
-  # EVANS' RULING, 2026-11-23, relayed by the desk: "The Router must forward traffic,
-  # the host is essentially giving the Router web access, not the Agent pods." So the
-  # host accepts the ROUTER's egress, and the Router speaks for the pods. Accepting the
-  # packet is not enough: a forwarded packet leaves here with its source still
-  # 10.99.2.x, and nothing upstream can return to an address it has never heard of.
-  # Measured on z620 the same day: this netns had ip_forward=1 and NO nat table at all,
-  # so every permitted packet was forwarded and then died upstream, which is a star
-  # that handshakes and carries nothing.
+  # NO NAT TABLE, AND THIS PARAGRAPH IS WHY. A nat/MASQUERADE rule stood here on
+  # 2026-11-23 (11e5fbb) and was withdrawn the same day, because it was the wrong
+  # instrument aimed at a real fault.
   #
-  # Scoped twice over: source is the tunnel network the file itself names, and the exit
-  # is the device holding the default route. The FORWARD chain above is untouched, so
-  # unpermitted traffic never reaches POSTROUTING and this widens nothing.
+  # The fault was real: a packet forwarded out this device carried its source still in
+  # the tunnel, and nothing upstream could return it. But the answer to "nothing routes
+  # this back" is a route, not a translation. Evans' ruling is "the host is essentially
+  # giving the Router web access, not the Agent pods" -- that is a POLICY statement
+  # about whose traffic the host admits (the Router's), and it is satisfied by a
+  # FORWARD accept keyed to this device's ingress. It does not ask the Router to erase
+  # who is speaking.
   #
-  # Same restore as the filter table on purpose: one atomic replace, still one write,
-  # and no instant where the Router has a new permit set and an old translation.
-  net = tunnel_net(router)
-  die "cannot derive the tunnel network from the router address #{router["address"].inspect}" if net.nil?
-
-  dev = underlay_dev
-  die "cannot find the underlay device: no default route names a dev in this netns" if dev.to_s.empty?
-
-  rules << "*nat\n:POSTROUTING ACCEPT [0:0]\n"
-  rules << "-A POSTROUTING -s #{net} -o #{dev} -j MASQUERADE\n"
-  rules << "COMMIT\n"
-
+  # And translation actively removes the thing the ruling asks for next: "Replies cannot
+  # go through the LAN gateway. That path needs to be blocked." A masqueraded flow needs
+  # no route back to the pod at all -- conntrack unwrites the translation -- so the
+  # return-route requirement becomes vacuous and `ip route get <pod>` stops meaning
+  # anything. A construction that makes the requirement it was built beside unmeasurable
+  # is the wrong construction.
+  #
+  # So this Router routes. Per-pod source addresses survive it, which is the identity the
+  # permit rules are written against and the identity the Mint architecture preserves.
+  # If anything translates, it translates at the edge that owns the public address --
+  # z620 -- where the translation is one hop from the world and no longer inside the
+  # architecture. The host-side routes (the pod subnets via this device) are the
+  # requirement, and they are the host's to install.
   if DRY
     puts "  (dry) iptables-restore <<< #{rules.lines.size} lines"
   else
