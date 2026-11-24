@@ -937,6 +937,18 @@ ROW_TABLE[16] = -> {
     ok, _rules, why = wait_rules { |text| forward_rules(text, plan_addr(:agent, num: 10)).size == 2 }
     return fail!(row, "Router did not reduce agent-a to one road #{why}") unless ok
 
+    # The addresses come from the plan, by the numbers the block above passes in. Before
+    # 2026-11-24 this destructured literals out of the table; when the plan moved, the
+    # literals became numbers and these two uses were left behind, so rows 17 and 18
+    # raised NameError and reported the world as broken. A row that cannot run must say
+    # so as a row that cannot run. Found by running the suite, which is the only way it
+    # was ever going to be found.
+    kept_ip = plan_addr(:service, num: kept_num)
+    removed_ip = plan_addr(:service, num: removed_num)
+    if kept_ip.nil? || removed_ip.nil?
+      return unmet(row, "plan.yml names no service pool, so there is no address to take a road to")
+    end
+
     kept_ok = opens?(pid, kept_ip, 3000, timeout: 8)
     removed_ok = !opens?(pid, removed_ip, 3000, timeout: 3)
     detail = "#{kept} rides=#{kept_ok ? 'ok' : 'NO'}, #{removed} refused=#{removed_ok ? 'ok' : 'NO'}"
