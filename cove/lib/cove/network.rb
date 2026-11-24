@@ -1,4 +1,5 @@
 require "digest"
+require "ipaddr"
 require "open3"
 require "securerandom"
 require "fileutils"
@@ -22,8 +23,28 @@ module Cove
     # passes the plan's values explicitly (see Plan), because the tunnel subnet and
     # the Router's transport address are properties of an installation and not of
     # this class. Left as ENV so script/net-proof still runs on its own.
-    WG_NET      = ENV.fetch("COVE_WG_NET", "10.99.0.0/16")
-    ROUTER_ADDR = ENV.fetch("COVE_ROUTER_ADDR", "10.99.0.1")
+    WG_NET      = ENV.fetch("COVE_WG_NET", "10.201.0.0/20")
+    ROUTER_ADDR = ENV.fetch("COVE_ROUTER_ADDR", "10.201.0.1")
+
+    # Evans, 2026-11-23: "The Router is a router, it's the default gateway for all
+    # pods. Their Allowed IPs list for the Router connection should be 0.0.0.0/0, all
+    # connections go through the router."
+    #
+    # This was the tunnel network, which put the pod's own cryptokey routing table
+    # inside the Router's permit list -- two lists of what may be reached, able to
+    # disagree without either being wrong. The Router's permits decide what exists;
+    # the pod's table only decides what it will encrypt for.
+    #
+    # THE COST, written here because a ruling that hides its cost is a trap:
+    # allowed-ips is BIDIRECTIONAL. On a peer it means both "encrypt to these" and
+    # "accept these sources from this peer". At 0.0.0.0/0 the pod accepts anything
+    # arriving through wg0, so its door no longer discriminates by source -- it
+    # accepts the whole interface. The Router is the only peer and it is ours, so the
+    # practical difference is small; the real difference is that the Router's rules
+    # are now the ONLY thing deciding what may reach a pod, where there used to be
+    # two independent places to be wrong. That is the trade Evans chose, and R16's
+    # term4 condition exists so that whichever way it is set is visible in the run.
+    PEER_ALLOWED_IPS = "0.0.0.0/0".freeze
     ROUTER_TRANSPORT = ENV.fetch("COVE_ROUTER_TRANSPORT", "10.89.4.2")
     ROUTER_PORT = Integer(ENV.fetch("COVE_ROUTER_PORT", "51820"))
     ROUTER_NAME = ENV.fetch("COVE_ROUTER_NAME", "cove-router")
@@ -50,6 +71,18 @@ module Cove
       def run(*argv)
         out, err, st = Open3.capture3(*argv)
         Step.new(ok: st.success?, argv: argv, out: out, err: err)
+      end
+
+      # Writing a file INSIDE the pod needs the MOUNT namespace as well as the net one.
+      # `nsenter -t <pid> -n` alone writes the HOST's /etc/resolv.conf -- measured
+      # 2026-11-22, and it is why row 16 first reported a pod resolver as present when
+      # the pod had none at all. Still argv-only: `tee` takes the content on stdin, so
+      # a document is never interpolated into a command line.
+      def write_in_pod(pid, path, content)
+        out, err, st = Open3.capture3(*Cove.sudo_prefix, "nsenter", "-t", pid.to_s, "-m", "-n", "--",
+                                      "tee", path, stdin_data: content.to_s)
+        Step.new(ok: st.success?, argv: ["nsenter", "-t", pid.to_s, "-m", "-n", "--", "tee", path],
+                 out: out, err: err)
       end
 
       # --- keys ---------------------------------------------------------------
@@ -88,7 +121,38 @@ module Cove
       # harness passes nothing and gets the on-disk keypair instead.
       def attach(sheet_slug:, pod_ip:, image:, command: [], router_pub:, private_key: nil,
                  router_transport: ROUTER_TRANSPORT, router_port: ROUTER_PORT, wg_net: WG_NET,
-                 listen_port: 0, router_addr: ROUTER_ADDR)
+                 listen_port: 0, router_addr: ROUTER_ADDR, dns_resolver: nil)
+        # The pod's address must lie inside the plan's tunnel, and the check is here --
+        # before anything is created -- because a persisted pod_ip outlives a plan change
+        # and the failure that produces is silent: the pod comes up, the handshake
+        # succeeds, and the Router, whose only route is the tunnel's own prefix, has
+        # nowhere to send the reply. That is the measured shape of a star that
+        # handshakes and forwards nothing.
+        #
+        # `wg_net` stopped being the peer's permit on 2026-11-23 (see PEER_ALLOWED_IPS),
+        # and a parameter that is passed and then ignored is worse than one that is not
+        # passed at all. So it keeps a job: it is the plan's claim about where its own
+        # addresses live, and this is the one moment that claim is cheap to test.
+        tunnel = begin
+          IPAddr.new(wg_net.to_s)
+        rescue StandardError
+          nil
+        end
+        raise Cove::DocumentError, "attach #{sheet_slug}: wg_net #{wg_net.inspect} is not a CIDR" if tunnel.nil?
+
+        pod_net = begin
+          IPAddr.new(pod_ip.to_s)
+        rescue StandardError
+          nil
+        end
+        raise Cove::DocumentError, "attach #{sheet_slug}: #{pod_ip.inspect} is not an address" if pod_net.nil?
+        unless tunnel.include?(pod_net)
+          raise Cove::DocumentError,
+                "attach #{sheet_slug}: #{pod_ip} is outside the plan's tunnel #{wg_net}. " \
+                "A persisted pod_ip does not move when the plan does: clear this sheet's " \
+                "pod_ip (or destroy and relaunch it) so the allocator can place it in the new range."
+        end
+
         priv, pub = if private_key
                       [private_key.to_s, Keys.pubkey_of(File.read(private_key))]
                     else
@@ -118,7 +182,7 @@ module Cove
         steps << sudo("wg", "set", iface, "private-key", priv, "listen-port", listen_port.to_s)
         steps << sudo("wg", "set", iface, "peer", router_pub,
                       "endpoint", "#{router_transport}:#{router_port}",
-                      "allowed-ips", wg_net, "persistent-keepalive", "5")
+                      "allowed-ips", PEER_ALLOWED_IPS, "persistent-keepalive", "5")
         steps << sudo("ip", "link", "set", iface, "up")
         # the move
         steps << sudo("ip", "link", "set", iface, "netns", pid)
@@ -138,6 +202,25 @@ module Cove
         steps << sudo("nsenter", "-t", pid, "-n", "iptables", "-A", "OUTPUT", "-o", "lo", "-j", "ACCEPT")
         steps << sudo("nsenter", "-t", pid, "-n", "iptables", "-A", "INPUT", "-i", "wg0", "-j", "ACCEPT")
         steps << sudo("nsenter", "-t", pid, "-n", "iptables", "-A", "OUTPUT", "-o", "wg0", "-j", "ACCEPT")
+        # THE POD'S RESOLVER, written at attach time from the plan. Evans, 2026-11-23:
+        # until a Service pod serves DNS, the Agent pods reach DNS on the z620 through
+        # the Router.
+        #
+        # It has to be written here rather than left to podman, because the pod is
+        # created with --network none and -- measured 2026-11-22 -- has no
+        # /etc/resolv.conf at all. A pod with no resolver cannot resolve the name R16
+        # fetches, and R16 then reports that as an egress failure: the right fact read
+        # by the wrong instrument.
+        #
+        # No resolver named in the plan means NO FILE, never an empty one. A nameserver
+        # line with nothing after it does not fail loudly, it times out, and a DNS
+        # timeout reads exactly like a shut road.
+        unless dns_resolver.to_s.strip.empty?
+          resolv = "# Written by Cove at attach time from plan.yml (dns.resolver).\n" \
+                   "nameserver #{dns_resolver.to_s.strip}\n" \
+                   "options timeout:2 attempts:2\n"
+          steps << write_in_pod(pid, "/etc/resolv.conf", resolv)
+        end
         failed = steps.reject { |s| s.equal?(idempotent_del) }.reject(&:ok?)
         unless failed.empty?
           # leave nothing half-built

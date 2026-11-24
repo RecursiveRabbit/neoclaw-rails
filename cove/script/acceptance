@@ -381,7 +381,7 @@ ROW_TABLE[3] = -> {
   pid = pod_netns("cove-test-agent-a")
   return unmet(3, "test-agent-a has no running pod") if pid.nil?
   links, = nsented(pid, "ip -o link show | awk -F': ' '{print $2}'")
-  peer, = in_router("wg show wg0 allowed-ips | grep -c 10.99.2")
+  peer, = in_router("wg show wg0 allowed-ips | grep -c #{plan_addr(:agent_pool)}")
   ufw, = nsented(pid, "iptables-save 2>/dev/null | grep -c '^-A'")
   if peer.to_i.positive? && ufw.to_i.positive?
     met(3, "agent-a peered at the Router (#{peer.strip} peer line(s)); #{ufw.strip} door rule(s) inside its netns; links: #{links.split.join(',')}")
@@ -573,7 +573,7 @@ ROW_TABLE[10] = -> {
     answered = false
     deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 15
     while Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
-      out, = nsented(pid, "ping -c 1 -W 2 10.99.0.1")
+      out, = nsented(pid, "ping -c 1 -W 2 #{plan_addr(:router)}")
       if out.include?("1 received")
         answered = true
         break
@@ -582,7 +582,7 @@ ROW_TABLE[10] = -> {
     end
     fails << n unless answered
   end
-  fails.empty? ? met(10, "all four ping the Router at 10.99.0.1 (#{note}, handshakes settled in #{waited}s)") :
+  fails.empty? ? met(10, "all four ping the Router at #{plan_addr(:router)} (#{note}, handshakes settled in #{waited}s)") :
     fail!(10, "no answer: #{fails.join(' ')} (#{note}, settled in #{waited}s)")
 }
 
@@ -594,8 +594,8 @@ ROW_TABLE[11] = -> {
   # handshaked leaks nothing for the trivial reason. Wait, then try.
   settled, waited, note = await_handshake
   return unmet(11, note) unless settled
-  to_host, = nsented(a, "ping -c 1 -W 2 10.99.0.3")
-  to_b, = nsented(a, "ping -c 1 -W 2 10.99.2.11")
+  to_host, = nsented(a, "ping -c 1 -W 2 #{plan_addr(:host)}")
+  to_b, = nsented(a, "ping -c 1 -W 2 #{plan_addr(:agent, num: 11)}")
   leaked = []
   leaked << "agent-a→host" if to_host.include?("1 received")
   leaked << "agent-a→agent-b" if to_b.include?("1 received")
@@ -609,9 +609,15 @@ ROW_TABLE[11] = -> {
 # 12 and 13 are CONFIG rows on purpose: what they can measure is that the Manager's
 # answer reached the Router's rule set, which is a reading. Row 14 is the packet, and
 # a rule that carries no packet has never counted in this suite.
-[[12, "test-agent-a", "10.99.2.10"], [13, "test-agent-b", "10.99.2.11"]].each do |row, slug, src|
+[[12, "test-agent-a", 10], [13, "test-agent-b", 11]].each do |row, slug, num|
   ROW_TABLE[row] = -> {
     return unmet(row, "#{slug} has no pod — nothing to permit from") if pod_netns("cove-#{slug}").nil?
+
+    # The address this agent was placed at, read from the plan and not retyped. R12/R13
+    # assert on RULE TEXT, so a wrong source address here is not a wrong row -- it is a
+    # row that fails for a reason that has nothing to do with the permit.
+    src = plan_addr(:agent, num: num)
+    return unmet(row, "plan.yml is unreadable, so there is no address to look for in the Router") if src.nil?
 
     code, = post_form("/sheets/#{slug}/permits",
                       "services" => "test-service-a test-service-b")
@@ -649,10 +655,14 @@ ROW_TABLE[14] = -> {
   return unmet(14, note) unless settled
 
   res = []
-  { "cove-test-agent-a" => { "cove-test-service-a" => "10.99.1.10",
-                             "cove-test-service-b" => "10.99.1.11" },
-    "cove-test-agent-b" => { "cove-test-service-a" => "10.99.1.10",
-                             "cove-test-service-b" => "10.99.1.11" } }.each do |agent, svcs|
+  svc_a = plan_addr(:service, num: 10)
+  svc_b = plan_addr(:service, num: 11)
+  return unmet(14, "plan.yml is unreadable, so the service addresses are unknown") if svc_a.nil? || svc_b.nil?
+
+  { "cove-test-agent-a" => { "cove-test-service-a" => svc_a,
+                             "cove-test-service-b" => svc_b },
+    "cove-test-agent-b" => { "cove-test-service-a" => svc_a,
+                             "cove-test-service-b" => svc_b } }.each do |agent, svcs|
     apid = pod_netns(agent) or next res << "#{agent}: no pod"
     svcs.each do |svc, ip|
       res << "#{agent}→#{svc}=#{opens?(apid, ip, 3000) ? 'ok' : 'NO'}"
@@ -672,8 +682,8 @@ ROW_TABLE[15] = -> {
   # wearing a leak test as a costume.
   settled, waited, note = await_handshake
   return unmet(15, note) unless settled
-  ab, = nsented(a, "ping -c 1 -W 2 10.99.2.11")
-  ba, = nsented(b, "ping -c 1 -W 2 10.99.2.10")
+  ab, = nsented(a, "ping -c 1 -W 2 #{plan_addr(:agent, num: 11)}")
+  ba, = nsented(b, "ping -c 1 -W 2 #{plan_addr(:agent, num: 10)}")
   tail = "(#{note}, settled in #{waited}s)"
   if ab.include?("1 received") || ba.include?("1 received")
     fail!(15, "agent pods can address each other — the star is broken #{tail}")
@@ -903,8 +913,8 @@ ROW_TABLE[16] = -> {
 # a default DROP from one with no rules at all. Each row closes one road and then
 # asks a packet to prove both halves: the road that was left open still carries, and
 # the road that was taken away does not. 18 restores both.
-[[17, "test-service-a", "test-service-b", "10.99.1.10", "10.99.1.11"],
- [18, "test-service-b", "test-service-a", "10.99.1.11", "10.99.1.10"]].each do |row, kept, removed, kept_ip, removed_ip|
+[[17, "test-service-a", "test-service-b", 10, 11],
+ [18, "test-service-b", "test-service-a", 11, 10]].each do |row, kept, removed, kept_num, removed_num|
   ROW_TABLE[row] = -> {
     pid = pod_netns("cove-test-agent-a") or return unmet(row, "test-agent-a has no pod")
 
@@ -914,7 +924,7 @@ ROW_TABLE[16] = -> {
     # road read closed and the row reported the permits as the reason. R10 owns
     # "the star is up"; this row only owns "which road is open". The suite's own law:
     # a missing prerequisite is UNMET with the reason, never a skip and never a pass.
-    reach, = nsented(pid, "ping -c 1 -W 2 10.99.0.1")
+    reach, = nsented(pid, "ping -c 1 -W 2 #{plan_addr(:router)}")
     unless reach.to_s.include?("1 received")
       return unmet(row, "agent-a cannot reach the Router, so its own peer has not handshaked and no road " \
                         "can be measured: a packet that never left cannot show which road was open. " \
@@ -924,7 +934,7 @@ ROW_TABLE[16] = -> {
     code, = post_form("/sheets/test-agent-a/permits", "services" => kept)
     return fail!(row, "permit API answered #{code}") unless (200..399).cover?(code)
 
-    ok, _rules, why = wait_rules { |text| forward_rules(text, "10.99.2.10").size == 2 }
+    ok, _rules, why = wait_rules { |text| forward_rules(text, plan_addr(:agent, num: 10)).size == 2 }
     return fail!(row, "Router did not reduce agent-a to one road #{why}") unless ok
 
     kept_ok = opens?(pid, kept_ip, 3000, timeout: 8)
@@ -932,7 +942,7 @@ ROW_TABLE[16] = -> {
     detail = "#{kept} rides=#{kept_ok ? 'ok' : 'NO'}, #{removed} refused=#{removed_ok ? 'ok' : 'NO'}"
     if kept_ok && removed_ok
       post_form("/sheets/test-agent-a/permits", "services" => "test-service-a test-service-b")
-      wait_rules { |text| forward_rules(text, "10.99.2.10").size == 4 }
+      wait_rules { |text| forward_rules(text, plan_addr(:agent, num: 10)).size == 4 }
       met(row, detail + " (both roads restored)")
     else
       fail!(row, detail)
@@ -1176,6 +1186,68 @@ def plan_occupancy
     collides: !(occupied.empty? && clash.nil?) }
 end
 
+# The plan's VALUES, for every row that has to name an address.
+#
+# These rows used to say 10.99.0.1, 10.99.2.10 and 10.99.1.10 out loud, which was fine
+# only for as long as the plan never moved. When it moves, a literal is not a stale
+# comment -- it is a green that cannot fail. R11 and R15 are leak tests: they ping an
+# agent address and read a silence as "did not leak". Point them at an address nobody
+# holds and both go green for the best possible reason and the worst possible meaning.
+#
+# So this is not tidiness. It is the difference between a row that can fail and one that
+# cannot. (R6's wrong literal was the same fault the other way round: a row measuring a
+# number instead of the intent.)
+#
+# nil when plan.yml cannot be read, and every caller says UNTESTED rather than falling
+# back to a number. A default here would be a plan nobody voted for.
+def plan_values
+  unless @plan_values_loaded
+    @plan_values_loaded = true
+    text, _, ok = sudo_sh("cat #{COVE_STATE}/plan.yml")
+    parsed = ok ? (YAML.safe_load(text.to_s) rescue nil) : nil
+    @plan_values = parsed.is_a?(Hash) ? parsed : nil
+  end
+  @plan_values
+end
+
+# One address, by role, out of the plan. `num` is the host part inside a pool.
+def plan_addr(role, num: nil)
+  pv = plan_values
+  return nil if pv.nil?
+
+  case role
+  when :router       then pv.dig("router", "address").to_s.split("/").first
+  when :host         then pv.dig("host", "address").to_s
+  when :agent_pool   then pv.dig("pools", "agent").to_s
+  when :service_pool then pv.dig("pools", "service").to_s
+  when :agent        then (p = pv.dig("pools", "agent")).to_s.empty? ? nil : "#{p}.#{num}"
+  when :service      then (p = pv.dig("pools", "service")).to_s.empty? ? nil : "#{p}.#{num}"
+  end
+end
+
+# Is this address inside the plan's tunnel? A CIDR test, NOT a string prefix.
+#
+# The old "10.99." literal worked only because the tunnel was a /16. Written as three
+# octets for the new /20 the prefix would be "10.201.0.", which calls the Router
+# (10.201.0.1) tunnel and an agent (10.201.2.10) world-side -- the exact wrong answer,
+# from a helper that looks right. The question a row asks here is about a NETWORK, so it
+# is asked of the network and not of the spelling.
+#
+# nil when the plan or the address cannot be read, and a caller must not read that as
+# "outside": an unreadable plan is UNTESTED, not a world-side service.
+def in_tunnel?(addr)
+  pv = plan_values
+  return nil if pv.nil?
+
+  net = (IPAddr.new(pv["network"].to_s) rescue nil)
+  return nil if net.nil?
+
+  ip = (IPAddr.new(addr.to_s) rescue nil)
+  return nil if ip.nil?
+
+  net.include?(ip)
+end
+
 # ---- document assertions ---------------------------------------------------
 #
 # A document in this system is not prose: every one of them asserts something about the
@@ -1232,10 +1304,29 @@ ROW_TABLE[23] = -> {
   end
   return unmet(23, "the intent names no services, so there is nothing to check") if svcs.empty?
 
-  tunnel = ENV.fetch("COVE_TUNNEL_PREFIX", "10.99.")
-  outside = svcs.reject { |_n, a, _p| a.to_s.start_with?(tunnel) }
+  # The tunnel comes from the plan, as a NETWORK and not as a spelling -- see in_tunnel?.
+  # R23's whole job is to tell a service inside the tunnel from one in the world, and a
+  # stale or truncated prefix answers that wrongly in the direction that looks safe.
+  return unmet(23, "plan.yml is unreadable, so the tunnel network is unknown") if plan_values.nil?
+
+  # THREE OUTCOMES, NOT TWO. `in_tunnel?` returns nil when the plan or the address cannot
+  # be parsed, and `reject { in_tunnel?(a) == true }` put that nil on the world side and
+  # then TCP'd it -- so a document fault (an address nothing can read) came out as a shut
+  # road, with R23 blaming the world for a typo. Soro's gate on PR #82, 2026-11-24, named
+  # it against the sentence in `about in_tunnel?` that says a caller must not read nil as
+  # outside. Enumerate the third case and stop: an unparseable address is not a world-side
+  # service, and this row may not answer for it.
+  classified = svcs.map { |row| [row, in_tunnel?(row[1])] }
+  unreadable = classified.select { |_row, inside| inside.nil? }.map(&:first)
+  unless unreadable.empty?
+    return unmet(23, "the intent names address(es) nothing can read as an address " \
+                     "(#{unreadable.map { |n, a, _p| "#{n}=#{a.inspect}" }.join(', ')}), " \
+                     "so inside-the-tunnel from world-side is unknowable")
+  end
+
+  outside = classified.select { |_row, inside| inside == false }.map(&:first)
   if outside.empty?
-    return unmet(23, "every service in the intent is inside the tunnel (#{tunnel}), so the book has no world-side addresses to check")
+    return unmet(23, "every service in the intent is inside the tunnel (#{plan_values['network']}), so the book has no world-side addresses to check")
   end
 
   dead = outside.reject { |_n, a, p| tcp(a, p.to_i, timeout: 3) == :open }

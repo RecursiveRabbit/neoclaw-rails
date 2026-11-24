@@ -1,26 +1,74 @@
 # Cove's addressing plan, as data.
 #
-# The acceptance suite addresses this plan by literal: 10.99.0.1 is the Router,
-# 10.99.1.x services, 10.99.2.x agents. Change it here and the suite must change
-# with it — which is the point of the numbers living in a document.
+# The acceptance suite addresses this plan by literal: the Router is its first
+# host, services live in the service pool, agents in the agent pool. Change it
+# here and the suite must change with it — which is the point of the numbers
+# living in a document.
 #
 # Written by hand, once, because a plan is a decision and not a default.
-network: 10.99.0.0/16
+#
+# 2026-11-23 — MOVED OFF 10.99.0.0/16. Evans, asked why the subnet collided:
+# "Why does the subnet collide? 6 billion IPv4 addresses, choose a different
+# range." The old claim contained podman4's live 10.99.0.1/24 (three containers
+# of an unrelated test stack), and the Router's own address was that bridge's
+# address — so on this host "10.99.0.1" was already somebody, and a pod's reply
+# went to its LAN gateway. That fault is why R24 exists. R24 measured it red on
+# 2026-11-22 and 2026-11-23; it is the row's origin and the reason it stays.
+#
+# The new claim is a /20 and not a /16. 65,536 addresses were being claimed to
+# hold 480 pods; a plan should claim what it uses. A narrower claim is also
+# easier to keep true, which is the whole argument of this file.
+#
+# Evans' own sketch, standing beside the ruling and NOT yet built: a /30 transit
+# with the Router as demarc rather than a host of the overlay. It is not built
+# because it is not plan-local — `wg set` installs no routes, so a /30 leaves the
+# Router with no route to either pool and it must be given them explicitly
+# (`ip route add 10.201.2.0/24 dev wg0`). That is a Router change, and the Router
+# is soro's. Recorded here so the shape is not lost; it is not a rumour dressed
+# as a decision until a row measures it.
+network: 10.201.0.0/20
 router:
-  # /16, not /32: see lib/cove/plan.rb. The Router's own address is the only
+  # /20, not /32: see lib/cove/plan.rb. The Router's own address is the only
   # connected route it will ever have, and a star with no route to its peers
-  # forwards nothing.
-  address: 10.99.0.1/16
+  # forwards nothing. Measured on z620 2026-11-20: with a /32, `ip route get`
+  # answered `via 10.89.x.1 dev eth0` — a star that handshakes and forwards
+  # nothing, and leaks toward whatever else owns the range. The /20 answers
+  # `dev wg0` and covers both pools, so one prefix length is the whole of the
+  # star's routing table.
+  address: 10.201.0.1/20
   listen: 51820
+  # The Router's host-side underlay: it is a pod on the underlay bridge, and this
+  # is the address a pod's tunnel socket sends its UDP to.
   transport: 10.89.4.2
 underlay:
   network: cove-underlay
   subnet: 10.89.4.0/24
   gateway: 10.89.4.1
 host:
-  address: 10.99.0.3
+  # Read this field for what it is, not for what its name suggests. It is the
+  # address R11 asks a pod to FAIL to reach, and the host holds no address here —
+  # on this plan or on the last one. So that leg cannot pass for the right
+  # reason: it fails because nobody answers, not because the Router refused.
+  # Found 2026-11-23 while moving the plan; the row is not mine to redesign, so
+  # the finding is written here and filed, not patched quietly.
+  address: 10.201.0.3
 pools:
-  agent: 10.99.2
-  service: 10.99.1
+  agent: 10.201.2
+  service: 10.201.1
 first_host: 10
 last_host: 250
+# The resolver a pod is told about at attach time, reached THROUGH the tunnel.
+#
+# Evans, 2026-11-23: "I asked for a Service pod, with services like DNS
+# available. But until then, the Agent pods should reach DNS on the Z620
+# through the router." This line is the interim; long-term a Service pod serves
+# DNS and this becomes that pod's address. The pod's config does not change —
+# only what the plan points it at.
+#
+# 10.89.4.1 is the host's address on cove-underlay, the same bridge the Router
+# sits on. Measured on z620 2026-11-23: dnsmasq is bound to 0.0.0.0:53 on both
+# udp and tcp, so it answers at that address. What this line does NOT do is make
+# the answer come back: the host still needs a route into the tunnel through the
+# Router, which is the host half of R16 and not this file's to assert.
+dns:
+  resolver: 10.89.4.1
