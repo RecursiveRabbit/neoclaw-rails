@@ -43,6 +43,32 @@ def run!(*argv)
   out
 end
 
+# A read, for facts about the box this Router is running in. DRY does not suppress
+# reads: a dry run that cannot see the box would print a plan about a different one.
+def read_cmd(*argv)
+  out, _err, st = Open3.capture3(*argv)
+  st.success? ? out.to_s : ""
+end
+
+# The tunnel's own network, taken from the prefix on the Router's own address. Not a
+# second value to keep in step with plan.yml: when the range moves, this follows the
+# address the file already carries, and the two cannot disagree.
+def tunnel_net(router)
+  require "ipaddr"
+  addr = router["address"].to_s
+  net = (IPAddr.new(addr) rescue nil)
+  return nil if net.nil?
+
+  "#{net}/#{net.prefix}"
+end
+
+# The device the Router leaves by: whatever owns the default route. A hard-coded eth0
+# would be a second place to change when the underlay moves, and a wrong one to debug
+# when it moves without this.
+def underlay_dev
+  read_cmd("ip", "-4", "route", "show", "default")[%r{\bdev\s+(\S+)}, 1]
+end
+
 # ---- the file must be whole ------------------------------------------------
 def verify(raw)
   digest_line = raw[/^body-sha256 ([0-9a-f]{64})$/, 1]
@@ -176,6 +202,32 @@ def apply(peers, permits, router, first:)
     end
   end
   rules << "COMMIT\n"
+
+  # EVANS' RULING, 2026-11-23, relayed by the desk: "The Router must forward traffic,
+  # the host is essentially giving the Router web access, not the Agent pods." So the
+  # host accepts the ROUTER's egress, and the Router speaks for the pods. Accepting the
+  # packet is not enough: a forwarded packet leaves here with its source still
+  # 10.99.2.x, and nothing upstream can return to an address it has never heard of.
+  # Measured on z620 the same day: this netns had ip_forward=1 and NO nat table at all,
+  # so every permitted packet was forwarded and then died upstream, which is a star
+  # that handshakes and carries nothing.
+  #
+  # Scoped twice over: source is the tunnel network the file itself names, and the exit
+  # is the device holding the default route. The FORWARD chain above is untouched, so
+  # unpermitted traffic never reaches POSTROUTING and this widens nothing.
+  #
+  # Same restore as the filter table on purpose: one atomic replace, still one write,
+  # and no instant where the Router has a new permit set and an old translation.
+  net = tunnel_net(router)
+  die "cannot derive the tunnel network from the router address #{router["address"].inspect}" if net.nil?
+
+  dev = underlay_dev
+  die "cannot find the underlay device: no default route names a dev in this netns" if dev.to_s.empty?
+
+  rules << "*nat\n:POSTROUTING ACCEPT [0:0]\n"
+  rules << "-A POSTROUTING -s #{net} -o #{dev} -j MASQUERADE\n"
+  rules << "COMMIT\n"
+
   if DRY
     puts "  (dry) iptables-restore <<< #{rules.lines.size} lines"
   else
