@@ -729,7 +729,14 @@ ROW_TABLE[16] = -> {
   # Every CIDR on every peer line, not `split.last`: a peer with `10.99.0.0/16 0.0.0.0/0`
   # has two, and reading only the last one made the answer depend on the order wg prints.
   allowed_text, = nsented(a, "wg show wg0 allowed-ips")
-  cidrs = allowed_text.to_s.lines.flat_map { |l| l.split[1..].to_a }.compact.uniq
+  # Split on commas as well as whitespace. `wg show <if> allowed-ips` separates peers by
+  # a TAB and multiple CIDRs on one peer by a space (measured on z620, the host's own
+  # wg0: `NM3VtMrB…=\t10.77.0.2/32`), but the dump and showconf forms use commas, and a
+  # reader that only understands one of them reports ABSENT for a peer that is exactly
+  # right. dova named this on PR #82; it is one line and it is the difference between a
+  # row that reads the ruling and a row that reads a spelling.
+  cidrs = allowed_text.to_s.lines.flat_map { |l| l.split[1..].to_a }
+                          .flat_map { |c| c.split(",") }.map(&:strip).reject(&:empty?).uniq
   allowed = cidrs.join(" ")
   term4_note = cidrs.empty? ? "unknown" : allowed
   term4 = cidrs.include?("0.0.0.0/0")
@@ -754,22 +761,64 @@ ROW_TABLE[16] = -> {
     o.to_s.lines.map { |l| l.split[2].to_i }.sum
   end
 
-  egress_cidr = allowed.split(",").find { |c| !c.start_with?("10.99.") }
+  # THE PROBE NEEDS A CONCRETE ADDRESS, AND 0.0.0.0/0 IS NOT ONE. Under Evans' ruling
+  # (2026-11-23) the pod's allowed-ips is 0.0.0.0/0, and this line used to take the first
+  # permitted CIDR's network address as the thing to connect to. `</dev/tcp/0.0.0.0/9`
+  # connects to the POD'S OWN LOOPBACK and succeeds instantly, so the forward part would
+  # have measured a socket to itself and called it egress. dova named it on PR #82; it is
+  # the degenerate case of the fourth term and it would have been a green that cannot fail.
+  #
+  # A permitted CIDR only tells us the pod MAY send anywhere. The probe needs somewhere
+  # that will actually put a packet on the wire, so it is a literal, it is shouted about
+  # in the verdict, and it excludes everything that cannot be one: the tunnel itself, the
+  # unspecified address, loopback, multicast and the documentation ranges.
+  # The tunnel net comes from the plan, not from a literal: a 10.99 typed here would
+  # survive the plan's move to 10.201 and then read the tunnel as probeable -- the exact
+  # fault dova named when she took the literals out of the rows.
+  plan_net_now = (sudo_sh("cat #{COVE_STATE}/plan.yml")[0].to_s[%r{^network:\s*(\S+)}, 1]).to_s
+  probe_unusable = lambda do |cidr|
+    ip = cidr.to_s.split("/").first.to_s
+    addr = (IPAddr.new(ip) rescue nil)
+    next true if addr.nil? || cidr.to_s.end_with?("/0")
+    next true if addr.to_i.zero? || (addr.ipv4? && addr.loopback?)
+    next true if (IPAddr.new("224.0.0.0/4").include?(addr) rescue false)
+
+    (["0.0.0.0/8", "192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24"] + [plan_net_now]).reject(&:empty?).any? do |bad|
+      (IPAddr.new(bad).include?(addr) rescue false)
+    end
+  end
+  egress_cidr = cidrs.find { |c| !probe_unusable.call(c) }
   # """.split("/").first" is nil, not "". Two outcomes in my head (a CIDR or nothing) and
   # three in Ruby (a CIDR, or an empty array whose first element is nil). The fourth law was
   # written an hour before this line and did not save it, because I enumerated MY outcomes and
   # not the language's.
   egress_ip = egress_cidr.nil? ? "" : egress_cidr.split("/").first.to_s
+  # 1.1.1.1:9 when the only permission is everything -- a real destination, never the pod's
+  # own stack. It is a literal on purpose: a probe that quietly changes target with the plan
+  # would be a second thing to drift, and the verdict prints which address it used.
+  if egress_ip.empty? && cidrs.include?("0.0.0.0/0")
+    egress_ip = "1.1.1.1"
+    egress_cidr = "0.0.0.0/0 -> probed at 1.1.1.1"
+  end
   fwd_before = ufw_count.call
   tx_before = pod_tx.call
   nsented(a, "timeout 4 bash -c '</dev/tcp/#{egress_ip}/9'", timeout: 6) unless egress_ip.empty?
   left = pod_tx.call > tx_before
   fwd_after = ufw_count.call
   drops = (fwd_before.nil? || fwd_after.nil?) ? nil : fwd_after - fwd_before
+  # A KNOWN WEAKNESS, NAMED RATHER THAN PAPERED OVER. `drops == 0` is read here as "the
+  # host accepted". Since the Router now forwards for the pods, a packet the ROUTER drops
+  # never reaches the host at all, and this counter cannot tell that apart from a packet
+  # the host accepted cheerfully. The fix is to read the Router's own FORWARD counters
+  # beside this one and let the two parts say which chain made the decision -- a row
+  # change, not a comment, and it is not written here because nothing has been rebuilt
+  # with the translating Router yet and a branch no run can exercise is a claim, not an
+  # instrument.
   forward = if fwd_before.nil? || fwd_after.nil?
               "untested(precondition false: the host's fall-through counter could not be read, so nothing here was measured)"
             elsif egress_ip.empty?
-              "untested(precondition false: term4=ABSENT, so no destination outside the tunnel is permitted)"
+              "untested(precondition false: no permitted CIDR yields a probeable address " \
+                "(allowed-ips: #{allowed.empty? ? 'none' : allowed})"
             elsif !left
               "untested(precondition false: no packet left the pod for #{egress_ip}, so the host's forward path was not exercised)"
             elsif drops.positive?
