@@ -842,11 +842,12 @@ ROW_TABLE[16] = -> {
   # and only two of them are good:
   #
   #   via Router(<transport>)  replies come back through the tunnel
-  #   BLOCKED(<what>)          the host refuses to hand the packet to the LAN at all
+  #   NO-ROUTE(<what>)         the host refuses to hand the packet anywhere: satisfies
+  #                            "blocked" and still fails, because replies must arrive
   #   LAN-PATH-OPEN(<route>)   the old WRONG, renamed: a route that still offers the
   #                            packet to the LAN gateway. Red, and red on purpose.
   #
-  # BLOCKED is read from the route's own verdict (unreachable / prohibit / blackhole),
+  # NO-ROUTE is read from the route's own verdict (unreachable / prohibit / blackhole),
   # which is the one form of block this row can see. A firewall-side block with an open
   # route will read LAN-PATH-OPEN, and that is deliberate rather than a gap: an open
   # route plus a rule is one misconfiguration away from carrying, and the row should not
@@ -860,7 +861,13 @@ ROW_TABLE[16] = -> {
     elsif route_out.to_s.include?(transport.to_s)
       "via Router(#{transport})"
     elsif route_line.match?(/unreachable|prohibit|blackhole/)
-      "BLOCKED(#{route_line[0, 48]})"
+      # Not a pass, and the name says so. A blackholed route satisfies the letter of
+      # "that path needs to be blocked" and not the point of it: replies still have to
+      # ARRIVE, and a route that refuses the packet is a pod nobody can reach. The good
+      # state is `via Router` -- the pod-subnet route -- and the block Evans asked for is
+      # a backstop behind it, not a substitute for it. Called BLOCKED it read like success;
+      # it is a network with a hole in it.
+      "NO-ROUTE(#{route_line[0, 48]})"
     else
       "LAN-PATH-OPEN(#{route_line[0, 48]})"
     end
