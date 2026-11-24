@@ -789,6 +789,31 @@ ROW_TABLE[16] = -> {
     o.to_s.lines.map { |l| l.split[2].to_i }.sum
   end
 
+  # THE ROUTER DECIDES FIRST, AND UNTIL NOW THIS ROW COULD NOT SEE IT.
+  #
+  # `forward` used to read the host's fall-through counter and nothing else, so
+  # drops==0 meant "the host accepted". Since the Router forwards, a packet the
+  # ROUTER drops never reaches the host at all, and the host's counter reads zero for
+  # a packet refused one hop earlier — the two cases are indistinguishable there, and
+  # the row printed the good one.
+  #
+  # MEASURED 2026-11-24, and this is not hypothetical: with the permit set naming no
+  # road to the resolver, a pod's DNS query left the pod (pod_tx increased), was
+  # decrypted by the Router, and died on the Router's `:FORWARD DROP` policy — and
+  # this row printed `forward=accepts(1.1.1.1 left the pod and did not fall through)`
+  # while nothing on the host had seen a packet. Two counters, both read from the box
+  # and not from a document: the Router's own received bytes (did it arrive?) and the
+  # Router's policy-drop count (did its rules refuse it?).
+  router_rx = lambda do
+    o, _e, ok = in_router("wg show wg0 transfer")
+    ok ? o.to_s.lines.map { |l| l.split[1].to_i }.sum : nil
+  end
+  router_drop = lambda do
+    o, _e, ok = in_router("iptables -L FORWARD -v -n 2>/dev/null | head -1")
+    n = ok ? o.to_s[/policy DROP (\d+) packets/, 1] : nil
+    n.nil? ? nil : n.to_i
+  end
+
   # THE PROBE NEEDS A CONCRETE ADDRESS, AND 0.0.0.0/0 IS NOT ONE. Under Evans' ruling
   # (2026-11-23) the pod's allowed-ips is 0.0.0.0/0, and this line used to take the first
   # permitted CIDR's network address as the thing to connect to. `</dev/tcp/0.0.0.0/9`
@@ -830,10 +855,16 @@ ROW_TABLE[16] = -> {
   end
   fwd_before = ufw_count.call
   tx_before = pod_tx.call
+  rrx_before = router_rx.call
+  rdr_before = router_drop.call
   nsented(a, "timeout 4 bash -c '</dev/tcp/#{egress_ip}/9'", timeout: 6) unless egress_ip.empty?
   left = pod_tx.call > tx_before
   fwd_after = ufw_count.call
   drops = (fwd_before.nil? || fwd_after.nil?) ? nil : fwd_after - fwd_before
+  rrx_after = router_rx.call
+  rdr_after = router_drop.call
+  arrived = (rrx_before.nil? || rrx_after.nil?) ? nil : rrx_after - rrx_before
+  router_drops = (rdr_before.nil? || rdr_after.nil?) ? nil : rdr_after - rdr_before
   # A KNOWN WEAKNESS, NAMED RATHER THAN PAPERED OVER. `drops == 0` is read here as "the
   # host accepted". Since the Router now forwards for the pods, a packet the ROUTER drops
   # never reaches the host at all, and this counter cannot tell that apart from a packet
@@ -849,10 +880,19 @@ ROW_TABLE[16] = -> {
                 "(allowed-ips: #{allowed.empty? ? 'none' : allowed})"
             elsif !left
               "untested(precondition false: no packet left the pod for #{egress_ip}, so the host's forward path was not exercised)"
+            elsif arrived.nil? || router_drops.nil?
+              "untested(precondition false: the packet left the pod but the Router's own counters could not be read, " \
+                "so which chain refused it is unknown)"
+            elsif router_drops.positive?
+              # The pod's packet reached the Router and the Router's rules ate it. That is
+              # the ordinary, correct answer when no permit names this road — and it is
+              # NOT the host's business, which is why it needs a name of its own.
+              "ROUTER-DROPS(#{router_drops} packet(s) arrived at the Router and its :FORWARD DROP policy " \
+                "refused them — no permit or egress names #{egress_ip})"
             elsif drops.positive?
-              "DROPS(#{drops} of the pod's packets fell through to the policy drop)"
+              "DROPS(#{drops} of the pod's packets fell through to the host's policy drop)"
             else
-              "accepts(#{egress_ip} left the pod and did not fall through)"
+              "accepts(#{egress_ip} left the pod, arrived at the Router (#{arrived} rx byte(s)) and did not fall through)"
             end
 
   out, err, ok = nsented(a, "curl -sS -o /dev/null -w '%{http_code}' --max-time 8 https://theuncannyvalley.cc", timeout: 12)
