@@ -60,6 +60,7 @@ def parse(body)
   peers = {}
   services = {}
   permits = []
+  egress = []
   unresolved = []
   version = nil
 
@@ -93,6 +94,32 @@ def parse(body)
       src_addr = peers.dig(src, "address")
       die "permit names a pod with no peer line: #{src}" if src_addr.nil?
       permits << { src: src, src_addr: src_addr, svc: svc, to: kv["to"], port: kv["port"] }
+    when "egress"
+      # A BASELINE ROAD OUT, and the one permit no sheet can remove.
+      #
+      # Evans, 2026-11-23: "until then, the Agent pods should reach DNS on the Z620
+      # through the router." This device's FORWARD policy is DROP, so a resolver that
+      # no permit names is a resolver no pod can reach. Measured on z620 2026-11-24:
+      # the pod's query ARRIVED here and the policy counter ate it (3 packets seen by
+      # a hand-added rule in the same position), and the host saw nothing at all — so
+      # the first diagnosis, "the Router is not forwarding", was wrong in the useful
+      # direction: it was forwarding until the policy stopped it.
+      #
+      # An egress names an ADDRESS AND A PORT, not a service, and that is deliberate.
+      # A permit names a service so that a typo cannot become a hole (see the check at
+      # the tail of this parse). The resolver has no sheet and no service line, so the
+      # only thing that can be verified about it is that it is an address.
+      #
+      # ABSENCE IS ACCEPTED IN THIS RELEASE. The renderer does not emit egress yet, and
+      # a Router that refused a file without one would take the fleet dark the moment it
+      # was deployed. Order of landing: the Router learns to accept it (here), then the
+      # Manager starts emitting it, then a later Router may refuse a file without one.
+      # `die` on an unknown directive still stands — that is what makes this order
+      # mandatory rather than polite.
+      to = kv["to"].to_s
+      port = kv["port"].to_s
+      die "malformed egress (needs to= and port=): #{line}" if to.empty? || port.empty?
+      egress << { name: rest[/\A"([^"]*)"/, 1], to: to, port: port }
     when "unresolved"
       unresolved << line
     else
@@ -109,11 +136,11 @@ def parse(body)
     die "permit to an undeclared service: #{p[:svc]}" unless services.key?(p[:svc])
   end
 
-  [peers, router, permits, unresolved]
+  [peers, router, permits, unresolved, egress]
 end
 
 # ---- apply -----------------------------------------------------------------
-def apply(peers, permits, router, first:)
+def apply(peers, permits, router, egress, first:)
   if first
     system("ip", "link", "del", IFACE, out: File::NULL, err: File::NULL) unless DRY
     run!("ip", "link", "add", IFACE, "type", "wireguard")
@@ -175,6 +202,18 @@ def apply(peers, permits, router, first:)
       rules << "-A FORWARD -s #{p[:src_addr]} -d #{p[:to]} -p #{proto} -m #{proto} --dport #{p[:port]} -j ACCEPT\n"
     end
   end
+  # egress: one rule per PEER per egress, so the source is the pod's own address and
+  # not the tunnel's. That is the same identity the permit rules are written against,
+  # and it is the reason a per-pod address survives this device at all — a rule keyed
+  # to the tunnel would let the single largest claim in this file ("a permit names a
+  # pod") degrade into "a permit names the network".
+  egress.each do |e|
+    peers.each_value do |p|
+      %w[tcp udp].each do |proto|
+        rules << "-A FORWARD -s #{p['address']} -d #{e[:to]} -p #{proto} -m #{proto} --dport #{e[:port]} -j ACCEPT\n"
+      end
+    end
+  end
   rules << "COMMIT\n"
 
   # NO NAT TABLE, AND THIS PARAGRAPH IS WHY. A nat/MASQUERADE rule stood here on
@@ -221,7 +260,7 @@ def apply(peers, permits, router, first:)
   end
 end
 
-def plan(peers, services, permits, unresolved, router)
+def plan(peers, services, permits, unresolved, router, egress)
   puts "router: plan"
   puts "  interface   #{IFACE}  #{router['address']}  listen #{router['listen']}"
   puts "  peers       #{peers.size}"
@@ -230,6 +269,8 @@ def plan(peers, services, permits, unresolved, router)
   services.sort.each { |n, s| puts "    #{n.ljust(28)} #{s['address']}:#{s['port']}" }
   puts "  permits     #{permits.size}"
   permits.each { |p| puts "    #{p[:src]} -> #{p[:svc]} (#{p[:to]}:#{p[:port]})" }
+  puts "  egress      #{egress.size} (baseline, every peer)"
+  egress.each { |e| puts "    #{e[:name].to_s.ljust(28)} -> #{e[:to]}:#{e[:port]}" }
   puts "  unresolved  #{unresolved.size} (no permit is rendered for these)" unless unresolved.empty?
 end
 
@@ -237,13 +278,14 @@ end
 die "no config at #{CONF}" unless File.exist?(CONF)
 raw = File.read(CONF)
 body = verify(raw)
-peers, router, permits, unresolved = parse(body)
+peers, router, permits, unresolved, egress = parse(body)
 services = Hash[body.each_line.grep(/^service /).map { |l| [l[/\A"([^"]*)"/] || l[/"([^"]*)"/, 1], { "address" => l[/address="([^"]*)"/, 1], "port" => l[/port="([^"]*)"/, 1] }] }]
 die "no router private key at #{KEY}" unless DRY || File.exist?(KEY)
 
-plan(peers, services, permits, unresolved, router)
-apply(peers, permits, router, first: true)
-puts "router: programmed #{peers.size} peer(s), #{permits.size} permit(s) — #{unresolved.size} unresolved, no road"
+plan(peers, services, permits, unresolved, router, egress)
+apply(peers, permits, router, egress, first: true)
+puts "router: programmed #{peers.size} peer(s), #{permits.size} permit(s), #{egress.size} egress road(s) — " \
+     "#{unresolved.size} unresolved, no road"
 
 if WATCH
   last = Digest::SHA256.hexdigest(raw)
@@ -260,9 +302,9 @@ if WATCH
     last = h
     begin
       b = verify(now_raw)                      # a file that cannot prove itself is never applied, even hot
-      p2, r2, perms2, _u2 = parse(b)
+      p2, r2, perms2, _u2, e2 = parse(b)
       t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-      apply(p2, perms2, r2, first: false)
+      apply(p2, perms2, r2, e2, first: false)
       dt = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0) * 1000).round(1)
       warn "router: re-applied #{perms2.size} permit(s), #{p2.size} peer(s) in #{dt} ms"
     rescue SystemExit
