@@ -6,10 +6,14 @@ module Cove
   # pod gets, and the only place that knows the Router's address and port.
   #
   # It is DATA (state/plan.yml), because the numbers are a property of an
-  # installation and not of this code. The acceptance suite addresses the plan by
-  # literal (10.99.0.1 is the Router, 10.99.2.x agents, 10.99.1.x services), which
-  # is exactly why the plan has to be a document someone can read and change
-  # without editing Ruby.
+  # installation and not of this code. The rows address the plan through it: no row
+  # retypes the Router's address or a pool prefix, because a literal that survives a
+  # plan move turns a leak test into a green that cannot fail. That is a change of
+  # 2026-11-23, made on the day this file's network moved for the first time -- the
+  # literal version was fine only for as long as nobody moved it.
+  #
+  # A plan is a document someone can read and change without editing Ruby, and it is
+  # now read by the thing that checks it.
   #
   # Allocation is deterministic and PERSISTED: a sheet keeps its pod_ip once it has
   # one, and the allocator hands out the lowest free number in its pool. A pod's
@@ -17,31 +21,38 @@ module Cove
   # permits are keyed to it; a *key* does not survive, and never should (§13).
   module Plan
     DEFAULT = {
-      "network" => "10.99.0.0/16",
+      "network" => "10.201.0.0/20",
       "router"  => {
         # The prefix length is NOT decoration, and a /32 is the wrong answer:
         # `wg set` installs no routes, and the only connected route the Router ever
         # gets is the one `ip addr add` makes for its own address. With a /32 the
         # Router has no route to any peer and sends service-bound packets out its
         # underlay NIC instead — measured on z620 2026-11-20: `ip route get
-        # 10.99.1.10` answered `via 10.89.x.1 dev eth0`, i.e. a star that handshakes
-        # and forwards nothing, and leaks toward whatever else owns 10.99/16 on the
-        # host. With the subnet here (/16) the same command answers `dev wg0`, and
+        # 10.201.1.10` answered `via 10.89.x.1 dev eth0`, i.e. a star that handshakes
+        # and forwards nothing, and leaks toward whatever else owns the range on the
+        # host. With the subnet here (/20) the same command answers `dev wg0`, and
         # WireGuard's cryptokey routing picks the peer. One prefix length is the
         # whole of the star's routing table.
-        "address"   => "10.99.0.1/16",
+        "address"   => "10.201.0.1/20",
         "listen"    => 51820,
         # The Router's host-side underlay: it is a pod on the underlay bridge, and
         # this is the address a pod's tunnel socket sends its UDP to.
         "transport" => "10.89.4.2"
       },
       # 10.89.0.0/24 is NOT free on this host: rootful neoclaw-isolated and a
-      # leftover rootless cove-net both hold it. Cove gets its own /24 under the
-      # same /16 family so the bridge address that peers show up from is still
-      # recognisable as Cove's.
+      # leftover rootless cove-net both hold it, so Cove takes 10.89.4.0/24.
+      #
+      # This paragraph used to say the underlay sat "under the same /16 family" as
+      # the tunnel, so a peer's bridge address stayed recognisable as Cove's. That
+      # was false of both plans -- 10.89 is not inside 10.99 and never was -- and
+      # it is dangerous as an idea: the underlay is the wire the tunnel rides ON.
+      # Putting the Router's transport address inside the tunnel network would make
+      # it a destination the tunnel is meant to carry, and the Router would have to
+      # reach itself through itself. They are kept apart on purpose. Corrected
+      # 2026-11-23 while moving the plan.
       "underlay" => { "network" => "cove-underlay", "subnet" => "10.89.4.0/24", "gateway" => "10.89.4.1" },
-      "host"     => { "address" => "10.99.0.3" },
-      "pools"    => { "agent" => "10.99.2", "service" => "10.99.1" },
+      "host"     => { "address" => "10.201.0.3" },
+      "pools"    => { "agent" => "10.201.2", "service" => "10.201.1" },
       "first_host" => 10,
       "last_host"  => 250,
       # The UDP ports pods' tunnel sockets listen on. They are allocated and
@@ -81,6 +92,25 @@ module Cove
       def router_port     = router_listen
       def underlay        = data["underlay"] || {}
       def host_address    = data.dig("host", "address").to_s
+
+      # The resolver a pod is told about at attach time. Evans, 2026-11-23: pods
+      # reach DNS on the host through the Router until a Service pod serves it.
+      #
+      # Defaulted from the underlay gateway because that is where this host
+      # answers -- measured on z620 2026-11-23, dnsmasq bound to 0.0.0.0:53 on udp
+      # and tcp -- and because a partial plan is a set of decisions, not a broken
+      # one. An installation that puts its resolver elsewhere says so in plan.yml.
+      #
+      # Returns "" when nothing can be named, and the caller must read that as
+      # "write no resolver" rather than as a value: a pod pointed at an empty
+      # nameserver does not fail loudly, it times out, which reads exactly like a
+      # shut road.
+      def dns_resolver
+        explicit = data.dig("dns", "resolver").to_s
+        return explicit unless explicit.empty?
+
+        underlay.fetch("gateway", "").to_s
+      end
       def first_host      = data["first_host"].to_i
       def last_host       = data["last_host"].to_i
 
