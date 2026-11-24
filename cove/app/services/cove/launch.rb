@@ -54,7 +54,26 @@ module Cove
                                      "destroy it and start again")
         end
 
-        pod_ip = current.pod_ip.to_s.empty? ? Plan.allocate(current) : current.pod_ip
+        # A PERSISTED ADDRESS FROM A DIFFERENT PLAN IS NOT AN ADDRESS. This is §13's rule
+        # from the other end: a value kept from a different world is not a value.
+        #
+        # `destroy!` keeps pod_ip deliberately ("an address is the sheet's, and a relaunch
+        # should get it back") and `allocate` runs only when pod_ip is empty, so until now a
+        # plan move left every stopped sheet holding an address the Router will never
+        # permit -- and `attach` raising on it made the plan un-moveable without hand-editing
+        # YAML, which is exactly what this PR exists to stop being necessary.
+        #
+        # `attach`'s raise stays exactly as it is: it is the guard for an address a HUMAN
+        # handed in, and it should stay loud. This only stops `ensure!` from feeding it a
+        # stale one. Soro's gate on PR #82, 2026-11-24; the three lines are his.
+        #
+        # The nil branch is not a fourth form of "keep it": an unreadable plan is a
+        # document error and the honest answer is to say so, not to reallocate and call the
+        # guess a fix.
+        covered = current.pod_ip.to_s.empty? ? false : Plan.covers?(current.pod_ip)
+        raise Cove::DocumentError, "plan.yml is unreadable, so #{current.slug}'s address cannot be judged" if covered.nil?
+
+        pod_ip = covered ? current.pod_ip : Plan.allocate(current)
         port = Plan.peer_port(current)
         key = Keys.ephemeral
         begin

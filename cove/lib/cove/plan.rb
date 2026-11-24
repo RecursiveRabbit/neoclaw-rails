@@ -1,3 +1,4 @@
+require "ipaddr"
 require "set"
 require "yaml"
 
@@ -120,6 +121,26 @@ module Cove
         raise Cove::DocumentError, "#{file}: no pool for kind #{kind.inspect}" if prefix.to_s.empty?
 
         prefix.to_s
+      end
+
+      # Does THIS plan route to THIS address? Asked of the network and not of the
+      # spelling, the same way R23 asks it, and it exists because of what a plan move
+      # leaves behind: `allocate` runs only when pod_ip is empty and `Launch.destroy!`
+      # keeps pod_ip on purpose, so a sheet launched under the old plan holds an address
+      # no Router will ever permit and nothing asks whether it is still an address.
+      #
+      # Three outcomes, and the third is not false. nil means the plan or the address
+      # cannot be parsed, and a caller must not read that as "not ours": reallocating on
+      # an unreadable plan is a guess wearing a fix's clothes, which is the same defect
+      # R23 had on 2026-11-24 when it read an unparseable address as world-side.
+      def covers?(addr)
+        net = (IPAddr.new(wg_net) rescue nil)
+        return nil if net.nil?
+
+        ip = (IPAddr.new(addr.to_s) rescue nil)
+        return nil if ip.nil?
+
+        net.include?(ip)
       end
 
       # Lowest free address in the sheet's pool. "Taken" includes every other

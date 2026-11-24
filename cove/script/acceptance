@@ -1309,7 +1309,22 @@ ROW_TABLE[23] = -> {
   # stale or truncated prefix answers that wrongly in the direction that looks safe.
   return unmet(23, "plan.yml is unreadable, so the tunnel network is unknown") if plan_values.nil?
 
-  outside = svcs.reject { |_n, a, _p| in_tunnel?(a) == true }
+  # THREE OUTCOMES, NOT TWO. `in_tunnel?` returns nil when the plan or the address cannot
+  # be parsed, and `reject { in_tunnel?(a) == true }` put that nil on the world side and
+  # then TCP'd it -- so a document fault (an address nothing can read) came out as a shut
+  # road, with R23 blaming the world for a typo. Soro's gate on PR #82, 2026-11-24, named
+  # it against the sentence in `about in_tunnel?` that says a caller must not read nil as
+  # outside. Enumerate the third case and stop: an unparseable address is not a world-side
+  # service, and this row may not answer for it.
+  classified = svcs.map { |row| [row, in_tunnel?(row[1])] }
+  unreadable = classified.select { |_row, inside| inside.nil? }.map(&:first)
+  unless unreadable.empty?
+    return unmet(23, "the intent names address(es) nothing can read as an address " \
+                     "(#{unreadable.map { |n, a, _p| "#{n}=#{a.inspect}" }.join(', ')}), " \
+                     "so inside-the-tunnel from world-side is unknowable")
+  end
+
+  outside = classified.select { |_row, inside| inside == false }.map(&:first)
   if outside.empty?
     return unmet(23, "every service in the intent is inside the tunnel (#{plan_values['network']}), so the book has no world-side addresses to check")
   end
