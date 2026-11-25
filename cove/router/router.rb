@@ -192,6 +192,20 @@ def apply(peers, permits, router, first:)
   # every row as "the permit does not work".
   net = router["address"].to_s
   dns = router["dns"].to_s
+
+  # AND THE POLICY EXISTS ONLY WHERE THERE ARE PODS.
+  #
+  # First written unconditional, and row 21 caught it within the hour: with every pod
+  # torn down and zero peer lines in the intent, the Router still held three accepts --
+  # the two resolver rules and the world rule -- so the teardown left rules behind and
+  # the Router did not "start with no forwarding or transit rules" either. The intent was
+  # empty and the box was not: a rule about a network, rendered for a network that no
+  # longer existed.
+  #
+  # So the whole transit block is a statement about the pods that are here. No peers, no
+  # transit policy, one conntrack rule and a DROP policy -- which is exactly the state
+  # the spec asks for at both ends of a run.
+  world = !peers.empty?
   permits.each do |p|
     # A PERMIT NAMES A SERVICE, AND A SERVICE IS NOT ALWAYS A PORT.
     #
@@ -208,11 +222,11 @@ def apply(peers, permits, router, first:)
       end
     end
   end
-  unless dns.empty? || net.empty?
+  if world && !dns.empty? && !net.empty?
     rules << "-A FORWARD -s #{net} -d #{dns} -p udp -m udp --dport 53 -j ACCEPT\n"
     rules << "-A FORWARD -s #{net} -d #{dns} -p tcp -m tcp --dport 53 -j ACCEPT\n"
   end
-  unless net.empty?
+  if world && !net.empty?
     rules << "-A FORWARD -s #{net} -d #{net} -j DROP\n"
     # RFC1918, CGNAT and link-local: the private network is not the world. Written as an
     # explicit denial list rather than as an absence, so a reader can see the shape
