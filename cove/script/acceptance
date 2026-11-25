@@ -1365,8 +1365,12 @@ ROW_TABLE[23] = -> {
             "(#{outside.map { |n, a, p| "#{n}=#{a}:#{p}" }.join(', ')})")
   else
     fail!(23, "#{dead.size} of #{outside.size} world-side service(s) have nothing listening at the address the book " \
-              "claims: #{dead.map { |n, a, p| "#{n} (#{a}:#{p})" }.join(', ')}. No road to these can ever carry, and " \
-              "nothing else in this suite can tell a stale address from a shut road.")
+              "claims: #{dead.map { |n, a, p| "#{n} (#{a}:#{p})" }.join(', ')}. No road to these can ever carry. " \
+              "THIS ROW CANNOT TELL A STOPPED SERVICE FROM A MOVED ONE, and the second is now the likelier: the " \
+              "podman bridge hands out addresses in start order, so every reboot re-shuffles every container the " \
+              "book names. Measured 2026-11-24: after the 10:18 power blip forgejo answered at 10.88.0.3 with a " \
+              "200 while the book still said 10.88.0.71. `sudo podman ps` answers which it is in one line; if the " \
+              "container is up at another address, the BOOK is stale and the road was never the fault.")
   end
 }
 
