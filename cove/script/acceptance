@@ -1087,9 +1087,19 @@ ROW_TABLE[16] = -> {
       return unmet(row, "plan.yml names no service pool, so there is no address to take a road to")
     end
 
-    kept_ok = opens?(pid, kept_ip, 3000, timeout: 8)
-    removed_ok = !opens?(pid, removed_ip, 3000, timeout: 3)
-    detail = "#{kept} rides=#{kept_ok ? 'ok' : 'NO'}, #{removed} refused=#{removed_ok ? 'ok' : 'NO'}"
+    # THE PROBE FOLLOWS THE INTENT, exactly as row 14's does. A permit to `icmp` is an
+    # echo; a permit to a number is a TCP road. This pair asked tcp/3000 of an ICMP
+    # service, so "kept rides=NO" was the row's arithmetic and not the road's state.
+    # Measured 2026-11-25, after row 14 had been moved to the declared transport and
+    # this pair had not — the same instrument fault, one row apart.
+    declared = intent_permits(intent_body)
+    transport_for = ->(ip) { (declared.find { |q| q[:to] == ip } || {})[:port] || "3000" }
+    kept_t = transport_for.call(kept_ip)
+    removed_t = transport_for.call(removed_ip)
+    kept_ok = reach_service?(pid, kept_ip, kept_t, timeout: 8)
+    removed_ok = !reach_service?(pid, removed_ip, removed_t, timeout: 3)
+    detail = "#{kept}:#{kept_t} rides=#{kept_ok ? 'ok' : 'NO'}, " \
+             "#{removed}:#{removed_t} refused=#{removed_ok ? 'ok' : 'NO'}"
     if kept_ok && removed_ok
       post_form("/sheets/test-agent-a/permits", "services" => "test-service-a test-service-b")
       wait_rules { |text| forward_rules(text, plan_addr(:agent, num: 10)).size >= 2 }
@@ -1133,11 +1143,26 @@ ROW_TABLE[19] = -> {
   witness = "cove-pod-proof"
   unless podman_names.include?(witness)
     code, = http("/sheets/pod-proof/start", method: "POST", timeout: 60)
-    sleep 2
+    # WAIT FOR THE POD, NOT FOR A CLOCK. A launch is four steps and an attach; two seconds
+    # is shorter than the system takes, so the row read "not there yet" as "cannot stand
+    # up the witness" and refused the teardown. Measured 2026-11-25: the same start that
+    # this row called a failure produced `cove-pod-proof` a moment later.
+    #
+    # And the code is not the evidence: `POST /start` answers 302 on the healthy path
+    # (nime, twice — the Manager redirects after the work and the suite's curl does not
+    # follow). A row that prints the healthy code as its reason teaches the next reader to
+    # chase it.
+    20.times do
+      break if podman_names.include?(witness)
+      sleep 1
+    end
     unless podman_names.include?(witness)
-      return unmet(19, "could not stand up the witness #{witness} to measure the fence (start answered " \
-                       "http #{code}). The teardown was NOT attempted: a scoped teardown measured with " \
-                       "nothing outside its scope proves nothing, and calling that a pass is the defect.")
+      return unmet(19, "could not stand up the witness #{witness} to measure the fence: 20s after the " \
+                       "start it is not in `podman ps`. (The start answered http #{code}; that is the " \
+                       "healthy post-start redirect and NOT the reason — the Manager redirects after the " \
+                       "work and this suite's curl does not follow.) The teardown was NOT attempted: a " \
+                       "scoped teardown measured with nothing outside its scope proves nothing, and " \
+                       "calling that a pass is the defect.")
     end
   end
 
