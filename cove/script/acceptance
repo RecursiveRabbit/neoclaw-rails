@@ -155,8 +155,13 @@ def await_handshake(timeout: 10.0)
     end
 
     body = out.to_s
-    peers = body.scan(/^peer: /).size
-    shook = body.scan(/latest handshake: \d/).size
+    # Per-peer blocks, not two global counts. A count can say "one is silent"; it
+    # cannot say which, and the name is the one fact a reader can act on.
+    blocks = body.split(/^peer: /).drop(1).map { |b| "peer: #{b}" }
+    peers = blocks.size
+    silent = blocks.reject { |b| b.include?("latest handshake:") }
+                   .map { |b| b[/\Apeer: (\S+)/, 1] }
+    shook = peers - silent.size
     waited = (Time.now - started).round(1)
 
     # Nothing to wait for is a different claim from a peer that has not spoken, and
@@ -170,9 +175,12 @@ def await_handshake(timeout: 10.0)
 
     return [true, waited, "#{peers} peer(s)"] if shook == peers
     if waited > timeout
-      # A refusal that cannot say why is a failure with extra steps.
+      # A refusal that cannot say why is a failure with extra steps. The pubkey is
+      # not a name; turn it into the intent's label and address, and ask the world
+      # whether the pod is there.
+      named = silent.map { |k| peer_label(k) }.join(", ")
       return [false, waited, "#{shook}/#{peers} handshook within #{timeout}s " \
-                             "(#{peers - shook} silent)"]
+                             "(silent: #{named})"]
     end
     sleep 0.25
   end
@@ -263,6 +271,79 @@ end
 
 def forward_rules(text, source)
   text.lines.grep(/^-A FORWARD -s #{Regexp.escape(source)}\/32/)
+end
+
+# WHAT A PERMIT PRODUCES IS A FUNCTION OF THE FILE, NOT A CONSTANT.
+#
+# Evans, 2026-11-25: "service-pod-a and service-pod-b, ICMP is their service. A pod that
+# answers pings has no port to open." A permit whose port is `icmp` opens ONE protocol
+# with no destination port; a permit to a numbered port opens tcp and udp on it.
+#
+# Row 5 used to assume 2 per permit *and* match on `--dport`, which an icmp permit does
+# not have — so it counted the resolver's two DNS accepts as if they were the permits
+# and reported "Router has 2" against a Router holding six correct rules. The count is
+# a function of the file, and the file is readable.
+def intent_permits(body)
+  peers = {}
+  body.to_s.lines.each do |l|
+    next unless l.start_with?("peer ")
+
+    peers[l[/\Apeer "([^"]*)"/, 1]] = l[/address="([^"]*)"/, 1]
+  end
+  body.to_s.lines.grep(/^permit /).map do |l|
+    port = l[/port="([^"]*)"/, 1].to_s.strip
+    { src: peers[l[/\Apermit "([^"]*)"/, 1]], to: l[/to="([^"]*)"/, 1], port: port,
+      rules: (port.downcase == "icmp" ? 1 : 2) }
+  end
+end
+
+# The rules that ARE this permit: matched on what the permit names — source, destination
+# and either the protocol or the port. Not "rules with a --dport".
+def rules_for_permit(text, p)
+  return [] if p[:src].to_s.empty? || p[:to].to_s.empty?
+
+  text.to_s.lines.grep(/^-A FORWARD /).select do |l|
+    next false unless l.include?("-s #{p[:src]}/32") && l.include?("-d #{p[:to]}/32")
+
+    if p[:port].downcase == "icmp"
+      l.include?("-p icmp")
+    else
+      l.include?("--dport #{p[:port]}")
+    end
+  end
+end
+
+def intent_body
+  body, _why, = sh("sudo -n podman exec #{ROUTER} cat /etc/cove/router.conf 2>/dev/null")
+  body
+end
+
+# Reach, for a service whose transport the file declares. A permit to a numbered port is
+# a TCP road; a permit to `icmp` is an echo. The probe follows the declaration instead of
+# assuming a port, which is the same lesson as the rule count one paragraph up.
+def reach_service?(pid, ip, port, timeout: 8)
+  if port.to_s.strip.downcase == "icmp"
+    out, = nsented(pid, "ping -c 1 -W #{[timeout, 2].max} #{ip}", timeout: timeout + 2)
+    out.to_s.include?("1 received")
+  else
+    opens?(pid, ip, port, timeout: timeout)
+  end
+end
+
+# A silent peer's pubkey turned into the name a reader can act on: the intent's label
+# and address, and the pod's state as podman answers it. A pubkey is not a name.
+def peer_label(key)
+  intent, _why, = sh("sudo -n podman exec #{ROUTER} cat /etc/cove/router.conf 2>/dev/null")
+  line = intent.to_s.lines.find { |l| l.start_with?("peer ") && l.include?(%(pubkey="#{key}")) }
+  return "#{key.to_s[0, 10]}\u2026 (key not in the intent)" if line.nil?
+
+  label = line[/\Apeer "([^"]*)"/, 1].to_s
+  addr  = line[/address="([^"]*)"/, 1].to_s
+  pod   = "cove-#{label.sub(/\A[^:]*:/, '')}"
+  state, _err, = sh("sudo -n podman inspect #{pod} --format '{{.State.Status}}' 2>/dev/null")
+  state = state.to_s.strip
+  state = "no such pod" if state.empty?
+  "#{label} #{addr} (#{pod}: #{state})"
 end
 
 # ---- row zero: the tree it is judging --------------------------------------
@@ -418,13 +499,15 @@ ROW_TABLE[5] = -> {
   rules, why, ok = in_router("iptables-save")
   return unmet(5, why) unless ok
   peers, = in_router("wg show wg0 peers")
-  body, = sh("sudo -n podman exec #{ROUTER} cat /etc/cove/router.conf 2>/dev/null")
-  want_permits = body.lines.grep(/^permit /).size
-  have = rules.lines.grep(/^\[?-A FORWARD -s .*--dport/).size
-  if have == want_permits * 2 && peers.split("\n").size.positive?
-    config(5, "Router rules match the file: #{want_permits} permit(s) → #{have} rule(s) (tcp+udp), #{peers.split("\n").size} peer(s). READ, not ridden — row 14 is the packet.")
+  want = intent_permits(intent_body)
+  expected = want.sum { |q| q[:rules] }
+  got = want.sum { |q| rules_for_permit(rules, q).size }
+  detail = want.map { |q| "#{q[:port]}=#{rules_for_permit(rules, q).size}/#{q[:rules]}" }.join(" ")
+  if got == expected && peers.split("\n").size.positive?
+    config(5, "Router rules match the file: #{want.size} permit(s) → #{got} rule(s) (#{detail}; icmp opens one, a port opens tcp+udp), " \
+              "#{peers.split("\n").size} peer(s). READ, not ridden — row 14 is the packet.")
   else
-    fail!(5, "file says #{want_permits} permit(s) (#{want_permits * 2} rules expected), Router has #{have}; peers #{peers.split("\n").size}")
+    fail!(5, "file says #{want.size} permit(s) (#{expected} rules expected), Router has #{got} (#{detail}); peers #{peers.split("\n").size}")
   end
 }
 
@@ -677,10 +760,25 @@ ROW_TABLE[14] = -> {
   # Soro's instrument, kept whole: a fresh peer carries nothing until it has
   # handshaked, and the first packet to leave before that is dropped. Wait on the
   # handshake, never sleep, and say how long the wait was — a reader has to be able
-  # to tell a dead route from a slow peer. The wait is his; the packet below is a
-  # connection, because a permit names a port.
+  # to tell a dead route from a slow peer.
   settled, waited, note = await_handshake
   return unmet(14, note) unless settled
+
+  # A CONTROL BESIDE THE PROBE, and it is the spec's own rule: "every negative probe must
+  # have a known-good control in the same run". If the agent cannot reach the Router, a
+  # refused service is a fact about the tunnel and not about the permit.
+  a_pid = pod_netns("cove-test-agent-a")
+  if a_pid
+    ctl, = nsented(a_pid, "ping -c 1 -W 2 #{plan_addr(:router)}")
+    unless ctl.to_s.include?("1 received")
+      return unmet(14, "control failed: agent-a cannot ping the Router, so no service probe below can mean anything")
+    end
+  end
+
+  # The transport comes from the intent, not from this row: a permit to a number is a TCP
+  # road, a permit to `icmp` is an echo (Evans: "ICMP is their service").
+  declared = intent_permits(intent_body)
+  transport_for = ->(ip) { (declared.find { |q| q[:to] == ip } || {})[:port] || "3000" }
 
   res = []
   svc_a = plan_addr(:service, num: 10)
@@ -693,10 +791,11 @@ ROW_TABLE[14] = -> {
                              "cove-test-service-b" => svc_b } }.each do |agent, svcs|
     apid = pod_netns(agent) or next res << "#{agent}: no pod"
     svcs.each do |svc, ip|
-      res << "#{agent}→#{svc}=#{opens?(apid, ip, 3000) ? 'ok' : 'NO'}"
+      t = transport_for.call(ip)
+      res << "#{agent}→#{svc}:#{t}=#{reach_service?(apid, ip, t) ? 'ok' : 'NO'}"
     end
   end
-  tail = "(tcp/3000; #{note}, handshakes settled in #{waited}s)"
+  tail = "(probe follows the intent's declared transport; control: agent-a→Router ok; #{note}, settled in #{waited}s)"
   ok = res.all? { |r| r.end_with?("=ok") }
   ok ? met(14, res.join(" ") + " " + tail) : fail!(14, res.join(" ") + " " + tail)
 }
@@ -1088,11 +1187,13 @@ ROW_TABLE[19] = -> {
 ROW_TABLE[20] = -> {
   now = host_wg_ifaces
   added = now - BASELINE[:wg_ifaces]
-  peers, why, ok = in_router("wg show wg0 peers 2>/dev/null | wc -l")
+  # The body, not `| wc -l`: a count of leftover peers is a red nobody can act on.
+  body, why, ok = in_router("wg show wg0")
   return unmet(20, why) unless ok
+  keys = body.to_s.scan(/^peer: (\S+)/).flatten
   stale = []
   stale << "#{added.size} Cove wg interface(s) left on the host: #{added.join(' ')}" unless added.empty?
-  stale << "#{peers.strip} peer(s) left on the Router" if peers.to_i.positive?
+  stale << "#{keys.size} peer(s) left on the Router: #{keys.map { |k| peer_label(k) }.join(', ')}" if keys.any?
   stale.empty? ? met(20, "host wg set unchanged from baseline (#{BASELINE[:wg_ifaces].size} interface(s), none added); Router holds 0 peers") :
     fail!(20, stale.join("; "))
 }
