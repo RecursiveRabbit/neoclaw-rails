@@ -130,14 +130,23 @@ module Cove
         Result.new(ok: true, message: "router launched on #{Plan.router_transport}")
       end
 
-      # THE HOST'S ROUTES FOLLOW THE ROUTER, NOT A CLOCK.
+      # THE HOST'S ROUTES FOLLOW THE BRIDGE, NOT A CLOCK.
       #
-      # The routes to the pod subnets point at this device's underlay address, and the
-      # kernel takes them down with the bridge when the pod is recreated -- which happens
-      # on every deploy, and on every render that rebuilds the device. A systemd timer
-      # repairs that within a minute, and a minute is long enough for a fetch to fail and
-      # be read as a broken road: measured 2026-11-25, the first fetch after a deploy
-      # failed, and the same fetch succeeded once the timer fired.
+      # Nothing takes the routes down. Nothing tells anybody anything. The routes are on
+      # the HOST and they read `via 10.89.4.2 dev podman5`; podman5 is the host-side
+      # interface of the cove-underlay bridge. Removing the Router removes the last
+      # container on that network, and podman then tears down the bridge INTERFACE while
+      # leaving the network definition -- measured 2026-11-25: `podman network ls` still
+      # listed cove-underlay, `ip link show podman5` did not, and the two routes were
+      # gone. A Linux route cannot outlive the device it points at, so the kernel dropped
+      # them. It is device lifetime, not signalling: no pod is consulted and none is told.
+      #
+      # The fix is the same either way, and the sentence above used to get the mechanism
+      # wrong in a way that suggested a message where there is none. The thing that
+      # recreates the bridge re-asserts what points at it. A systemd timer repairs the
+      # rest within a minute, and a minute is long enough for a fetch to fail and be read
+      # as a broken road: measured 2026-11-25, the first fetch after a deploy failed and
+      # the same fetch succeeded once the routes came back.
       #
       # So the thing that creates the bridge asserts what points at it. The timer stays as
       # the safety net, for the case this cannot cover: a boot, where this Manager is not
