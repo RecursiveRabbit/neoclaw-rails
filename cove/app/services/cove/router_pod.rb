@@ -22,28 +22,20 @@ module Cove
     CONF  = "#{MOUNT}/router.conf"
     KEY   = "#{MOUNT}/keys/router.key"
 
-    # soro's router.rb programs itself and then EXITS — measured on z620 2026-11-20
-    # (exit 0, ~0.3 s, pod gone). §5 as ruled wants the process kept and the whole
-    # file re-applied in place, so the launcher keeps it alive and re-runs it when,
-    # and only when, the file's own body digest changes.
+    # Evans, 2026-11-25 (vault/specs/Cove-Tests-2.md): "This change to the Manager's
+    # intended Router configuration causes the Router to restart with that
+    # configuration; the running configuration matches the intent."
     #
-    # This is a launch argument and not a change to his artefact: the programming
-    # logic stays entirely his, and `podman inspect` shows this loop. If he would
-    # rather the watch lived in the image, this string is the thing to delete.
+    # So the launcher runs router.rb ONCE and then holds the container open. There is no
+    # watch loop any more: router.rb program-once-and-exit is what it now does, and the
+    # netns has to outlive it because the interface and the iptables table live in it.
     #
-    # It cannot hide a fault: router.rb validates digest, version, directives and
-    # permits *before* it tears anything down, so a bad file leaves the running
-    # configuration untouched and the loop keeps waiting for a good one.
-    WATCH = <<~SH.gsub("\n", " ").strip
-      last="";
-      while :; do
-        cur=$(sed -n "s/^body-sha256 //p" #{CONF} 2>/dev/null | head -1);
-        if [ -n "$cur" ] && [ "$cur" != "$last" ]; then
-          if ruby /router/router.rb; then last="$cur"; else echo "router: refused, waiting for a whole file"; sleep 2; fi;
-        fi;
-        sleep 0.2;
-      done
-    SH
+    # THE `&&` IS LOAD-BEARING. router.rb exits 2 on a file it will not program, so a
+    # refusal leaves the container DEAD rather than idling. This is the fix for a fault
+    # that cost a day: the old loop caught a refusal, printed a line, and waited for a
+    # whole file — while the pod stayed up and forwarded nothing, which reads exactly
+    # like a pod that is up.
+    ENTRYPOINT = "ruby /router/router.rb && exec sleep infinity"
 
     Result = Struct.new(:ok, :message, keyword_init: true) do
       def ok? = !!ok
@@ -119,12 +111,89 @@ module Cove
           "-e", "COVE_ROUTER_KEY=#{KEY}",
           "-e", "COVE_ROUTER_IFACE=wg0",
           "--entrypoint", "/bin/sh",
-          IMAGE, "-c", WATCH
+          IMAGE, "-c", ENTRYPOINT
         ]
         r = Podman.run(*argv)
         raise Cove::DocumentError, "router did not launch: #{r.message}" unless r.ok?
 
         Result.new(ok: true, message: "router launched on #{Plan.router_transport}")
+      end
+
+      # ---- restart, because a change to the intent IS a restart ----------------
+      #
+      # Evans, 2026-11-25: "causes the Router to restart with that configuration; the
+      # running configuration matches the intent." Two obligations in one sentence, and
+      # they are not the same obligation: restart it, AND be able to say the running
+      # configuration is the intent. So a restart here is not done until the Router has
+      # said so in its own log, and a Router that died instead is an error, not a delay.
+
+      # The count of "router: programmed" lines the container has ever printed. Counted
+      # rather than searched, because `podman restart` keeps the container's log: a plain
+      # search finds the PREVIOUS start's line and reports it as this one's. That is the
+      # whole of this helper's reason to exist.
+      def programmed_count
+        r = Podman.sudo("podman", "logs", NAME)
+        r.ok? ? r.stdout.to_s.scan("router: programmed").size : -1
+      end
+
+      def last_programmed_line
+        r = Podman.sudo("podman", "logs", NAME)
+        return nil unless r.ok?
+
+        r.stdout.to_s.lines.reverse.find { |l| l.include?("router: programmed") }&.strip
+      end
+
+      def restart!
+        return Result.new(ok: false, message: "no Router pod named #{NAME} to restart") unless exists?
+
+        before = programmed_count
+        r = Podman.sudo("podman", "restart", NAME)
+        return Result.new(ok: false, message: "router restart failed: #{r.message}") unless r.ok?
+
+        await_programmed!(after: before)
+      end
+
+      # Waits for a NEW "router: programmed" line, then returns it. The message carries the
+      # counts the Router printed, so a caller can compare them with the intent it
+      # rendered — that comparison is the spec's "running configuration matches the
+      # intent", and this is the only instrument in the system that can make it.
+      def await_programmed!(after:, within: 25)
+        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + within
+        loop do
+          now = programmed_count
+          if now.positive? && now > after
+            return Result.new(ok: true, message: last_programmed_line.to_s)
+          end
+          return Result.new(ok: false, message: "could not read the Router's log") if now.negative?
+
+          running = Podman.sudo("podman", "container", "inspect", "-f", "{{.State.Running}}", NAME)
+          if running.ok? && running.stdout.strip == "false"
+            # router.rb refuses with exit 2, and the launcher's `&&` makes a refusal a dead
+            # container. Saying so here is the difference between "the Router is up and
+            # forwarding nothing" and "the Router refused the file".
+            tail = Podman.sudo("podman", "logs", "--tail", "5", NAME).stdout.to_s.strip
+            return Result.new(ok: false,
+                              message: "router EXITED without programming — it refused the file: #{tail}")
+          end
+          if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+            return Result.new(ok: false, message: "router did not report programming within #{within}s")
+          end
+
+          sleep 0.2
+        end
+      end
+
+      # Called from RouterConfig.write!, the one function every intent change passes
+      # through. Two guards, both to stop it doing damage:
+      #   - not running: the bootstrap renders BEFORE it launches, so there is nothing to
+      #     restart yet, and restarting a pod that does not exist is an error;
+      #   - identical bytes: the render is deterministic, so most writes change nothing,
+      #     and restarting a tunnel because somebody opened a page is a fault of its own.
+      def restart_if_changed!(previous, current)
+        return Result.new(ok: true, message: "router not running — nothing to restart") unless running?
+        return Result.new(ok: true, message: "intent unchanged — no restart") if previous == current
+
+        restart!
       end
 
       # Does the Router say it holds this key? Asked of its own namespace, because

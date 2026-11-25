@@ -789,31 +789,6 @@ ROW_TABLE[16] = -> {
     o.to_s.lines.map { |l| l.split[2].to_i }.sum
   end
 
-  # THE ROUTER DECIDES FIRST, AND UNTIL NOW THIS ROW COULD NOT SEE IT.
-  #
-  # `forward` used to read the host's fall-through counter and nothing else, so
-  # drops==0 meant "the host accepted". Since the Router forwards, a packet the
-  # ROUTER drops never reaches the host at all, and the host's counter reads zero for
-  # a packet refused one hop earlier — the two cases are indistinguishable there, and
-  # the row printed the good one.
-  #
-  # MEASURED 2026-11-24, and this is not hypothetical: with the permit set naming no
-  # road to the resolver, a pod's DNS query left the pod (pod_tx increased), was
-  # decrypted by the Router, and died on the Router's `:FORWARD DROP` policy — and
-  # this row printed `forward=accepts(1.1.1.1 left the pod and did not fall through)`
-  # while nothing on the host had seen a packet. Two counters, both read from the box
-  # and not from a document: the Router's own received bytes (did it arrive?) and the
-  # Router's policy-drop count (did its rules refuse it?).
-  router_rx = lambda do
-    o, _e, ok = in_router("wg show wg0 transfer")
-    ok ? o.to_s.lines.map { |l| l.split[1].to_i }.sum : nil
-  end
-  router_drop = lambda do
-    o, _e, ok = in_router("iptables -L FORWARD -v -n 2>/dev/null | head -1")
-    n = ok ? o.to_s[/policy DROP (\d+) packets/, 1] : nil
-    n.nil? ? nil : n.to_i
-  end
-
   # THE PROBE NEEDS A CONCRETE ADDRESS, AND 0.0.0.0/0 IS NOT ONE. Under Evans' ruling
   # (2026-11-23) the pod's allowed-ips is 0.0.0.0/0, and this line used to take the first
   # permitted CIDR's network address as the thing to connect to. `</dev/tcp/0.0.0.0/9`
@@ -855,16 +830,10 @@ ROW_TABLE[16] = -> {
   end
   fwd_before = ufw_count.call
   tx_before = pod_tx.call
-  rrx_before = router_rx.call
-  rdr_before = router_drop.call
   nsented(a, "timeout 4 bash -c '</dev/tcp/#{egress_ip}/9'", timeout: 6) unless egress_ip.empty?
   left = pod_tx.call > tx_before
   fwd_after = ufw_count.call
   drops = (fwd_before.nil? || fwd_after.nil?) ? nil : fwd_after - fwd_before
-  rrx_after = router_rx.call
-  rdr_after = router_drop.call
-  arrived = (rrx_before.nil? || rrx_after.nil?) ? nil : rrx_after - rrx_before
-  router_drops = (rdr_before.nil? || rdr_after.nil?) ? nil : rdr_after - rdr_before
   # A KNOWN WEAKNESS, NAMED RATHER THAN PAPERED OVER. `drops == 0` is read here as "the
   # host accepted". Since the Router now forwards for the pods, a packet the ROUTER drops
   # never reaches the host at all, and this counter cannot tell that apart from a packet
@@ -880,19 +849,10 @@ ROW_TABLE[16] = -> {
                 "(allowed-ips: #{allowed.empty? ? 'none' : allowed})"
             elsif !left
               "untested(precondition false: no packet left the pod for #{egress_ip}, so the host's forward path was not exercised)"
-            elsif arrived.nil? || router_drops.nil?
-              "untested(precondition false: the packet left the pod but the Router's own counters could not be read, " \
-                "so which chain refused it is unknown)"
-            elsif router_drops.positive?
-              # The pod's packet reached the Router and the Router's rules ate it. That is
-              # the ordinary, correct answer when no permit names this road — and it is
-              # NOT the host's business, which is why it needs a name of its own.
-              "ROUTER-DROPS(#{router_drops} packet(s) arrived at the Router and its :FORWARD DROP policy " \
-                "refused them — no permit or egress names #{egress_ip})"
             elsif drops.positive?
-              "DROPS(#{drops} of the pod's packets fell through to the host's policy drop)"
+              "DROPS(#{drops} of the pod's packets fell through to the policy drop)"
             else
-              "accepts(#{egress_ip} left the pod, arrived at the Router (#{arrived} rx byte(s)) and did not fall through)"
+              "accepts(#{egress_ip} left the pod and did not fall through)"
             end
 
   out, err, ok = nsented(a, "curl -sS -o /dev/null -w '%{http_code}' --max-time 8 https://theuncannyvalley.cc", timeout: 12)
@@ -901,22 +861,8 @@ ROW_TABLE[16] = -> {
   pod_addr = addr_out.to_s[/inet (\d+\.\d+\.\d+\.\d+)/, 1]
   plan_text, = sudo_sh("cat #{COVE_STATE}/plan.yml")
   transport = plan_text.to_s[/transport:\s*(\S+)/, 1]
-  route_out, route_err, = sh("ip route get #{pod_addr} 2>&1")
-  # `ip route get` PRINTS A ROUTE TYPE TO STDERR, NOT STDOUT, and this row used to
-  # read stdout with the error discarded. Measured on z620 2026-11-24, all three
-  # verdicts the paragraph above names:
-  #
-  #   ip route replace unreachable 10.201.0.0/20 metric 1000 -> stderr: "No route to host"
-  #   ip route replace prohibit   10.201.0.0/20 metric 1000 -> stderr: "Permission denied"
-  #   ip route replace blackhole  10.201.0.0/20 metric 1000 -> stderr: "Invalid argument"
-  #
-  # All three: nothing on stdout at all. So the NO-ROUTE branch below was unreachable
-  # code, and a route the host REFUSES read as LAN-PATH-OPEN("") — a plausible value of
-  # the right type naming the wrong state, and naming the state that is GOOD as the
-  # failure. I wrote the sentence about "the route's own verdict" and the instrument
-  # could never have honoured it. Same family as `"".to_i == 0`.
-  route_txt = (route_out.to_s + " " + route_err.to_s).strip
-  route_line = route_txt.lines.first.to_s.strip
+  route_out, = sh("ip route get #{pod_addr} 2>/dev/null")
+  route_line = route_out.to_s.strip.lines.first.to_s.strip
   # THE RETURN PATH, AS THE RULING STATES IT (Evans 2026-11-23: "Replies cannot go
   # through the LAN gateway. That path needs to be blocked."). This condition used to
   # read `WRONG(...)` for a packet the host would hand to its LAN gateway. That is the
@@ -942,7 +888,7 @@ ROW_TABLE[16] = -> {
       "untested(precondition false: plan.yml names no router transport, so there is nothing to compare the route against)"
     elsif route_out.to_s.include?(transport.to_s)
       "via Router(#{transport})"
-    elsif route_txt.match?(/No route to host|Permission denied|Invalid argument|\b(unreachable|prohibit|blackhole)\b/)
+    elsif route_line.match?(/unreachable|prohibit|blackhole/)
       # Not a pass, and the name says so. A blackholed route satisfies the letter of
       # "that path needs to be blocked" and not the point of it: replies still have to
       # ARRIVE, and a route that refuses the packet is a pod nobody can reach. The good

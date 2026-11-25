@@ -70,3 +70,25 @@ blocked route read as `LAN-PATH-OPEN("")` — the good state reported as the fai
 
 The routes are derived from `plan.yml` but the script is not *triggered* by it. If the
 plan moves, the timer re-derives within 60 s rather than at the moment of the move.
+
+## The resolver is host state too, and for the same reason
+
+`theuncannyvalley.cc` is fetched **by name**, so the fetch row depends on DNS reaching
+the host from inside a pod. Three pieces of host state make that work, and none of them
+is in `cove/`:
+
+1. **`dnsmasq` must answer on the underlay gateway.** It answers only on the addresses
+   listed under `/etc/dnsmasq.d` — a wildcard `0.0.0.0:53` in `ss` is the socket, not the
+   answer set. Measured 2026-11-24: `dig @10.89.4.1` timed out **from the host itself**
+   while `dig @10.0.0.10` answered. `/etc/dnsmasq.d/cove.conf` carries
+   `listen-address=10.89.4.1`, and a restart (not a reload — dnsmasq's SIGHUP does not
+   re-read `listen-address`).
+2. **The host's `ufw` INPUT must accept 53 from the pod range.** A resolver *on the host*
+   is an INPUT destination, not a forwarded one, so the FORWARD accept does not reach it:
+   `ufw allow in on <underlay bridge> from <tunnel network> to <underlay gateway> port 53
+   proto tcp` and `udp`. Measured: with the Router permitting 53 and this rule missing,
+   the query still died.
+3. **The routes above**, so the answer has a way back to the pod.
+
+The Router's own half is a permit in the intent — a road to the resolver on 53 — and
+that is `cove/`'s, not this directory's.

@@ -29,7 +29,6 @@ CONF  = ARGV[0] || ENV.fetch("COVE_ROUTER_CONF", "/etc/cove/router.conf")
 KEY   = ENV.fetch("COVE_ROUTER_KEY", "/etc/cove/router.key")
 IFACE = ENV.fetch("COVE_ROUTER_IFACE", "wg0")
 DRY   = ENV["COVE_ROUTER_DRY"] == "1"
-WATCH = ENV.fetch("COVE_ROUTER_WATCH", "1") == "1"
 
 def die(reason)
   warn "router: refusing to program: #{reason}"
@@ -140,56 +139,23 @@ def parse(body)
 end
 
 # ---- apply -----------------------------------------------------------------
-def apply(peers, permits, router, egress, first:)
-  if first
-    system("ip", "link", "del", IFACE, out: File::NULL, err: File::NULL) unless DRY
-    run!("ip", "link", "add", IFACE, "type", "wireguard")
-    run!("ip", "addr", "add", router["address"], "dev", IFACE)
-    run!("wg", "set", IFACE, "private-key", KEY, "listen-port", router["listen"].to_s)
-    peers.each_value do |p|
-      argv = ["wg", "set", IFACE, "peer", p["pubkey"], "allowed-ips", "#{p['address']}/32"]
-      argv += ["endpoint", p["endpoint"]] unless p["endpoint"].to_s.empty?
-      run!(*argv)
-    end
-    run!("ip", "link", "set", IFACE, "up")
-  else
-    # The Router's key does not CHANGE on a re-apply (the Manager holds it, spec §4),
-    # so the diff is peers only — and syncconf leaves the interface up, so established
-    # tunnels are not reset. "Does not change" was read for a day as "does not need
-    # re-asserting", and that reading cost the fleet: see below.
-    conf = +"[Interface]\n"
-    conf << "ListenPort = #{router['listen']}\n"
-    peers.each_value do |p|
-      conf << "\n[Peer]\nPublicKey = #{p['pubkey']}\nAllowedIPs = #{p['address']}/32\n"
-      conf << "Endpoint = #{p['endpoint']}\n" unless p["endpoint"].to_s.empty?
-    end
-    tmp = "/tmp/wg-sync.conf"
-    File.write(tmp, conf)
-    run!("wg", "syncconf", IFACE, tmp)
-    File.unlink(tmp)
-    # What was MEASURED on z620 2026-11-22: after one in-place apply, `wg show wg0`
-    # printed no public key; four peers kept their endpoints and allowed-ips and
-    # every one of them went silent; every row that reads the file still read a
-    # correct configuration. Setting the key by hand restored four handshakes in
-    # under four seconds, and the next render took it away again.
-    #
-    # What that means, stated no more strongly than the control supports: the sync
-    # conf's [Interface] block named only ListenPort, and after the sync the device
-    # had no identity. wg(8) describes setconf as applying the fields the block
-    # NAMES and removing all peers; on wireguard-tools v1.0.20210914 the observed
-    # behaviour is that an unnamed PrivateKey does not survive an in-place sync --
-    # a scratch netns, key set, sync with ListenPort alone: public key gone; the
-    # same sync with PrivateKey named: public key back. soro read the same page and
-    # expected the other outcome, which is why the assertion at the tail of `apply`
-    # exists: the docs and the box disagree, so the code must not take either on
-    # faith. The key is re-asserted here from the read-only mount by PATH, so it
-    # lands in neither the sync conf nor argv.
-    #
-    # Known and accepted: between the sync and this line the device is keyless for
-    # well under a millisecond. A peer handshaking exactly there is dropped and
-    # retries. It is not worth closing and it is worth saying.
-    run!("wg", "set", IFACE, "private-key", KEY, "listen-port", router["listen"].to_s)
+def apply(peers, permits, router, egress)
+  # One start, one program. Evans' design as of 2026-11-25 (vault/specs/Cove-Tests-2.md):
+  # a change to the Manager's intended Router configuration RESTARTS this container, so
+  # the running configuration matches the intent. There is no in-place re-apply and no
+  # watch loop here any more, and the `else` branch that used to hold the syncconf path
+  # is deleted rather than left dead: the device is built from nothing on every start,
+  # so no field can survive unnamed and there is no window in which it has no identity.
+  system("ip", "link", "del", IFACE, out: File::NULL, err: File::NULL) unless DRY
+  run!("ip", "link", "add", IFACE, "type", "wireguard")
+  run!("ip", "addr", "add", router["address"], "dev", IFACE)
+  run!("wg", "set", IFACE, "private-key", KEY, "listen-port", router["listen"].to_s)
+  peers.each_value do |p|
+    argv = ["wg", "set", IFACE, "peer", p["pubkey"], "allowed-ips", "#{p['address']}/32"]
+    argv += ["endpoint", p["endpoint"]] unless p["endpoint"].to_s.empty?
+    run!(*argv)
   end
+  run!("ip", "link", "set", IFACE, "up")
 
   # One atomic replace of the whole filter table: at no instant is the chain
   # half-written, and the policy is DROP for everything the file did not name.
@@ -283,34 +249,12 @@ services = Hash[body.each_line.grep(/^service /).map { |l| [l[/\A"([^"]*)"/] || 
 die "no router private key at #{KEY}" unless DRY || File.exist?(KEY)
 
 plan(peers, services, permits, unresolved, router, egress)
-apply(peers, permits, router, egress, first: true)
+apply(peers, permits, router, egress)
 puts "router: programmed #{peers.size} peer(s), #{permits.size} permit(s), #{egress.size} egress road(s) — " \
      "#{unresolved.size} unresolved, no road"
 
-if WATCH
-  last = Digest::SHA256.hexdigest(raw)
-  puts "router: watching #{CONF} — diff-apply only, the interface stays up"
-  loop do
-    sleep 0.02
-    begin
-      now_raw = File.read(CONF)
-    rescue Errno::ENOENT
-      next
-    end
-    h = Digest::SHA256.hexdigest(now_raw)
-    next if h == last
-    last = h
-    begin
-      b = verify(now_raw)                      # a file that cannot prove itself is never applied, even hot
-      p2, r2, perms2, _u2, e2 = parse(b)
-      t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-      apply(p2, perms2, r2, e2, first: false)
-      dt = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0) * 1000).round(1)
-      warn "router: re-applied #{perms2.size} permit(s), #{p2.size} peer(s) in #{dt} ms"
-    rescue SystemExit
-      warn "router: keeping the old configuration — the new file was refused"
-    rescue => e
-      warn "router: keeping the old configuration — #{e.class}: #{e.message}"
-    end
-  end
-end
+# Nothing left to do and nothing left running: the launcher runs this file once and
+# holds the container open. A refusal above exits 2 and the container dies, which is
+# the honest shape of a Router that will not program — it was a quiet loop waiting for
+# a whole file for a day, and a pod that is up and forwarding nothing reads exactly
+# like a pod that is up.
