@@ -1217,19 +1217,48 @@ ROW_TABLE[20] = -> {
   body, why, ok = in_router("wg show wg0")
   return unmet(20, why) unless ok
   keys = body.to_s.scan(/^peer: (\S+)/).flatten
+  # NOTHING REMAINS MEANS NOTHING WITHOUT AN OWNER. A scoped teardown spares the witness
+  # on purpose, so "0 peers" was never the right assertion for it: the honest one is that
+  # every peer still on the Router belongs to a pod that is still running. pod-proof is
+  # spared and alive, so its peer is legitimate; a sheet whose pod has gone is residue —
+  # which is exactly Evans' rule about a credential whose owner is not running.
+  running = podman_names
+  peers = keys.map { |k| peer_label(k) }
+  orphans = peers.reject { |label| running.include?("cove-#{label[/\A[^:]+:(\S+)/, 1]}") }
   stale = []
   stale << "#{added.size} Cove wg interface(s) left on the host: #{added.join(' ')}" unless added.empty?
-  stale << "#{keys.size} peer(s) left on the Router: #{keys.map { |k| peer_label(k) }.join(', ')}" if keys.any?
-  stale.empty? ? met(20, "host wg set unchanged from baseline (#{BASELINE[:wg_ifaces].size} interface(s), none added); Router holds 0 peers") :
+  stale << "#{orphans.size} peer(s) with no running pod: #{orphans.join(', ')}" if orphans.any?
+  stale.empty? ? met(20, "host wg set unchanged from baseline (#{BASELINE[:wg_ifaces].size} interface(s), none added); " \
+                         "every one of the #{keys.size} peer(s) on the Router belongs to a running pod" \
+                         "#{keys.empty? ? '' : " (#{peers.join(', ')})"}") :
     fail!(20, stale.join("; "))
 }
 
 ROW_TABLE[21] = -> {
   rules, why, ok = in_router("iptables-save")
   return unmet(21, why) unless ok
+  # A PERMIT FOR A POD THAT IS NOT RUNNING IS THE RESIDUE; a permit for a pod the teardown
+  # deliberately spared is the policy. So the row reads each rule's source address, asks the
+  # intent which peer owns it, and asks podman whether that pod is still up. The resolver
+  # and world rules have no source peer and are transit policy, not permits — counting them
+  # as "survived teardown" made a correct Router look like a leak.
+  intent, = sh("sudo -n podman exec #{ROUTER} cat /etc/cove/router.conf 2>/dev/null")
+  owner = {}
+  intent.to_s.lines.each do |l|
+    next unless l.start_with?("peer ")
+    owner[l[/address="([^"]*)"/, 1]] = l[/\Apeer "([^"]*)"/, 1]
+  end
+  running = podman_names
   accepts = rules.lines.grep(/^-A FORWARD .*-j ACCEPT/).reject { |l| l.include?("conntrack") }
-  accepts.empty? ? met(21, "Router FORWARD holds no permit rules after teardown (policy DROP only)") :
-    fail!(21, "#{accepts.size} rule(s) survived teardown: #{accepts.first.strip}")
+  permit_rules = accepts.select { |l| owner.key?(l[/-s (\S+?)\/32/, 1]) }
+  orphaned = permit_rules.reject { |l| running.include?("cove-#{owner[l[/-s (\S+?)\/32/, 1]][/\A[^:]+:(\S+)/, 1]}") }
+  if orphaned.any?
+    fail!(21, "#{orphaned.size} rule(s) survived teardown for a pod with no container: #{orphaned.first.strip}")
+  else
+    met(21, "#{permit_rules.size} permit rule(s) on the Router, every one for a running pod" \
+            "#{permit_rules.empty? ? ' (policy DROP only)' : ''}; the resolver and world rules are transit " \
+            "policy, not permits")
+  end
 }
 
 # 22. A sheet that loses its peer identity gets it back from the pod.
