@@ -134,6 +134,23 @@ def nsent_file(path, file, timeout: 8)
   sudo_sh("nsenter --net=#{path} --mount=#{mnt} cat #{file}", timeout: timeout)
 end
 
+# A silent peer's pubkey turned into the name a reader can act on: the intent's label
+# and address, and the pod's state as podman answers it. A pubkey is not a name; if the
+# intent does not hold the key, say that rather than printing base64 at the reader.
+def peer_label(key)
+  intent, _why, = sh("sudo -n podman exec #{ROUTER} cat /etc/cove/router.conf 2>/dev/null")
+  line = intent.to_s.lines.find { |l| l.start_with?("peer ") && l.include?(%(pubkey="#{key}")) }
+  return "#{key.to_s[0, 10]}\u2026 (key not in the intent)" if line.nil?
+
+  label = line[/\Apeer "([^"]*)"/, 1].to_s
+  addr  = line[/address="([^"]*)"/, 1].to_s
+  pod   = "cove-#{label.sub(/\A[^:]*:/, '')}"
+  state, _err, = sh("sudo -n podman inspect #{pod} --format '{{.State.Status}}' 2>/dev/null")
+  state = state.to_s.strip
+  state = "no such pod" if state.empty?
+  "#{label} #{addr} (#{pod}: #{state})"
+end
+
 # A fresh WireGuard peer carries nothing until it has handshaked, and the first
 # ICMP to leave before that is dropped. Measured 2026-11-20: R10 reported the
 # Router unreachable, and the same ping by hand three minutes later answered 2/2
@@ -155,8 +172,14 @@ def await_handshake(timeout: 10.0)
     end
 
     body = out.to_s
-    peers = body.scan(/^peer: /).size
-    shook = body.scan(/latest handshake: \d/).size
+    # Per-peer blocks, not two global counts. A count can say "one is silent"; it
+    # cannot say which, and the name is the one fact a reader can act on. A block
+    # begins at a line starting `peer: ` and carries its own handshake line, or not.
+    blocks = body.split(/^peer: /).drop(1).map { |b| "peer: #{b}" }
+    peers = blocks.size
+    silent = blocks.reject { |b| b.include?("latest handshake:") }
+                   .map { |b| b[/\Apeer: (\S+)/, 1] }
+    shook = peers - silent.size
     waited = (Time.now - started).round(1)
 
     # Nothing to wait for is a different claim from a peer that has not spoken, and
@@ -170,9 +193,13 @@ def await_handshake(timeout: 10.0)
 
     return [true, waited, "#{peers} peer(s)"] if shook == peers
     if waited > timeout
-      # A refusal that cannot say why is a failure with extra steps.
+      # A refusal that cannot say why is a failure with extra steps. The pubkey is
+      # not a name; turn it into the intent's label and address, and ask the world
+      # whether the pod is there. That line is the difference between "six reds" and
+      # "the fifth peer has no pod".
+      named = silent.map { |k| peer_label(k) }.join(", ")
       return [false, waited, "#{shook}/#{peers} handshook within #{timeout}s " \
-                             "(#{peers - shook} silent)"]
+                             "(silent: #{named})"]
     end
     sleep 0.25
   end
@@ -1175,11 +1202,13 @@ ROW_TABLE[19] = -> {
 ROW_TABLE[20] = -> {
   now = host_wg_ifaces
   added = now - BASELINE[:wg_ifaces]
-  peers, why, ok = in_router("wg show wg0 peers 2>/dev/null | wc -l")
+  # The body, not `| wc -l`: a count of leftover peers is a red nobody can act on.
+  body, why, ok = in_router("wg show wg0")
   return unmet(20, why) unless ok
+  keys = body.to_s.scan(/^peer: (\S+)/).flatten
   stale = []
   stale << "#{added.size} Cove wg interface(s) left on the host: #{added.join(' ')}" unless added.empty?
-  stale << "#{peers.strip} peer(s) left on the Router" if peers.to_i.positive?
+  stale << "#{keys.size} peer(s) left on the Router: #{keys.map { |k| peer_label(k) }.join(', ')}" if keys.any?
   stale.empty? ? met(20, "host wg set unchanged from baseline (#{BASELINE[:wg_ifaces].size} interface(s), none added); Router holds 0 peers") :
     fail!(20, stale.join("; "))
 }
