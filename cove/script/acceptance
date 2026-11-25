@@ -265,6 +265,65 @@ def forward_rules(text, source)
   text.lines.grep(/^-A FORWARD -s #{Regexp.escape(source)}\/32/)
 end
 
+# WHAT A PERMIT PRODUCES IS A FUNCTION OF THE FILE, NOT A CONSTANT.
+#
+# Evans, 2026-11-25: "service-pod-a and service-pod-b, ICMP is their service. A pod that
+# answers pings has no port to open." So a permit whose port is `icmp` opens ONE protocol
+# with no destination port, and a permit to a numbered port opens tcp and udp on it.
+#
+# Every row below used to assume 2. That is right for a port and wrong for a service that
+# answers a ping, and the fixtures now do the latter — so six rows read as six faults in
+# the permit→rule path when there was one assumption in the suite. A count is not a
+# constant; it is a function of what the file says, and the file is readable.
+def intent_permits(body)
+  peers = {}
+  body.to_s.lines.each do |l|
+    next unless l.start_with?("peer ")
+
+    peers[l[/\Apeer "([^"]*)"/, 1]] = l[/address="([^"]*)"/, 1]
+  end
+  body.to_s.lines.grep(/^permit /).map do |l|
+    port = l[/port="([^"]*)"/, 1].to_s.strip
+    { src: peers[l[/\Apermit "([^"]*)"/, 1]], to: l[/to="([^"]*)"/, 1], port: port,
+      rules: (port.downcase == "icmp" ? 1 : 2) }
+  end
+end
+
+# The rules that ARE this permit, matched on what the permit names — source, destination
+# and either the protocol or the port. Not "rules with a --dport": that counted the
+# resolver's egress pair as if they were permits, which is why a file with three permits
+# and a Router with two resolver rules read as "the Router is missing a permit".
+def rules_for_permit(text, p)
+  return [] if p[:src].to_s.empty? || p[:to].to_s.empty?
+
+  text.to_s.lines.grep(/^-A FORWARD /).select do |l|
+    next false unless l.include?("-s #{p[:src]}/32") && l.include?("-d #{p[:to]}/32")
+
+    if p[:port].downcase == "icmp"
+      l.include?("-p icmp")
+    else
+      l.include?("--dport #{p[:port]}")
+    end
+  end
+end
+
+def intent_body
+  body, _why, = sh("sudo -n podman exec #{ROUTER} cat /etc/cove/router.conf 2>/dev/null")
+  body
+end
+
+# Reach, for a service whose transport the file declares. A permit to a numbered port is
+# a TCP road; a permit to `icmp` is an echo. The probe follows the declaration instead of
+# assuming a port, which is the same lesson as the rule count one line up.
+def reach_service?(pid, ip, port, timeout: 8)
+  if port.to_s.strip.downcase == "icmp"
+    out, = nsented(pid, "ping -c 1 -W #{[timeout, 2].max} #{ip}", timeout: timeout + 2)
+    out.to_s.include?("1 received")
+  else
+    opens?(pid, ip, port, timeout: timeout)
+  end
+end
+
 # ---- row zero: the tree it is judging --------------------------------------
 BASELINE = {}
 
@@ -400,20 +459,11 @@ ROW_TABLE[3] = -> {
   return unmet(3, "test-agent-a has no running pod") if pid.nil?
   links, = nsented(pid, "ip -o link show | awk -F': ' '{print $2}'")
   peer, = in_router("wg show wg0 allowed-ips | grep -c #{plan_addr(:agent_pool)}")
-  # THE POD HAS NO IPTABLES OF ITS OWN, AND THAT IS THE DESIGN. Evans, 2026-11-25:
-  # "ip_tables do not provide any pod security. Pod security will be provided solely
-  # through WG and UFW." This row used to require at least one rule inside the pod's
-  # netns — a door of its own — and that construction has been removed, so the row now
-  # asserts its ABSENCE. Kept rather than deleted: a pod that quietly acquired a ruleset
-  # again would be a change in the security model, and this is the only place that would
-  # say so out loud.
-  pod_rules, = nsented(pid, "iptables-save 2>/dev/null | grep -c '^-A'")
-  if peer.to_i.positive? && pod_rules.to_i.zero?
-    met(3, "agent-a peered at the Router (#{peer.strip} peer line(s)); 0 iptables rules of its own, " \
-           "by design (transit policy is the Router's); links: #{links.split.join(',')}")
+  ufw, = nsented(pid, "iptables-save 2>/dev/null | grep -c '^-A'")
+  if peer.to_i.positive? && ufw.to_i.positive?
+    met(3, "agent-a peered at the Router (#{peer.strip} peer line(s)); #{ufw.strip} door rule(s) inside its netns; links: #{links.split.join(',')}")
   else
-    fail!(3, "peer lines=#{peer.strip}, pod rules=#{pod_rules.strip} — expected >0 peer lines and 0 pod rules: " \
-             "pod security is WG and UFW, not a ruleset inside the pod")
+    fail!(3, "peer lines=#{peer.strip} door rules=#{ufw.strip}")
   end
 }
 
@@ -427,13 +477,15 @@ ROW_TABLE[5] = -> {
   rules, why, ok = in_router("iptables-save")
   return unmet(5, why) unless ok
   peers, = in_router("wg show wg0 peers")
-  body, = sh("sudo -n podman exec #{ROUTER} cat /etc/cove/router.conf 2>/dev/null")
-  want_permits = body.lines.grep(/^permit /).size
-  have = rules.lines.grep(/^\[?-A FORWARD -s .*--dport/).size
-  if have == want_permits * 2 && peers.split("\n").size.positive?
-    config(5, "Router rules match the file: #{want_permits} permit(s) → #{have} rule(s) (tcp+udp), #{peers.split("\n").size} peer(s). READ, not ridden — row 14 is the packet.")
+  want = intent_permits(intent_body)
+  expected = want.sum { |q| q[:rules] }
+  got = want.sum { |q| rules_for_permit(rules, q).size }
+  detail = want.map { |q| "#{q[:port]}=#{rules_for_permit(rules, q).size}/#{q[:rules]}" }.join(" ")
+  if got == expected && peers.split("\n").size.positive?
+    config(5, "Router rules match the file: #{want.size} permit(s) → #{got} rule(s) (#{detail}; icmp opens one, a port opens tcp+udp), " \
+              "#{peers.split("\n").size} peer(s). READ, not ridden — row 14 is the packet.")
   else
-    fail!(5, "file says #{want_permits} permit(s) (#{want_permits * 2} rules expected), Router has #{have}; peers #{peers.split("\n").size}")
+    fail!(5, "file says #{want.size} permit(s) (#{expected} rules expected), Router has #{got} (#{detail}); peers #{peers.split("\n").size}")
   end
 }
 
@@ -650,13 +702,23 @@ ROW_TABLE[11] = -> {
                       "services" => "test-service-a test-service-b")
     return fail!(row, "permit API answered #{code} for #{slug}") unless (200..399).cover?(code)
 
-    ok, rules, why = wait_rules { |text| forward_rules(text, src).size == 4 }
-    got = ok ? forward_rules(rules, src).size : 0
-    if ok && got == 4
-      config(row, "#{slug} permits service-a+service-b → 4 FORWARD rule(s) in the Router " \
-                  "(2 services × tcp+udp). READ, not ridden — row 14 is the packet.")
+    # THE EXPECTATION IS READ FROM THE FILE THE MANAGER JUST WROTE. It used to be the
+    # constant 4 ("2 services × tcp+udp"), which is right for ports and wrong for a
+    # service that answers a ping: `port="icmp"` is one rule, not two. Measured
+    # 2026-11-25 — the fixtures declare ICMP and the row asked for 4, so rows 5/12/13/14/
+    # 17/18 all read as faults in the permit→rule path when the fault was one assumption
+    # repeated six times in the suite.
+    want = intent_permits(intent_body).select { |q| q[:src] == src }
+    return unmet(row, "the intent holds no permit naming #{src}, so there is no expectation to hold the Router to") if want.empty?
+
+    expected = want.sum { |q| q[:rules] }
+    ok, rules, why = wait_rules { |text| forward_rules(text, src).size == expected }
+    got = forward_rules(rules, src).size
+    if ok && got == expected
+      config(row, "#{slug} permits #{want.size} service(s) (#{want.map { |q| q[:port] }.join(', ')}) → " \
+                  "#{expected} FORWARD rule(s) in the Router. READ, not ridden — row 14 is the packet.")
     else
-      fail!(row, "#{slug}: wanted 4 rules from #{src}, Router has #{got} #{why}")
+      fail!(row, "#{slug}: wanted #{expected} rules from #{src} for port(s) #{want.map { |q| q[:port] }.join(', ')}, Router has #{got} #{why}")
     end
   }
 end
@@ -681,6 +743,22 @@ ROW_TABLE[14] = -> {
   settled, waited, note = await_handshake
   return unmet(14, note) unless settled
 
+  # A CONTROL BESIDE THE PROBE, and it is the spec's own rule: "every negative probe must
+  # have a known-good control in the same run". If the agent cannot reach the Router, a
+  # refused service is a fact about the tunnel and not about the permit.
+  a_pid = pod_netns("cove-test-agent-a")
+  if a_pid
+    ctl, = nsented(a_pid, "ping -c 1 -W 2 #{plan_addr(:router)}")
+    unless ctl.to_s.include?("1 received")
+      return unmet(14, "control failed: agent-a cannot ping the Router, so no service probe below can mean anything")
+    end
+  end
+
+  # The transport comes from the intent, not from this row: a permit to a number is a TCP
+  # road, a permit to `icmp` is an echo (Evans: "ICMP is their service").
+  declared = intent_permits(intent_body)
+  transport_for = ->(ip) { (declared.find { |q| q[:to] == ip } || {})[:port] || "3000" }
+
   res = []
   svc_a = plan_addr(:service, num: 10)
   svc_b = plan_addr(:service, num: 11)
@@ -692,10 +770,11 @@ ROW_TABLE[14] = -> {
                              "cove-test-service-b" => svc_b } }.each do |agent, svcs|
     apid = pod_netns(agent) or next res << "#{agent}: no pod"
     svcs.each do |svc, ip|
-      res << "#{agent}→#{svc}=#{opens?(apid, ip, 3000) ? 'ok' : 'NO'}"
+      t = transport_for.call(ip)
+      res << "#{agent}→#{svc}:#{t}=#{reach_service?(apid, ip, t) ? 'ok' : 'NO'}"
     end
   end
-  tail = "(tcp/3000; #{note}, handshakes settled in #{waited}s)"
+  tail = "(probe follows the intent's declared transport; control: agent-a→Router ok; #{note}, settled in #{waited}s)"
   ok = res.all? { |r| r.end_with?("=ok") }
   ok ? met(14, res.join(" ") + " " + tail) : fail!(14, res.join(" ") + " " + tail)
 }
@@ -961,8 +1040,12 @@ ROW_TABLE[16] = -> {
     code, = post_form("/sheets/test-agent-a/permits", "services" => kept)
     return fail!(row, "permit API answered #{code}") unless (200..399).cover?(code)
 
-    ok, _rules, why = wait_rules { |text| forward_rules(text, plan_addr(:agent, num: 10)).size == 2 }
-    return fail!(row, "Router did not reduce agent-a to one road #{why}") unless ok
+    # One service is kept, so the expectation is what ONE permit produces — one rule for
+    # icmp, two for a port. Read from the file rather than assumed to be 2.
+    one = intent_permits(intent_body).select { |q| q[:src] == plan_addr(:agent, num: 10) }
+    one_rules = one.sum { |q| q[:rules] }
+    ok, _rules, why = wait_rules { |text| forward_rules(text, plan_addr(:agent, num: 10)).size == one_rules }
+    return fail!(row, "Router did not reduce agent-a to one road (wanted #{one_rules}, ports #{one.map { |q| q[:port] }.join(', ')}) #{why}") unless ok
 
     # The addresses come from the plan, by the numbers the block above passes in. Before
     # 2026-11-24 this destructured literals out of the table; when the plan moved, the
@@ -976,12 +1059,18 @@ ROW_TABLE[16] = -> {
       return unmet(row, "plan.yml names no service pool, so there is no address to take a road to")
     end
 
-    kept_ok = opens?(pid, kept_ip, 3000, timeout: 8)
-    removed_ok = !opens?(pid, removed_ip, 3000, timeout: 3)
+    kept_port = (one.find { |q| q[:to] == kept_ip } || {})[:port] || "3000"
+    all_ports = intent_permits(intent_body).select { |q| q[:src] == plan_addr(:agent, num: 10) }
+    removed_port = (all_ports.find { |q| q[:to] == removed_ip } || {})[:port] || "3000"
+    kept_ok = reach_service?(pid, kept_ip, kept_port, timeout: 8)
+    # A refused road needs a control: the kept road was measured open a line above, in the
+    # same run, by the same probe. That is the control.
+    removed_ok = !reach_service?(pid, removed_ip, removed_port, timeout: 3)
     detail = "#{kept} rides=#{kept_ok ? 'ok' : 'NO'}, #{removed} refused=#{removed_ok ? 'ok' : 'NO'}"
     if kept_ok && removed_ok
       post_form("/sheets/test-agent-a/permits", "services" => "test-service-a test-service-b")
-      wait_rules { |text| forward_rules(text, plan_addr(:agent, num: 10)).size == 4 }
+      both = intent_permits(intent_body).select { |q| q[:src] == plan_addr(:agent, num: 10) }.sum { |q| q[:rules] }
+      wait_rules { |text| forward_rules(text, plan_addr(:agent, num: 10)).size == both }
       met(row, detail + " (both roads restored)")
     else
       fail!(row, detail)
