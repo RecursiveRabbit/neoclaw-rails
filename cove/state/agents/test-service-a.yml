@@ -1,5 +1,13 @@
 name: test-service-a
 kind: service
-image: docker.io/library/python:3.12-alpine
-command: python3 -m http.server 3000 --bind 0.0.0.0
-listen: 3000
+# A TEST SERVICE POD SERVES NOTHING. Evans, 2026-11-25: "There's nothing for the test pod
+# to serve. I don't know why it's serving http, there's no page and none of the tests ask
+# for it." It used to carry `python3 -m http.server 3000` and `listen: 3000`, which made
+# two claims about the world that nothing needed and one that was false: the suite's only
+# service-facing assertion is a PING.
+#
+# So: a generic pod that idles, and its service is ICMP. That is what `listen: icmp` says,
+# and the Router renders a permit to it as one `-p icmp` rule with no destination port.
+image: docker.io/library/alpine:latest
+command: sleep 86400
+listen: icmp
