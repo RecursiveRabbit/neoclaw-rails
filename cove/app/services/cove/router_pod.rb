@@ -1,3 +1,5 @@
+require "open3"
+
 module Cove
   # The Router, as the Manager sees it: one pod, one key, one file.
   #
@@ -124,7 +126,35 @@ module Cove
         r = Podman.run(*argv)
         raise Cove::DocumentError, "router did not launch: #{r.message}" unless r.ok?
 
+        assert_host_half!
         Result.new(ok: true, message: "router launched on #{Plan.router_transport}")
+      end
+
+      # THE HOST'S ROUTES FOLLOW THE ROUTER, NOT A CLOCK.
+      #
+      # The routes to the pod subnets point at this device's underlay address, and the
+      # kernel takes them down with the bridge when the pod is recreated -- which happens
+      # on every deploy, and on every render that rebuilds the device. A systemd timer
+      # repairs that within a minute, and a minute is long enough for a fetch to fail and
+      # be read as a broken road: measured 2026-11-25, the first fetch after a deploy
+      # failed, and the same fetch succeeded once the timer fired.
+      #
+      # So the thing that creates the bridge asserts what points at it. The timer stays as
+      # the safety net, for the case this cannot cover: a boot, where this Manager is not
+      # yet running to do it.
+      def assert_host_half!
+        script = "/usr/local/sbin/cove-host-routes.py"
+        return false unless File.exist?(script)
+
+        out, err, st = Open3.capture3(*Cove.sudo_prefix, "python3", script)
+        # Not fatal: an installation without the host half is one whose host half is
+        # somebody else's, and a Manager that refused to launch the Router over it would
+        # be wrong. Loud on stderr, silent to the caller.
+        warn "router: host half not asserted: #{err.strip}" unless st.success?
+        st.success?
+      rescue StandardError => e
+        warn "router: host half not asserted: #{e.class}: #{e.message}"
+        false
       end
 
       # Does the Router say it holds this key? Asked of its own namespace, because
