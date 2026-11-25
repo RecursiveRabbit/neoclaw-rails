@@ -193,8 +193,19 @@ def apply(peers, permits, router, first:)
   net = router["address"].to_s
   dns = router["dns"].to_s
   permits.each do |p|
-    %w[tcp udp].each do |proto|
-      rules << "-A FORWARD -s #{p[:src_addr]} -d #{p[:to]} -p #{proto} -m #{proto} --dport #{p[:port]} -j ACCEPT\n"
+    # A PERMIT NAMES A SERVICE, AND A SERVICE IS NOT ALWAYS A PORT.
+    #
+    # Evans, 2026-11-25: "service-pod-a and service-pod-b, ICMP is their service." A pod
+    # that answers pings has no port to open, so `port="icmp"` is the permit's whole
+    # content: one protocol, no destination port, and the Router opens exactly that. The
+    # alternative -- opening tcp and udp on a port nothing listens on -- would be a permit
+    # to a road with no traffic, which is the shape of fault this file exists to refuse.
+    if p[:port].to_s.strip.downcase == "icmp"
+      rules << "-A FORWARD -s #{p[:src_addr]} -d #{p[:to]} -p icmp -j ACCEPT\n"
+    else
+      %w[tcp udp].each do |proto|
+        rules << "-A FORWARD -s #{p[:src_addr]} -d #{p[:to]} -p #{proto} -m #{proto} --dport #{p[:port]} -j ACCEPT\n"
+      end
     end
   end
   unless dns.empty? || net.empty?
