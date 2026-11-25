@@ -161,6 +161,22 @@ module Cove
         iface = iface_for(sheet_slug)
         pod = "cove-#{sheet_slug}"
 
+        # A STOPPED CONTAINER IS NOT A RUNNING ONE, AND IT MUST NOT BLOCK A LAUNCH.
+        #
+        # `ensure!` returns early when the pod is RUNNING, so reaching this line means it is
+        # not: either there is nothing, or there is a name held by an exited container. The
+        # second case used to fail the launch outright — `podman run` refuses a name in use —
+        # and the fault read from outside as "the witness will not stand up". Measured
+        # 2026-11-25: `cove-pod-proof` had exited (its command is `sleep 120`) and could then
+        # never be restarted; `Launch.ensure!` returned
+        #   "creating container storage: the container name \"cove-pod-proof\" is already in use"
+        # and rows 19/20/21 reported a teardown fault for a fixture that could not start.
+        #
+        # Removing by name here is the same designated path RouterPod::ensure! already takes,
+        # and it is deliberately not a retry: the name is this sheet's, the pod is not
+        # running, and the launch that follows either works or raises.
+        run(*Cove.sudo_prefix, "podman", "rm", "-f", "--time", "0", pod) if run(*Cove.sudo_prefix, "podman", "container", "exists", pod).ok?
+
         podman = run(*Cove.sudo_prefix, "podman", "run", "-d", "--name", pod, "--network", "none",
                      "--security-opt", "label=disable", *["--label", "cove.managed=1"],
                      *["--label", "cove.agent=#{sheet_slug}"], image, *command)
