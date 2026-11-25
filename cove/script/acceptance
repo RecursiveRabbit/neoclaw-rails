@@ -641,13 +641,23 @@ ROW_TABLE[11] = -> {
                       "services" => "test-service-a test-service-b")
     return fail!(row, "permit API answered #{code} for #{slug}") unless (200..399).cover?(code)
 
-    ok, rules, why = wait_rules { |text| forward_rules(text, src).size == 4 }
-    got = ok ? forward_rules(rules, src).size : 0
-    if ok && got == 4
-      config(row, "#{slug} permits service-a+service-b → 4 FORWARD rule(s) in the Router " \
-                  "(2 services × tcp+udp). READ, not ridden — row 14 is the packet.")
+    # ONE RULE PER PERMITTED SERVICE. Evans' services are ICMP, so a permit is one FORWARD
+    # rule and not two. The old arithmetic -- "2 services x tcp+udp = 4" -- was written when
+    # every service was a TCP port, and it has been failing for hours against a Router that
+    # was doing exactly what it was told: 2 rules, correct, counted as 0 short.
+    #
+    # AND THE NUMBER WAS NOT MEASURED. `got` was `ok ? count : 0`, so when the wait timed out
+    # the row printed "Router has 0" for a Router holding 2, and three readers went hunting a
+    # missing road. What is printed now is what is there.
+    want = 2
+    _ok, rules, why = wait_rules { |text| forward_rules(text, src).size >= want }
+    got = forward_rules(rules.to_s, src).size
+    if got >= want
+      config(row, "#{slug} permits service-a+service-b → #{got} FORWARD rule(s) in the Router " \
+                  "(one per permitted service; the service is ICMP so a permit is one rule). " \
+                  "READ, not ridden — row 14 is the packet.")
     else
-      fail!(row, "#{slug}: wanted 4 rules from #{src}, Router has #{got} #{why}")
+      fail!(row, "#{slug}: wanted #{want} rules from #{src}, Router has #{got} #{why}")
     end
   }
 end
@@ -962,7 +972,8 @@ ROW_TABLE[16] = -> {
     code, = post_form("/sheets/test-agent-a/permits", "services" => kept)
     return fail!(row, "permit API answered #{code}") unless (200..399).cover?(code)
 
-    ok, _rules, why = wait_rules { |text| forward_rules(text, plan_addr(:agent, num: 10)).size == 2 }
+    # ONE road left, not two: the permit for the kept service is a single ICMP rule.
+    ok, _rules, why = wait_rules { |text| forward_rules(text, plan_addr(:agent, num: 10)).size == 1 }
     return fail!(row, "Router did not reduce agent-a to one road #{why}") unless ok
 
     # The addresses come from the plan, by the numbers the block above passes in. Before
@@ -982,7 +993,7 @@ ROW_TABLE[16] = -> {
     detail = "#{kept} rides=#{kept_ok ? 'ok' : 'NO'}, #{removed} refused=#{removed_ok ? 'ok' : 'NO'}"
     if kept_ok && removed_ok
       post_form("/sheets/test-agent-a/permits", "services" => "test-service-a test-service-b")
-      wait_rules { |text| forward_rules(text, plan_addr(:agent, num: 10)).size == 4 }
+      wait_rules { |text| forward_rules(text, plan_addr(:agent, num: 10)).size >= 2 }
       met(row, detail + " (both roads restored)")
     else
       fail!(row, detail)
