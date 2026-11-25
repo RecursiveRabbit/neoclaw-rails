@@ -936,6 +936,16 @@ ROW_TABLE[16] = -> {
   ROW_TABLE[row] = -> {
     pid = pod_netns("cove-test-agent-a") or return unmet(row, "test-agent-a has no pod")
 
+    # ROWS 17 AND 18 REMOVE A ROAD, AND A REMOVAL IS A SHEET EDIT.
+    #
+    # The success path restores both roads; the failure path used to return straight out
+    # and leave the sheet holding one. Measured 2026-11-25: every crank run of this family
+    # stripped `agent:test-agent-a -> test-service-a` permanently, so the intent drifted
+    # 4 permits -> 3 -> 2 across runs and the next run reported the missing road as "the
+    # Router did not reduce agent-a to one road". A row that mutates state must restore it
+    # whether it passes or fails, or the next measurement is of this one's debris.
+    begin
+
     # A road cannot be measured over a dead tunnel. Without this, "rides=NO" sends a
     # reader into the permit code for a fault one layer down, and in the run of
     # 2026-11-22 it did exactly that: 3 of 4 peers had never handshaked, so every
@@ -976,6 +986,10 @@ ROW_TABLE[16] = -> {
       met(row, detail + " (both roads restored)")
     else
       fail!(row, detail)
+    end
+    ensure
+      # Unconditional, and it is the last thing the row does whichever way it went.
+      post_form("/sheets/test-agent-a/permits", "services" => "test-service-a test-service-b")
     end
   }
 end

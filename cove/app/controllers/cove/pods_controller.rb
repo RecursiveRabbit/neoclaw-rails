@@ -56,8 +56,22 @@ module Cove
       # by a bare POST, because the caller that presses this most often is the crank,
       # and a routine measurement must never be able to take a hand's pod with it.
       # A fence you have to walk around on purpose is a fence.
+      # A FENCE YOU CAN WALK AROUND IS NOT A FENCE, AND THIS ONE WAS A PARAMETER AWAY FROM
+      # BEING ONE. `scope` used to be taken from the request and passed straight through, so
+      # a POST carrying `scope=all` levelled the box — every pod with the managed label,
+      # including a hand's. The comment beside it argued that a fence you have to walk around
+      # on purpose is a fence; the desk asked for the narrowing anyway and the desk is right,
+      # because the caller that presses this most often is the crank every thirty minutes.
+      #
+      # The HTTP surface now destroys the acceptance fleet and nothing else. `all` and a
+      # non-fixture slug remain available to code that means them — the model still takes a
+      # scope — but no request can reach "all", and a slug is refused unless it is a fixture.
       scope = params[:scope].to_s.strip
       scope = "fixtures" if scope.empty?
+      unless scope == "fixtures" || Launch.fixture_slug?(scope)
+        return redirect_to pods_path,
+                           alert: "teardown is limited to the acceptance fixtures; #{scope.inspect} is not one"
+      end
       result = Launch.destroy_all!(scope: scope)
       if result.ok?
         redirect_to pods_path, notice: result.message

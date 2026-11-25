@@ -163,6 +163,10 @@ module Cove
         end
       end
 
+      def fixture_slug?(slug)
+        slug.to_s.start_with?(FIXTURE_PREFIX)
+      end
+
       def destroy_all!(scope: :fixtures)
         # The list of things to destroy comes from the WORLD, not from the documents:
         # every pod carrying the managed label except the Router. Measuring taught
