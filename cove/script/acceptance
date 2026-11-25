@@ -1302,7 +1302,11 @@ ROW_TABLE[22] = -> {
   # is '', found nothing to lose, and reported UNMET on a sheet that has a key in the
   # database. The row now asks the Manager, which is the only thing that owns the row.
   db = lambda do |code|
-    out, err, ok = sudo_sh(%(podman exec cove-manager-dova ruby -e &#39;require "/app/config/environment"; #{code}&#39;))
+    # Single quotes for the shell, double quotes inside the Ruby: an HTML entity crept into
+    # my first version here and was passed through verbatim, so every call answered with a
+    # Ruby syntax error that read as an empty string.
+    script = %(require "/app/config/environment"; #{code})
+    out, err, ok = sudo_sh(%(podman exec cove-manager-dova ruby -e '#{script}'))
     [out.to_s.strip, err.to_s, ok]
   end
   path = "#{slug} (cove_sheets row)"
