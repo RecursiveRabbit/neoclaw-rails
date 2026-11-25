@@ -100,7 +100,14 @@ module Cove
 
         body = []
         body << "version #{NETWORK_VERSION}"
-        body << %(router address="#{q(router['address'].to_s)}" listen="#{q(router['listen'].to_s)}")
+        # `dns` is the resolver the pods are told about at attach time, and the Router
+        # needs it too: it is the one host service a pod is allowed to reach, and the
+        # rule that permits it has to be written beside the rules that deny the rest of
+        # the private network -- or a reader has to guess which is meant.
+        dns = Cove::Plan.dns_resolver
+        router_line = %(router address="#{q(router['address'].to_s)}" listen="#{q(router['listen'].to_s)}")
+        router_line += %( dns="#{q(dns)}") unless dns.to_s.empty?
+        body << router_line
         body << ""
 
         # Peers, sorted by key. A peer with no key is written UNKEYED and the

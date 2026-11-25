@@ -170,10 +170,46 @@ def apply(peers, permits, router, first:)
   # a service speaks tcp or udp, so the Router opens both and says so here.
   rules = +"*filter\n:FORWARD DROP [0:0]\n"
   rules << "-A FORWARD -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT\n"
+
+  # THE PODS' ROAD TO THE WORLD, AND THE ONLY PLACE TRANSIT POLICY LIVES.
+  #
+  # Evans, 2026-11-25: "ip_tables is the rules that the router runs, not something that
+  # must be configured each pod." So the whole transit decision is this ordered list,
+  # and a pod's own firewall has one job left: make its service reachable.
+  #
+  # The policy is three sentences, and each one belongs to somebody:
+  #   a pod MAY reach the world through this device -- it is the pods' default gateway,
+  #     and Evans' ruling is that its allowed-ips is 0.0.0.0/0 "and nothing weaker";
+  #   a pod may NOT reach the private network. That is what "neither agent can connect to
+  #     a service listening on the host" means once the host is a machine with a dozen
+  #     addresses rather than one. The resolver is the named exception (Evans 2026-11-23:
+  #     the agent pods reach DNS on the z620 through the router);
+  #   a pod may NOT reach another pod, except where a permit names the pair.
+  #
+  # ORDER IS THE IMPLEMENTATION. Permits first, because they are the exceptions the
+  # Manager granted; then the resolver; then the denials; then the world. A DROP placed
+  # before a permit's ACCEPT would make every permit invisible, and it would read from
+  # every row as "the permit does not work".
+  net = router["address"].to_s
+  dns = router["dns"].to_s
   permits.each do |p|
     %w[tcp udp].each do |proto|
       rules << "-A FORWARD -s #{p[:src_addr]} -d #{p[:to]} -p #{proto} -m #{proto} --dport #{p[:port]} -j ACCEPT\n"
     end
+  end
+  unless dns.empty? || net.empty?
+    rules << "-A FORWARD -s #{net} -d #{dns} -p udp -m udp --dport 53 -j ACCEPT\n"
+    rules << "-A FORWARD -s #{net} -d #{dns} -p tcp -m tcp --dport 53 -j ACCEPT\n"
+  end
+  unless net.empty?
+    rules << "-A FORWARD -s #{net} -d #{net} -j DROP\n"
+    # RFC1918, CGNAT and link-local: the private network is not the world. Written as an
+    # explicit denial list rather than as an absence, so a reader can see the shape
+    # without holding the whole routing table in their head.
+    %w[10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 169.254.0.0/16].each do |priv|
+      rules << "-A FORWARD -s #{net} -d #{priv} -j DROP\n"
+    end
+    rules << "-A FORWARD -s #{net} -j ACCEPT\n"
   end
   rules << "COMMIT\n"
 
