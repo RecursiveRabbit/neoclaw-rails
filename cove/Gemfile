@@ -1,9 +1,14 @@
 source "https://rubygems.org"
 
-# The Manager is a Rails control pane with NO database and NO asset pipeline.
-# Everything durable is a file in state/; everything derived is re-rendered.
+# The Manager is a Rails control pane with NO asset pipeline.
+#
+# IT HAS A DATABASE NOW. Evans, 2026-11-25: "Everything about Cove lives in a relational
+# database. There are no data files." The state directory held plan.yml, services.yml,
+# one YAML per sheet and a rendered router.conf; the same address or key could exist in
+# two of them at once and there was nothing that could say so. One store, one row.
 gem "rails", "~> 8.1.2"
 gem "puma", ">= 6.0"
+gem "sqlite3", ">= 2.1"
 
 group :test do
   gem "minitest"

@@ -1,0 +1,10 @@
+#!/usr/bin/env ruby
+# The application's own command entry point.
+#
+# Without it, `bundle exec rails` resolves to the GEM's executable, which decides it is
+# not inside an application and prints the "rails new weblog" help — for every task, with
+# exit status zero. Measured: the container booted, served, and answered 500 "Could not
+# find table 'cove_sheets'" while `db:prepare` had reported nothing at all.
+APP_PATH = File.expand_path("../config/application", __dir__)
+require_relative "../config/boot"
+require "rails/commands"

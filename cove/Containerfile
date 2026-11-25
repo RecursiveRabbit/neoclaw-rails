@@ -36,4 +36,4 @@ EXPOSE 9200
 # published to the LAN and has no authentication by design (cove.md §3). COVE_BIND
 # lets a deployment keep that promise without relying on the container runtime to
 # publish it: with --network host the process itself owns the bind address.
-CMD ["sh", "-c", "exec bundle exec puma -b tcp://${COVE_BIND:-0.0.0.0:9200} -e production config.ru"]
+CMD ["sh", "/app/bin/boot"]

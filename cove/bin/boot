@@ -1,0 +1,16 @@
+#!/bin/sh
+# The Manager's whole boot, in one place, so nothing about it is implied by a CMD line.
+#
+# Evans, 2026-11-25: "There are no fallbacks, the system works correctly or it fails
+# loudly. The only acceptable code path is the designated one."
+#
+# So: no default bind. `COVE_BIND` unset is a refusal, not 0.0.0.0. A control surface that
+# guesses where to listen is a control surface that will one day guess wrong and be found
+# by somebody who should not have found it.
+set -e
+
+bundle exec ruby bin/rails db:prepare
+bundle exec ruby bin/rails runner 'Cove::Sheet.import_legacy!'
+
+exec bundle exec puma -b "tcp://${COVE_BIND:?COVE_BIND must name the address and port the Manager answers on}" \
+     -e production config.ru
