@@ -48,10 +48,22 @@
       <td><%= pod["Status"] %></td>
       <td class="muted"><%= pod["Created"] %></td>
       <td>
-        <form action="<%= pod_path(slug) %>/stop" method="post" style="display:inline">
-          <input type="hidden" name="authenticity_token" value="<%= form_authenticity_token %>">
-          <button class="stop" type="submit">stop</button>
-        </form>
+        <%# ONLY A POD THAT HAS A SHEET CAN BE STOPPED BY SLUG. This form used to be
+            rendered unconditionally with `slug`, which is empty for any managed
+            container the sheets do not claim — the Router, or an orphan — and
+            `pod_path("")` raises UrlGenerationError, so /pods answered 500 whenever one
+            was present. Measured 2026-11-25: 500 on /pods with
+            "No route matches {:action=>\"show\", :controller=>\"cove/pods\", :slug=>\"\"}".
+            A page that crashes on the row it cannot describe is a page that hides the
+            pod you most need to see. %>
+        <% if sheet %>
+          <form action="<%= pod_path(slug) %>/stop" method="post" style="display:inline">
+            <input type="hidden" name="authenticity_token" value="<%= form_authenticity_token %>">
+            <button class="stop" type="submit">stop</button>
+          </form>
+        <% else %>
+          <span class="muted">no sheet to act on</span>
+        <% end %>
       </td>
     </tr>
   <% end %>
