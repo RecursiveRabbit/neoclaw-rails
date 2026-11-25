@@ -1,0 +1,9 @@
+[Unit]
+Description=Re-assert the Cove host routes (a Router restart flushes them)
+
+[Timer]
+OnBootSec=20
+OnUnitInactiveSec=60
+
+[Install]
+WantedBy=timers.target

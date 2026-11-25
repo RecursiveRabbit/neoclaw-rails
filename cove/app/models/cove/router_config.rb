@@ -228,7 +228,19 @@ module Cove
         # while every peer line looked perfectly correct.
         services = Plan.services
         body = render(agents, services, net)
+        previous = self.current
         Cove.write_atomic(Cove.router_file, body)
+        # THE CHANGE RESTARTS THE ROUTER, AND THE RUNNING CONFIGURATION MATCHES THE INTENT.
+        # Evans, 2026-11-25 (vault/specs/Cove-Tests-2.md). write! is the one function every
+        # intent change passes through, so it is the one place that can honour that
+        # sentence. Guarded inside: not running (the bootstrap renders before it launches)
+        # and identical bytes (the render is deterministic) both return without touching a
+        # live tunnel.
+        #
+        # Not raised: a Router that refuses its file must not make the sheet edit that
+        # produced it look like the sheet's fault. restart! distinguishes the two in its
+        # message, and a dead Router is visible in `podman ps`.
+        RouterPod.restart_if_changed!(previous, body)
         body
       end
 

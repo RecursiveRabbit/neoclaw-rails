@@ -190,18 +190,31 @@ module Cove
         steps << sudo("nsenter", "-t", pid, "-n", "ip", "addr", "add", "#{pod_ip}/32", "dev", "wg0")
         steps << sudo("nsenter", "-t", pid, "-n", "ip", "link", "set", "wg0", "up")
         steps << sudo("nsenter", "-t", pid, "-n", "ip", "route", "add", "default", "dev", "wg0")
-        # The pod's own door (§15 row 3). The Router is the map of which roads exist;
-        # the pod is the one place that can enforce "no road but the tunnel" without
-        # asking anything: loopback and wg0, everything else dropped. Two layers,
-        # because a pod that trusts the far end has no door of its own, and a Router
-        # that is the only filter is one bug away from a leak.
-        steps << sudo("nsenter", "-t", pid, "-n", "iptables", "-P", "INPUT", "DROP")
-        steps << sudo("nsenter", "-t", pid, "-n", "iptables", "-P", "FORWARD", "DROP")
-        steps << sudo("nsenter", "-t", pid, "-n", "iptables", "-P", "OUTPUT", "DROP")
-        steps << sudo("nsenter", "-t", pid, "-n", "iptables", "-A", "INPUT", "-i", "lo", "-j", "ACCEPT")
-        steps << sudo("nsenter", "-t", pid, "-n", "iptables", "-A", "OUTPUT", "-o", "lo", "-j", "ACCEPT")
-        steps << sudo("nsenter", "-t", pid, "-n", "iptables", "-A", "INPUT", "-i", "wg0", "-j", "ACCEPT")
-        steps << sudo("nsenter", "-t", pid, "-n", "iptables", "-A", "OUTPUT", "-o", "wg0", "-j", "ACCEPT")
+        # NO iptables INSIDE THE POD. Evans, 2026-11-25, verbatim: "I don't know of any
+        # reason to have drop policies on the pods. ip_tables do not provide any pod
+        # security. Pod security will be provided solely through WG and UFW."
+        #
+        # Seven lines stood here: `-P INPUT/FORWARD/OUTPUT DROP` and accepts for lo and
+        # wg0, with the argument "a pod that trusts the far end has no door of its own, and
+        # a Router that is the only filter is one bug away from a leak." That argument
+        # fails on its own terms once it is said out loud: those rules were not a door,
+        # they were the Router's decision copied, made again later and somewhere else, so
+        # the "two layers" were one layer computed twice and the second copy had to be kept
+        # in step by hand. The transit decision itself now lives in one place — the Router's
+        # FORWARD chain, permits then resolver then denials then the world (router.rb,
+        # commit 07f3384) — which is what makes this deletion a move rather than a loss.
+        #
+        # And the copied layer punished being tightened: measured on z620 2026-11-25 in a
+        # throwaway veth pair, with `-P INPUT DROP`, deleting the one blanket accept and
+        # adding nothing took a client connect from 23 ms to a 4025 ms timeout — the pod
+        # could no longer receive the answer to its own question — and adding only
+        # `-m conntrack --ctstate RELATED,ESTABLISHED` brought it back to 26 ms. A door
+        # that destroys replies when it is tightened is a door nobody tightens correctly.
+        #
+        # What secures a pod: the tunnel it is on (its only peer is the Router; its
+        # allowed-ips says what it will encrypt for) and UFW at the edge. What decides
+        # transit: the Router, once. The pod keeps the netns defaults, which accept — so it
+        # can answer what reaches it, which is the whole of what a pod owes the network.
         # THE POD'S RESOLVER, written at attach time from the plan. Evans, 2026-11-23:
         # until a Service pod serves DNS, the Agent pods reach DNS on the z620 through
         # the Router.

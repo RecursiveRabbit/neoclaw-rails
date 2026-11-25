@@ -1,0 +1,17 @@
+[Unit]
+Description=Cove host half — pod-subnet routes via the Router, and the LAN-path backstop
+Documentation=file:/usr/local/sbin/cove-host-routes.py
+After=network-online.target podman.socket
+Wants=network-online.target
+ConditionPathExists=/home/sexton/cove-state/plan.yml
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/sbin/cove-host-routes.py
+TimeoutStartSec=120
+# No RemainAfterExit: the timer below re-runs this, and a oneshot that stays "active"
+# cannot be retriggered. The script is idempotent (`ip route replace` throughout), so a
+# re-run is the same operation as the first one and costs two netlink calls.
+
+[Install]
+WantedBy=multi-user.target
