@@ -1,0 +1,11 @@
+# Rails tasks, which this app has never had.
+#
+# There was no Rakefile because there was no database: the Manager's state was files, and
+# a file needs no migration. Evans, 2026-11-25: "Everything about Cove lives in a relational
+# database." A database needs `db:prepare`, and `db:prepare` needs the tasks, and without
+# this file `rails db:prepare` is read as "generate a new application" and prints the
+# generator's help instead of doing anything. Measured: the container booted, served, and
+# every request answered 500 with "Could not find table 'cove_sheets'".
+require_relative "config/application"
+
+Rails.application.load_tasks
