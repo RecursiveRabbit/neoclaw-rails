@@ -901,8 +901,22 @@ ROW_TABLE[16] = -> {
   pod_addr = addr_out.to_s[/inet (\d+\.\d+\.\d+\.\d+)/, 1]
   plan_text, = sudo_sh("cat #{COVE_STATE}/plan.yml")
   transport = plan_text.to_s[/transport:\s*(\S+)/, 1]
-  route_out, = sh("ip route get #{pod_addr} 2>/dev/null")
-  route_line = route_out.to_s.strip.lines.first.to_s.strip
+  route_out, route_err, = sh("ip route get #{pod_addr} 2>&1")
+  # `ip route get` PRINTS A ROUTE TYPE TO STDERR, NOT STDOUT, and this row used to
+  # read stdout with the error discarded. Measured on z620 2026-11-24, all three
+  # verdicts the paragraph above names:
+  #
+  #   ip route replace unreachable 10.201.0.0/20 metric 1000 -> stderr: "No route to host"
+  #   ip route replace prohibit   10.201.0.0/20 metric 1000 -> stderr: "Permission denied"
+  #   ip route replace blackhole  10.201.0.0/20 metric 1000 -> stderr: "Invalid argument"
+  #
+  # All three: nothing on stdout at all. So the NO-ROUTE branch below was unreachable
+  # code, and a route the host REFUSES read as LAN-PATH-OPEN("") — a plausible value of
+  # the right type naming the wrong state, and naming the state that is GOOD as the
+  # failure. I wrote the sentence about "the route's own verdict" and the instrument
+  # could never have honoured it. Same family as `"".to_i == 0`.
+  route_txt = (route_out.to_s + " " + route_err.to_s).strip
+  route_line = route_txt.lines.first.to_s.strip
   # THE RETURN PATH, AS THE RULING STATES IT (Evans 2026-11-23: "Replies cannot go
   # through the LAN gateway. That path needs to be blocked."). This condition used to
   # read `WRONG(...)` for a packet the host would hand to its LAN gateway. That is the
@@ -928,7 +942,7 @@ ROW_TABLE[16] = -> {
       "untested(precondition false: plan.yml names no router transport, so there is nothing to compare the route against)"
     elsif route_out.to_s.include?(transport.to_s)
       "via Router(#{transport})"
-    elsif route_line.match?(/unreachable|prohibit|blackhole/)
+    elsif route_txt.match?(/No route to host|Permission denied|Invalid argument|\b(unreachable|prohibit|blackhole)\b/)
       # Not a pass, and the name says so. A blackholed route satisfies the letter of
       # "that path needs to be blocked" and not the point of it: replies still have to
       # ARRIVE, and a route that refuses the packet is a pod nobody can reach. The good
