@@ -9,8 +9,8 @@
 # by somebody who should not have found it.
 set -e
 
-bundle exec rails db:prepare
-bundle exec rails runner 'Cove::Sheet.import_legacy!'
+bundle exec ruby bin/rails db:prepare
+bundle exec ruby bin/rails runner 'Cove::Sheet.import_legacy!'
 
 exec bundle exec puma -b "tcp://${COVE_BIND:?COVE_BIND must name the address and port the Manager answers on}" \
      -e production config.ru

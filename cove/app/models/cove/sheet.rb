@@ -43,10 +43,10 @@ module Cove
         find_by(slug: slug.to_s)
       end
 
-      # unscoped, not `order` on the class: `Sheet.order(...)` is Active Record's own
-      # delegation to `all`, so overriding `all` and calling `order` from it recurses
-      # until the stack ends. Measured: 9,694 levels and a 500 on /sheets.
-      def all = unscoped.order(:slug).to_a
+      # NOT overridden. Active Record's own `all` is a relation, and every class-level
+      # query method delegates to it — so overriding it and calling `order` or `unscoped`
+      # from inside recurses until the stack ends (measured twice: 9,694 levels, then a
+      # broken ORDER preprocessor). Callers that need an order ask for one.
 
       def create!(attrs)
         sheet = new
