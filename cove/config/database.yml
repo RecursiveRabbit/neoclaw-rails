@@ -1,0 +1,19 @@
+# One store, on the volume the Manager already mounts, so it survives a container rebuild.
+#
+# The path is the state directory and not an image path: a database inside the container
+# would be a data file that a rebuild deletes.
+default: &default
+  adapter: sqlite3
+  pool: <%= ENV.fetch("RAILS_MAX_THREADS") { 3 } %>
+  timeout: 5000
+  database: <%= ENV.fetch("COVE_STATE", "/home/sexton/cove-state") %>/cove.sqlite3
+
+production:
+  <<: *default
+
+development:
+  <<: *default
+
+test:
+  <<: *default
+  database: <%= ENV.fetch("COVE_STATE", "/home/sexton/cove-state") %>/cove-test.sqlite3

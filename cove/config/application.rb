@@ -6,7 +6,18 @@ require_relative "boot"
 # asset pipeline. What it has is controllers, views, and files. Pulling in the rest
 # would put a second copy of the truth somewhere, which is the one thing the spec
 # forbids (cove.md §12, "No second copies").
+# ACTIVE RECORD IS IN. Evans, 2026-11-25: "Everything about Cove lives in a relational
+# database. There are no data files."
+#
+# The paragraph that used to stand here argued for the opposite, and its argument is worth
+# keeping because it was the right argument aimed at the wrong thing: "Pulling in the rest
+# would put a second copy of the truth somewhere, which is the one thing the spec forbids."
+# That was true of a cache and is inverse for a database. The SECOND COPY was the files:
+# the plan on disk said 10.99 while the repo said 10.201, a sheet's pod_ip lived in one
+# YAML while the Router's permits were rendered from another, and the deploy could leave
+# the two disagreeing indefinitely with nothing able to say so. One row is one copy.
 require "rails"
+require "active_record/railtie"
 require "action_controller/railtie"
 
 # The state module is required, not autoloaded: its constant is the application's own
