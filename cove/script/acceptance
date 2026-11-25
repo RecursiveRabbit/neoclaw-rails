@@ -1284,7 +1284,14 @@ ROW_TABLE[22] = -> {
   raised = false
   unless podman_names.include?(pod)
     post_form("/sheets/#{slug}/start", {})
-    sleep 3
+    # WAIT FOR THE POD, NOT FOR A CLOCK — the same fault row 19 had. A launch is four
+    # steps and an attach, and three seconds is shorter than the system takes; the row
+    # then read the sheet before the launch had written a key to it and reported the
+    # sheet empty. Measured 2026-11-25.
+    20.times do
+      break if podman_names.include?(pod)
+      sleep 1
+    end
     raised = true
     return unmet(22, "#{pod} could not be started, so there is nothing to lose an identity for") unless podman_names.include?(pod)
   end
