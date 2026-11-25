@@ -400,11 +400,20 @@ ROW_TABLE[3] = -> {
   return unmet(3, "test-agent-a has no running pod") if pid.nil?
   links, = nsented(pid, "ip -o link show | awk -F': ' '{print $2}'")
   peer, = in_router("wg show wg0 allowed-ips | grep -c #{plan_addr(:agent_pool)}")
-  ufw, = nsented(pid, "iptables-save 2>/dev/null | grep -c '^-A'")
-  if peer.to_i.positive? && ufw.to_i.positive?
-    met(3, "agent-a peered at the Router (#{peer.strip} peer line(s)); #{ufw.strip} door rule(s) inside its netns; links: #{links.split.join(',')}")
+  # THE POD HAS NO IPTABLES OF ITS OWN, AND THAT IS THE DESIGN. Evans, 2026-11-25:
+  # "ip_tables do not provide any pod security. Pod security will be provided solely
+  # through WG and UFW." This row used to require at least one rule inside the pod's
+  # netns — a door of its own — and that construction has been removed, so the row now
+  # asserts its ABSENCE. Kept rather than deleted: a pod that quietly acquired a ruleset
+  # again would be a change in the security model, and this is the only place that would
+  # say so out loud.
+  pod_rules, = nsented(pid, "iptables-save 2>/dev/null | grep -c '^-A'")
+  if peer.to_i.positive? && pod_rules.to_i.zero?
+    met(3, "agent-a peered at the Router (#{peer.strip} peer line(s)); 0 iptables rules of its own, " \
+           "by design (transit policy is the Router's); links: #{links.split.join(',')}")
   else
-    fail!(3, "peer lines=#{peer.strip} door rules=#{ufw.strip}")
+    fail!(3, "peer lines=#{peer.strip}, pod rules=#{pod_rules.strip} — expected >0 peer lines and 0 pod rules: " \
+             "pod security is WG and UFW, not a ruleset inside the pod")
   end
 }
 
