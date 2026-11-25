@@ -206,6 +206,33 @@ module Cove
           r = destroy!(s)
           failures << "#{s.slug}: #{r.message}" unless r.ok?
         end
+        # A CREDENTIAL WHOSE OWNER IS NOT RUNNING IS NOT A CREDENTIAL.
+        #
+        # Evans, 2026-11-25: "confirm the owner of every credential is still running. If it
+        # doesn't have a pod for a given credential it clears it." This is that rule, at the
+        # one moment the system knows it is true: after a teardown.
+        #
+        # `doomed` above is built from the WORLD — only sheets whose pod was found — so a
+        # sheet whose pod had already exited kept its pubkey and stayed in the intent as a
+        # peer forever. Measured 2026-11-25: row 20 reported `agent:test-agent-a (no such
+        # pod)` as a leftover peer, and a pubkey with no pod is exactly the silent peer that
+        # costs rows 10/11/14/15/16 five greens at a time.
+        #
+        # Cannot-read is not empty: if the world list could not be read at all, nothing is
+        # cleared. The list here was read at the top of this method and the teardown would
+        # already have failed on it.
+        running = Podman.run(*Cove.sudo_prefix, "podman", "ps", "--format", "{{.Names}}").stdout
+                        .split("\n").map(&:strip).reject(&:empty?)
+        cleared = []
+        Sheet.all.each do |s|
+          next if s.pubkey.to_s.empty?
+          next if running.include?(s.pod_name)
+
+          s.assign("pubkey" => "")
+          s.save!
+          cleared << s.slug
+        end
+
         # One render at the end, from whatever the sheets now say, so the Router is
         # left holding no peer even if one sheet's teardown went wrong.
         RouterConfig.write!(Plan.network_map)
