@@ -1289,7 +1289,16 @@ ROW_TABLE[22] = -> {
     return unmet(22, "#{pod} could not be started, so there is nothing to lose an identity for") unless podman_names.include?(pod)
   end
 
-  path = "#{COVE_STATE}/agents/#{slug}.yml"
+  # THE SHEET IS A ROW NOW. Evans, 2026-11-25: "Everything about Cove lives in a relational
+  # database. There are no data files." This row still read -- and sed-edited -- the YAML
+  # that used to back the sheet, so after the move it read a historical file whose pubkey
+  # is '', found nothing to lose, and reported UNMET on a sheet that has a key in the
+  # database. The row now asks the Manager, which is the only thing that owns the row.
+  db = lambda do |code|
+    out, err, ok = sudo_sh(%(podman exec cove-manager-dova ruby -e &#39;require "/app/config/environment"; #{code}&#39;))
+    [out.to_s.strip, err.to_s, ok]
+  end
+  path = "#{slug} (cove_sheets row)"
   # Parse the sheet as the document it is. The old read was
   #   grep '^pubkey:' | split(":") | strip | gsub("'", "")
   # which strips SINGLE quotes and leaves a DOUBLE quote in place -- and Psych quotes
@@ -1300,20 +1309,17 @@ ROW_TABLE[22] = -> {
   # holds no peer for it" while the Router held that very peer. Reproduced once with
   # the parts printed: `router.conf 1 peer line(s) WITH the key; Router 1 peer(s),
   # key present: no`. Nothing subtracted anything; the row compared a quoted string.
-  raw, _, ok = sudo_sh("cat #{path}")
-  return unmet(22, "could not read #{path}") unless ok
-
-  key = ((YAML.safe_load(raw) rescue nil) || {})["pubkey"].to_s.strip
-  return unmet(22, "#{slug} has no pubkey to lose — the sheet is already empty") if key.empty?
+  key, why, ok = db.call(%(print Cove::Sheet.find("#{slug}").pubkey))
+  return unmet(22, "could not read #{path}: #{why}") unless ok
+  return unmet(22, "#{slug} has no pubkey to lose — the row is already empty") if key.empty?
 
   # Stage the fault, with the pod still running and untouched.
-  _, _, blanked = sudo_sh(%(sed -i "s|^pubkey:.*|pubkey: ''|" #{path}))
+  _, _, blanked = db.call(%(Cove::Sheet.find("#{slug}").assign("pubkey" => "").save!))
   return unmet(22, "could not blank #{path}") unless blanked
 
   code, = http("/router.conf/render", method: "POST", timeout: 60)
   sleep 1
-  raw_after, _, _ = sudo_sh("cat #{path}")
-  recovered = ((YAML.safe_load(raw_after) rescue nil) || {})["pubkey"].to_s.strip
+  recovered, _, _ = db.call(%(print Cove::Sheet.find("#{slug}").pubkey))
   peers_out, = in_router("wg show wg0 peers 2>/dev/null")
   peer_present = peers_out.to_s.lines.map(&:strip).include?(key)
 
