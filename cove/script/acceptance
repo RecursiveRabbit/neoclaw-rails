@@ -1131,11 +1131,24 @@ ROW_TABLE[19] = -> {
   # asserting on its own creation — and it is the only way to tell "destroyed the
   # right thing" from "destroyed everything", which is the whole point of a fence.
   witness = "cove-pod-proof"
+  dead_note = ""
   unless podman_names.include?(witness)
+    # A stopped witness left by an earlier run is not a witness that can stand up: the
+    # start endpoint answers a redirect and the container stays exited (measured 06:50).
+    # Clearing the dead container is setup, not the assertion — and we say we did it, so
+    # a reader does not mistake a cleaned fixture for a fence that passed.
+    exists, = sh("sudo -n podman container exists #{witness} && echo yes || echo no")
+    if exists.to_s.strip == "yes"
+      running, = sh("sudo -n podman inspect #{witness} --format '{{.State.Running}}' 2>/dev/null")
+      unless running.to_s.strip == "true"
+        sh("sudo -n podman rm -f #{witness}")
+        dead_note = " after removing a stopped container from an earlier run"
+      end
+    end
     code, = http("/sheets/pod-proof/start", method: "POST", timeout: 60)
     sleep 2
     unless podman_names.include?(witness)
-      return unmet(19, "could not stand up the witness #{witness} to measure the fence (start answered " \
+      return unmet(19, "the witness #{witness} did not stand up#{dead_note} (start answered " \
                        "http #{code}). The teardown was NOT attempted: a scoped teardown measured with " \
                        "nothing outside its scope proves nothing, and calling that a pass is the defect.")
     end
@@ -1184,6 +1197,22 @@ ROW_TABLE[19] = -> {
 # no peers at all. Counting every `wg*` on the box would fail on a healthy host
 # for a reason that has nothing to do with Cove — a false red is as useless as a
 # false green, and harder to argue with.
+# After a teardown, a surviving peer or rule is one of two different faults, and the
+# file says which: if it still declares peers, the sheets were not cleared (the teardown
+# did not finish); if it declares none, the Router is holding a table the file no longer
+# describes (the last write was not applied). Naming the end is the difference between
+# "the teardown leaks" and "the apply lags" — they want different owners.
+def teardown_end(file, ok, why)
+  return "the intent could not be read (#{why.to_s.strip.empty? ? 'no answer' : why.to_s.strip}), so neither end can be named" unless ok
+
+  peers = file.to_s.scan(/^peer /).size
+  if peers.positive?
+    "the file still declares #{peers} peer(s) — the teardown did not clear the sheet(s)"
+  else
+    "the file declares no peers — the Router was not re-applied after the last write"
+  end
+end
+
 ROW_TABLE[20] = -> {
   now = host_wg_ifaces
   added = now - BASELINE[:wg_ifaces]
@@ -1193,7 +1222,10 @@ ROW_TABLE[20] = -> {
   keys = body.to_s.scan(/^peer: (\S+)/).flatten
   stale = []
   stale << "#{added.size} Cove wg interface(s) left on the host: #{added.join(' ')}" unless added.empty?
-  stale << "#{keys.size} peer(s) left on the Router: #{keys.map { |k| peer_label(k) }.join(', ')}" if keys.any?
+  if keys.any?
+    file, fwhy, fok = sh("sudo -n podman exec #{ROUTER} cat /etc/cove/router.conf 2>/dev/null")
+    stale << "#{keys.size} peer(s) left on the Router (#{teardown_end(file, fok, fwhy)}): #{keys.map { |k| peer_label(k) }.join(', ')}"
+  end
   stale.empty? ? met(20, "host wg set unchanged from baseline (#{BASELINE[:wg_ifaces].size} interface(s), none added); Router holds 0 peers") :
     fail!(20, stale.join("; "))
 }
@@ -1202,8 +1234,12 @@ ROW_TABLE[21] = -> {
   rules, why, ok = in_router("iptables-save")
   return unmet(21, why) unless ok
   accepts = rules.lines.grep(/^-A FORWARD .*-j ACCEPT/).reject { |l| l.include?("conntrack") }
-  accepts.empty? ? met(21, "Router FORWARD holds no permit rules after teardown (policy DROP only)") :
-    fail!(21, "#{accepts.size} rule(s) survived teardown: #{accepts.first.strip}")
+  if accepts.empty?
+    met(21, "Router FORWARD holds no ACCEPT rules after teardown (policy DROP only)")
+  else
+    file, fwhy, fok = sh("sudo -n podman exec #{ROUTER} cat /etc/cove/router.conf 2>/dev/null")
+    fail!(21, "#{accepts.size} rule(s) survived teardown (#{teardown_end(file, fok, fwhy)}); first: #{accepts.first.strip}")
+  end
 }
 
 # 22. A sheet that loses its peer identity gets it back from the pod.
