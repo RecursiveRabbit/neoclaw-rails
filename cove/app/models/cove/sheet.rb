@@ -126,12 +126,23 @@ module Cove
       LISTS.each   { |k| write_list(k, self.class.arrayify(h[k])) if h.key?(k) }
 
       self.name   = "unnamed" if name.empty?
-      self.kind   = KIND_SERVICE if kind == KIND_SERVICE # normalise through the reader's rule
       self.image  = "localhost/cove-agent:latest" if image.empty?
-      # An unknown kind is kept as written and treated as an agent: guessing "service" for a
-      # word this build has never heard of would hand out an address that is not the
+      # An unknown kind is kept as written and treated as an agent: guessing "service" for
+      # a word this build has never heard of would hand out an address that is not the
       # caller's to take.
-      self[:kind] = h.key?("kind") && h["kind"].to_s.strip == KIND_SERVICE ? KIND_SERVICE : KIND_AGENT
+      #
+      # ONLY WHEN THE PATCH CARRIES A KIND. This line used to run unconditionally, which was
+      # correct for the file-backed Sheet — `normalise` rebuilt a whole DOCUMENT and every
+      # key was always present — and is destructive for a row being PATCHED. `Launch` assigns
+      # pod_ip, pubkey and wg_port and nothing else, so every launch silently rewrote both
+      # service sheets to kind="agent"; their `service` lines then vanished from the intent,
+      # the permits could not resolve, and rows 5/12/13/14 failed with "the file says 0
+      # permits, the Router has 2 peers". Measured 2026-11-25: stored kind="agent", the YAML
+      # beside it still said "service". A normaliser that fills in defaults is safe for a
+      # document and a quiet destroyer for a patch.
+      if h.key?("kind")
+        self[:kind] = h["kind"].to_s.strip == KIND_SERVICE ? KIND_SERVICE : KIND_AGENT
+      end
 
       known = COLUMNS + LISTS + %w[slug created_at updated_at extra]
       extras = h.reject { |k, _| known.include?(k) }
