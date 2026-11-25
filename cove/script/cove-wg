@@ -1,0 +1,167 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# cove-wg — the control plane: three WireGuard connections, one script.
+#
+# Evans, Cove-Tests-2.md, step 1: "A script generates wireguard connections for the Host,
+# the Manager, and the Router. The script peers the host, the Manager and the Router with
+# each other. The script launches the Manager pod with the Manager and Router WG keys as
+# environmental variables. The Manager answers only on the host's WireGuard address, serves
+# only its expected endpoints, and refuses requests from any other address or to any other
+# path."
+#
+# And on 2026-11-25: "Hey, that's test step 1. It failing invalidates the results of every
+# following test... That needs to function before any of the pods are allowed to launch.
+# Literally everything is red until that works."
+#
+# So this file exists before any pod does. What it is responsible for:
+#
+#   1. THREE KEYS, in the state directory, generated once and never regenerated: the host's,
+#      the Manager's, the Router's. The Router's is the one the Manager already holds
+#      (`keys/router.key`), kept in place so nothing about the Router changes.
+#   2. ONE INTERFACE ON THE HOST, `wg-cove`, at CONTROL.host, peering the other two.
+#   3. THE FACTS THE CONTAINERS NEED, written where they can read them: the Manager's
+#      private key, the Router's public key, and every control-plane address.
+#
+# It does NOT launch the Manager: the image has to carry `wg` and `ip` for the Manager to
+# bring up its own interface, and that is a Containerfile change, not a script one. This
+# script prints the exact `podman run` it would take.
+#
+# A control plane of its own, and NOT the pod tunnel. The pod network (10.201.0.0/20) is
+# traffic the Router forwards and rules; this is three machines talking to each other with
+# nothing in between. Mixing them would put the Manager's control socket on a network a pod
+# can address, and then every rule about "who may reach the Manager" would have to be
+# written as a forward rule in the thing the Manager is trying to configure.
+require "json"
+require "open3"
+
+STATE = ENV.fetch("COVE_STATE", "/home/sexton/cove-state")
+KEYS  = File.join(STATE, "keys")
+PLANE = "10.210.0.0/24"
+HOST_ADDR = "10.210.0.1/24"
+MANAGER_ADDR = "10.210.0.2/24"
+ROUTER_ADDR = "10.210.0.3/24"
+IFACE = ENV.fetch("COVE_CONTROL_IFACE", "wg-cove")
+PORT = 51840
+
+# The Manager answers here and nowhere else. It is the only address in the system a
+# `curl` should ever reach the control API at.
+MANAGER_EP = "10.210.0.2:9411"
+
+def run(*argv)
+  out, err, st = Open3.capture3(*argv)
+  [out.to_s, err.to_s, st.success?]
+end
+
+def sudo(*argv) = run(*(["sudo", "-n"] + argv))
+
+def die(msg)
+  warn "cove-wg: #{msg}"
+  exit 1
+end
+
+def keypath(name) = File.join(KEYS, "#{name}.key")
+
+def ensure_key(name)
+  path = keypath(name)
+  return File.read(path).strip if File.exist?(path)
+
+  # mkdir first, 0700: a private key must not be readable while it is being written.
+  sudo("install", "-d", "-m", "0700", "-o", "root", "-g", "root", KEYS)
+  out, err, ok = sudo("sh", "-c", "wg genkey > #{path}.tmp && chmod 600 #{path}.tmp && mv #{path}.tmp #{path}")
+  die "could not generate #{name} key: #{err.strip}" unless ok
+  puts "cove-wg: generated #{name} key at #{path}"
+  File.read(path).strip
+end
+
+def pubkey(name)
+  out, err, ok = sudo("sh", "-c", "cat #{keypath(name)} | wg pubkey")
+  die "could not derive #{name} public key: #{err.strip}" unless ok
+  out.strip
+end
+
+def iface_exists? = sudo("ip", "link", "show", IFACE)[2]
+
+def desired_peers(manager_pub, router_pub)
+  [
+    # The Manager and the Router are the only peers of the host on this plane, and each of
+    # them carries exactly one /32: a control plane is three addresses, not a network to be
+    # routed across.
+    # /32 each, NOT the interface's CIDR. Passing "10.210.0.2/24" makes wg normalise the
+    # allowed-ips to the whole /24, and an allowed-ip can belong to exactly one peer -- so
+    # the second peer silently takes the /24 away from the first and `wg show` prints
+    # "(none)" beside a peer that looks configured. Measured here on the first run.
+    [manager_pub, MANAGER_ADDR.split("/").first],
+    [router_pub,  ROUTER_ADDR.split("/").first]
+  ]
+end
+
+def apply!(manager_pub, router_pub)
+  unless iface_exists?
+    _out, err, ok = sudo("ip", "link", "add", IFACE, "type", "wireguard")
+    die "could not create #{IFACE}: #{err.strip}" unless ok
+    puts "cove-wg: created #{IFACE}"
+  end
+  _out, err, ok = sudo("ip", "addr", "replace", HOST_ADDR, "dev", IFACE)
+  die "could not address #{IFACE}: #{err.strip}" unless ok
+  _out, err, ok = sudo("wg", "set", IFACE, "private-key", keypath("host"), "listen-port", PORT.to_s)
+  die "could not key #{IFACE}: #{err.strip}" unless ok
+  _out, err, ok = sudo("ip", "link", "set", IFACE, "up")
+  die "could not bring #{IFACE} up: #{err.strip}" unless ok
+
+  desired_peers(manager_pub, router_pub).each do |pub, addr|
+    _out, err, ok = sudo("wg", "set", IFACE, "peer", pub, "allowed-ips", addr)
+    die "could not peer #{pub[0, 8]}…: #{err.strip}" unless ok
+  end
+end
+
+def verify!
+  out, = sudo("wg", "show", IFACE)
+  die "#{IFACE} did not come up" if out.strip.empty?
+  puts "cove-wg: #{IFACE}"
+  out.lines.each { |l| puts "  #{l.chomp}" }
+  addr, = sudo("ip", "-o", "-4", "addr", "show", IFACE)
+  puts "  #{addr.strip}"
+end
+
+# What the containers need, written as a document rather than as three environment
+# variables scattered across a launcher. The Router's key is passed THROUGH the Manager,
+# exactly as before: the Manager holds it, the Router reads it from the read-only mount.
+def write_facts!(manager_pub, router_pub, host_pub)
+  facts = {
+    "plane" => PLANE,
+    "iface" => IFACE,
+    "listen" => PORT,
+    "host" => { "address" => HOST_ADDR, "public_key" => host_pub },
+    "manager" => { "address" => MANAGER_ADDR, "public_key" => manager_pub, "bind" => MANAGER_EP },
+    "router" => { "address" => ROUTER_ADDR, "public_key" => router_pub }
+  }
+  path = File.join(STATE, "control-plane.json")
+  sudo("sh", "-c", "cat > #{path}.tmp <<'JSON'\n#{JSON.pretty_generate(facts)}\nJSON\nmv #{path}.tmp #{path}")
+  puts "cove-wg: wrote #{path}"
+end
+
+def main
+  manager = ensure_key("manager")
+  host = ensure_key("host")
+  ensure_key("router") # generated by Keys.ensure_router! in normal operation; here if absent
+  manager_pub = pubkey("manager")
+  router_pub = pubkey("router")
+  host_pub = pubkey("host")
+
+  apply!(manager_pub, router_pub)
+  verify!
+  write_facts!(manager_pub, router_pub, host_pub)
+
+  puts
+  puts "cove-wg: keys"
+  puts "  host     #{host_pub}  #{HOST_ADDR}"
+  puts "  manager  #{manager_pub}  #{MANAGER_ADDR}"
+  puts "  router   #{router_pub}  #{ROUTER_ADDR}"
+  puts
+  puts "cove-wg: the Manager must bind #{MANAGER_EP} and nothing else, and needs"
+  puts "         COVE_MANAGER_WG_KEY, COVE_MANAGER_WG_ADDR, COVE_ROUTER_WG_KEY and peer"
+  puts "         publics #{host_pub} / #{router_pub} to bring its own interface up."
+end
+
+main
